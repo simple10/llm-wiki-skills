@@ -6,7 +6,8 @@
   },
   "name": "channel-hubspot-video",
   "requires": {
-    "credential": false
+    "credential": false,
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest"
