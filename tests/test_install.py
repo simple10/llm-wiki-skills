@@ -1,7 +1,7 @@
 """Every artifact the manifest names installs into a wiki through the real
 CLI, lists clean, and — for a skill — enables; a channel unit that matches a
-host binds a watch with the flags `skills find` renders for it. The spike's
-exit test (llm-wiki-plugins #1288), scripted per artifact."""
+host binds a watch with the flags `skills find` renders for it. Scripted
+per artifact."""
 
 from __future__ import annotations
 
