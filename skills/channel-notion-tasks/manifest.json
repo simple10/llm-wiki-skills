@@ -2,7 +2,8 @@
   "kind": "channel",
   "name": "channel-notion-tasks",
   "requires": {
-    "credential": false
+    "credential": false,
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest",

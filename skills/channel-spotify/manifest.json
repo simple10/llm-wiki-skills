@@ -12,7 +12,8 @@
       "*.spotify.com",
       "spotify.com",
       "itunes.apple.com"
-    ]
+    ],
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest"

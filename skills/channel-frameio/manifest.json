@@ -11,7 +11,8 @@
     "credential": false,
     "network": [
       "frame.io"
-    ]
+    ],
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest",
