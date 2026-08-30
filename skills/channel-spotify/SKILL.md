@@ -19,9 +19,6 @@ reporting it as diverged is provenance, not a problem. Chaining to another
 unit means invoking it through the Skill tool — never read a sibling's
 SKILL.md and improvise its behavior.
 
-Authored 2026-08-01 in a working wiki (first target: the $100M Money Models
-audiobook playlist, 9/9 episodes captured end to end), then promoted here.
-
 ## The boundary this unit is built around
 
 Spotify catalog audio (music tracks, Spotify-exclusive shows, audiobook

@@ -31,28 +31,13 @@ Customize and set up now, while the operator is present:
    RSS feed). Music tracks and Spotify-exclusive audio are captured as
    `drm_protected` references with full metadata — never ripped.
 
-## 1.7.0 — the declared hosts were unreachable, and the media route still is
+## Known limitation — media egress under a confined harvest
 
-Nothing to migrate; re-`refresh` an installed copy so the fix reaches it.
-
-`requires.network` declared `["spotify.com"]`, and a bare hostname grants
-exactly that hostname on both sandbox runtimes — no implicit subdomains. So a
-confined harvest reached none of this unit's endpoints. MEASURED under nono
-0.74.0, macOS Darwin 25.5.0 arm64, 2026-08-21, with an unsandboxed control on
-every target: under `["spotify.com"]`, `open.spotify.com`, `api.spotify.com`
-and `accounts.spotify.com` all answer `000` (unsandboxed `200`, `401`, `405`
-— all three reached). Under `["*.spotify.com"]` all three are reached.
-`itunes.apple.com` is measured too (`200`) and is covered by no Spotify
-wildcard: it is the keyless feed lookup this unit resolves podcast RSS
-through.
-
-The declaration is now
-`["*.spotify.com", "spotify.com", "itunes.apple.com"]`.
-
-**What that still does not cover, deliberately.** The open-audio route ends
-at the creator's own RSS feed and MP3 enclosure — measured, the iTunes lookup
-for one show returns `https://lexfridman.com/feed/podcast/` — and those hosts
+The manifest's `requires.network` covers the Spotify endpoints and the
+keyless iTunes feed lookup, and deliberately nothing more: the open-audio
+route ends at the creator's own RSS feed and MP3 enclosure (one show's
+lookup resolves to `https://lexfridman.com/feed/podcast/`), and those hosts
 differ per show and are not known when the host computes the session's
-egress. A confined harvest therefore reaches metadata and the feed lookup and
-fails the download with a named allowlist refusal. That gap is known and open; do not
-try to finish the list.
+egress. A confined harvest therefore reaches metadata and the feed lookup
+and fails the download with a named allowlist refusal. The gap is
+deliberate — do not try to finish the allowlist.

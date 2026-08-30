@@ -32,9 +32,8 @@ FOLDER inside a share as its root, and a leaf viewer is
 `/share/<share-id>/view/<asset-id>` — not under that folder's
 `/share/<share-id>/<folder-asset-id>` prefix — so a folder-rooted section
 watch rejects every leaf too. Only `domain` holds for every share URL the
-enumerator accepts. **Where you see that changed**: this used to surface
-here as the enumerator's own `out_of_scope` counts; intake runs host-side
-now, so the signal is in `harvest_apply.py apply`'s output — the `reasons`
+enumerator accepts. **Where the rejection shows up**: intake runs host-side,
+so the signal is in `harvest_apply.py apply`'s output — the `reasons`
 on your discovered row. Check the watch's scope up front rather than waiting
 for it, and flag it in your run report. The install notes and the watch
 example below both carry `--scope domain`.
@@ -103,9 +102,8 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py tree.json \
   job's own. Do not rebuild it and do not merge `summary` into it.
 - The leaves still inherit scope, filters, tags, areas and assets mode from
   the watch entry, and intake still applies the denylist, the watch's
-  `exclude_urls`, its scope prefix and the seen ledger. That work moved
-  behind the host's `apply`, it did not go away — re-runs still skip what
-  already landed.
+  `exclude_urls`, its scope prefix and the seen ledger behind the host's
+  `apply` — re-runs skip what already landed.
 - Report the share job itself as `{"id": <job.id>, "outcome": "complete",
   "capture_dir": "<dir>", "handoff": false}` — a share listing is
   provenance, not a note — with the summary JSON recorded in its
