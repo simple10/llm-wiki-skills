@@ -66,11 +66,17 @@ def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True,
     return cap
 
 
-def _run(tmp_path, cap, formatter=FORMATTER, check=True, extra_env=None,
+_DEFAULT = object()
+
+
+def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
          extra_argv=None):
     # `LLM_WIKI_OPS_DIRNAME` is stripped by default so the tests are
     # deterministic whichever environment the suite runs in; the shim-path
     # tests set it the way the front door does.
+    if formatter is _DEFAULT:  # the host formatter, where a checkout names it
+        _need_formatter()
+        formatter = FORMATTER
     env = dict(os.environ)
     env.pop("LLM_WIKI_OPS_DIRNAME", None)
     if extra_env:
