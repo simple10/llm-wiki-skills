@@ -10,7 +10,8 @@
     "credential": true,
     "network": [
       "mail.google.com"
-    ]
+    ],
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest",

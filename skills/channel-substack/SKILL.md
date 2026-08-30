@@ -44,7 +44,8 @@ Run the bundled enumerator instead of fetching archive pages:
 ```
 llm-wiki-ops run ops/skills/channel-substack/scripts/enumerate_archive.py <domain-or-archive-url> \
     --slug <job.slug> --parent <job.id> \
-    [--min-date <job.min_date>] [--access <job.access>] [--max-urls N] \
+    [--min-date <job.min_date>] [--access <job.access>] \
+    --max-urls <assignment.limits.max_discovered_urls> \
     [--max-date <resume ceiling>]
 ```
 
@@ -73,9 +74,11 @@ llm-wiki-ops run ops/skills/channel-substack/scripts/enumerate_archive.py <domai
   posts are counted in the summary, never fetched. After the owner
   subscribes, re-run with `--access licensed`.
 - **A big archive is bounded, and truncation is not a failure.** A report
-  carrying more than 2000 discovered URLs is refused WHOLE — every job in
-  your slice goes back to `pending/`. So the enumerator stops at
-  `--max-urls` (default 2000), sets `summary.truncated`, and names
+  carrying more discovered URLs than the host's ceiling is refused WHOLE —
+  every job in your slice goes back to `pending/`. That ceiling is
+  `limits.max_discovered_urls` in your assignment, and `--max-urls` is
+  REQUIRED: pass it through. The enumerator stops there, sets
+  `summary.truncated`, and names
   `summary.resume_max_date`: the oldest post it kept. Report what you have,
   and take the rest on a later pass with **`--max-date <that value>`**.
   **Not `--min-date`** — that is a floor on a walk which always restarts at

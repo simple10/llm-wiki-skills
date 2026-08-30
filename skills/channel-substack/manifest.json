@@ -11,7 +11,8 @@
     "credential": false,
     "network": [
       "substack.com"
-    ]
+    ],
+    "ops": ">=1.62"
   },
   "stages": [
     "harvest",

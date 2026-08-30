@@ -11,7 +11,8 @@
     "credential": false,
     "network": [
       "circle.so"
-    ]
+    ],
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest",

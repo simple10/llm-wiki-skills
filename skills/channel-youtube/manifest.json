@@ -16,7 +16,8 @@
       "youtu.be",
       "*.googlevideo.com",
       "*.ytimg.com"
-    ]
+    ],
+    "ops": ">=1.2"
   },
   "stages": [
     "harvest",
