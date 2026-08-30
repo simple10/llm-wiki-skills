@@ -1,0 +1,9 @@
+{
+  "kind": "tool",
+  "name": "writing-skills",
+  "requires": {
+    "credential": false
+  },
+  "v": 2,
+  "version": "0.1.0"
+}

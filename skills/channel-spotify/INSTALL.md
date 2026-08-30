@@ -1,5 +1,9 @@
 # channel-spotify — install notes (for the installing agent)
 
+## Customizing this unit
+
+Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+
 Customize and set up now, while the operator is present:
 
 1. **API credentials** — needed for search and guaranteed-complete item

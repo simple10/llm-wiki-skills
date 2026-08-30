@@ -16,6 +16,11 @@
   "artifacts": [
     {
       "type": "skill",
+      "name": "writing-skills",
+      "path": "skills/writing-skills"
+    },
+    {
+      "type": "skill",
       "name": "channel-circle",
       "path": "skills/channel-circle"
     },

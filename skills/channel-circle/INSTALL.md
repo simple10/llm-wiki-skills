@@ -1,5 +1,9 @@
 # channel-circle — install notes (for the installing agent)
 
+## Customizing this unit
+
+Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+
 Circle communities run on `*.circle.so` **or their own custom domain**, but
 a custom-domain community still renders Circle's own uniform chrome — so
 ONE installed copy normally serves every community this wiki watches, with

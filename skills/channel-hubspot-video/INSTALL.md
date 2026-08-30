@@ -1,5 +1,9 @@
 # channel-hubspot-video — install notes (for the installing agent)
 
+## Customizing this unit
+
+Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+
 This unit is a **platform template**: it ships the HubSpot CMS/Video
 knowledge (lazy `data-hsv-src` player, Mux media path, signed-manifest
 rewrite) and deliberately **no selectors** — every HubSpot customer runs its
