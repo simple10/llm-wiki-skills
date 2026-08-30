@@ -36,8 +36,9 @@ caller used to get here and now gets one step later:
 - **A `scope: page` watch is no longer visible here.** It used to show up as
   `queued: 0` with `intake_reasons` full of `out_of_scope`. That signal now
   appears in `apply`'s `reasons` — check it there, and see the SKILL.md.
-- **The emission is bounded.** The report refuses whole past
-  `MAX_DISCOVERED_URLS` (2000 across every row, `harvest_apply.py`), and a
+- **The emission is bounded.** The report refuses whole past the host's
+  `max_discovered_urls` ceiling (across every row — the assignment's
+  `limits` carries it, and `--max-urls` is how it reaches this script), and a
   refused report sends every job in the slice back to `pending/`. So this
   stops paginating at `--max-urls` and names `resume_max_date`, the ceiling
   to resume AT, rather than handing the worker a payload that poisons the
@@ -138,12 +139,6 @@ def post_url(domain, post):
     return f"https://{domain}/p/{post.get('slug')}"
 
 
-# `harvest_apply.py`'s MAX_DISCOVERED_URLS, restated rather than imported:
-# this script is deliberately self-contained (stdlib only, no sibling
-# imports) so it runs inside a slice with nothing but its own directory.
-# keep-in-sync: llm-wiki-ops/v1/plugin/scripts/harvest_apply.py
-MAX_DISCOVERED_URLS = 2000
-
 
 def parse_date(s):
     # post_date is ISO 8601, e.g. "2026-07-08T12:00:00.000Z"
@@ -199,13 +194,12 @@ def main():
     ap.add_argument(
         "--max-urls",
         type=int,
-        default=MAX_DISCOVERED_URLS,
-        help=f"stop paginating once this many URLs are emitted "
-        f"(default {MAX_DISCOVERED_URLS}, the host's own "
-        f"ceiling across EVERY discovered row in one "
-        f"report). Past it the host applies none of the "
-        f"report and every job in the slice returns to "
-        f"pending/, so this truncates and says so instead",
+        required=True,
+        help="stop paginating once this many URLs are emitted — the host's "
+        "ceiling across EVERY discovered row in one report, handed to you as "
+        "assignment.limits.max_discovered_urls; this script restates no number. "
+        "Past it the host applies none of the report and every job in the "
+        "slice returns to pending/, so this truncates and says so instead",
     )
     args = ap.parse_args()
 
