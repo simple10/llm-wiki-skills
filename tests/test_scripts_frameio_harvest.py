@@ -1,4 +1,4 @@
-"""`channel-frameio`'s harvest half, since #627 moved it off the queue verbs.
+"""`channel-frameio`'s harvest half — emission and per-job capture, no queue verbs.
 
 The unit used to drive a whole share itself — intake, claim, capture,
 complete, drain — so a host that dispatched ONE leaf job had no instruction
@@ -105,8 +105,8 @@ def test_it_emits_one_report_row_and_queues_nothing(monkeypatch, capsys,
 
 
 def test_the_emitter_shells_nothing():
-    """The property #627 is about — a confined worker has no queue and no
-    ledger, so this must not reach either.
+    """A confined worker has no queue and no ledger, so this must not
+    reach either.
 
     Over the AST, not the text: an allow-list of imported top-level modules,
     because a deny-list is what a `from subprocess import run as _shell`
@@ -135,8 +135,8 @@ def test_no_unit_script_names_a_pipeline_queue_script():
     in every script, checked for the pipeline's own entry points.
     """
     scripts = sorted(p.name for p in SCRIPTS.glob("*.py"))
-    # Exact, not a floor: a floor cannot see `drain_pending.py` coming back,
-    # and the deleted file is half of what #627 changed.
+    # Exact, not a floor: a floor cannot see a queue-verb script like
+    # `drain_pending.py` coming back.
     assert scripts == ["capture_asset.py", "capture_job.py",
                        "capture_record.py", "enumerate_tree.py",
                        "frameio_doc_note.py", "harvest_share.py"]
@@ -392,8 +392,7 @@ def test_an_unusable_capture_result_is_still_a_fail_row(
     """`rc == 0` is `capture_asset.py`'s word that the bytes are down, not a
     promise about its stdout. Parsing it unguarded made every shape here a
     traceback and NO row — with the asset already on disk — while the
-    docstring promises exit 1 and a `fail` row the worker reports
-    (#627, rev-675-a).
+    docstring promises exit 1 and a `fail` row the worker reports.
     """
     calls = []
     code, out = _run_capture_job(monkeypatch, capsys, tmp_path, calls,
@@ -423,7 +422,7 @@ def test_an_assignment_that_is_not_an_object_exits_two(
     on a list or a scalar and die on an AttributeError — exit 1 on a
     traceback, which tells a worker to look for a `fail` row on stdout that
     was never printed. That is the confusion the exit contract exists to
-    end, so it is exit 2 and no row (#627, rev-675-a re-review).
+    end, so it is exit 2 and no row.
     """
     mod = _module(CAPTURE_JOB)
     bad = tmp_path / "assignment.json"
@@ -507,7 +506,7 @@ GRANTED = "_raw/next.frame.io"
 #: nothing about the fix.
 #:
 #: Keyed by FAMILY rather than listed, and the key is checked against the
-#: value's SHAPE rather than against a copy of the names (#681): each
+#: value's SHAPE rather than against a copy of the names: each
 #: family is a different reason the shipped check refuses, so a family
 #: that is dropped, or one kept by name and handed another family's
 #: value, has stopped being measured either way. Dropping the two symlink
@@ -529,7 +528,7 @@ GRANTED = "_raw/next.frame.io"
 #: coverage accidental; `traversal-out-absent` is the family that keeps
 #: that exercised where nothing on the way there exists either. It can
 #: only BE that family while its sibling lands somewhere real, which is
-#: why the fixture puts a `.git/` on disk (#681).
+#: why the fixture puts a `.git/` on disk.
 ESCAPES_BY_FAMILY = {
     # up and out of the content tree, into the real `.git/` every wiki has
     "traversal-out": "_raw/next.frame.io/../../.git/hooks",
@@ -573,7 +572,7 @@ def _grant_fixture(tmp_path):
     # It is also what makes `traversal-out` land in a real directory,
     # which is the whole difference between it and `traversal-out-absent`
     # — without it the two families are the same shape and the guard
-    # below cannot tell them apart (#681).
+    # below cannot tell them apart.
     (root / ".git/hooks").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -629,11 +628,11 @@ def _classify_escape(root, rel):
 
 
 def test_every_escape_is_the_shape_its_family_name_claims(tmp_path):
-    """The corpus, pinned by SHAPE instead of by value (#681).
+    """The corpus, pinned by SHAPE instead of by value.
 
     Two properties, and between them they replace the three value facts
     the earlier rounds accumulated — the spelled-out family names, the
-    literal count, and the distinctness line (#679, #680):
+    literal count, and the distinctness line:
 
       * the corpus covers exactly the families the axes can name, so one
         cannot be dropped and a seventh cannot be invented; and
@@ -642,7 +641,7 @@ def test_every_escape_is_the_shape_its_family_name_claims(tmp_path):
         shape is red rather than green.
 
     The second is what no earlier round had, and it is the case that kept
-    reappearing. Measured on `main` at `371dbc28`, `37 passed` for each of
+    reappearing. Measured, `37 passed` for each of
     four retirements: `prefix-sibling` given a second traversal's shape,
     `symlink-out` given a distinct traversal, `symlink-sideways` given a
     second prefix sibling, and `traversal-out-absent` given a traversal
@@ -653,7 +652,7 @@ def test_every_escape_is_the_shape_its_family_name_claims(tmp_path):
 
     Vacuity is still guarded here too, and separately, because a guard
     against vacuity that is itself vacuous is the sharper half of the same
-    defect (#627, rev-675-a re-review). With `ESCAPES = []` the loops
+    defect. With `ESCAPES = []` the loops
     below iterate nothing, the in-loop refusals iterate nothing, and the
     parametrized refusal test degrades to a SKIP rather than a red —
     measured, `23 passed, 1 skipped`. And a case that is not a string
@@ -683,7 +682,7 @@ def test_every_escape_is_the_shape_its_family_name_claims(tmp_path):
 
 def test_a_granted_slice_is_a_resolved_path_not_a_string_prefix(tmp_path):
     """The property the check exists for, in general rather than for one
-    shape (#627, rev-675-a).
+    shape.
 
     A slice grant is about where the BYTES land, so the comparison is
     between RESOLVED absolute paths, by path component. Two families walked
@@ -793,10 +792,10 @@ def test_an_assignment_granting_no_slices_refuses_rather_than_capturing(
 # --------------------------------------------------------------------------- #
 
 def test_the_document_extension_falls_back_to_the_proxy_route():
-    """A dispatched leaf job carries a URL and nothing else, so `--name` —
-    the only source of the extension until #627 — is absent on the per-job
-    path and every document landed as `document.bin`. The signed conversion
-    route spells it."""
+    """A dispatched leaf job carries a URL and nothing else, so `--name` is
+    absent on the per-job path; with no other source of the extension,
+    every document landed as `document.bin`. The signed conversion route
+    spells it."""
     mod = _module(SCRIPTS / "capture_asset.py", "capture_asset_probe")
     doc = ("https://assets.frame.io/pptx/abc123/pptx_proxy.pptx"
            "?signature=deadbeef&x=1")

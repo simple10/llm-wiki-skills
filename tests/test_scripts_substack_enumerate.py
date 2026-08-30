@@ -1,6 +1,6 @@
-"""`channel-substack`'s archive enumerator, since #587 moved it off intake.
+"""`channel-substack`'s archive enumerator — it emits, and the host applies.
 
-The script queues nothing now: it emits one `discovered` row for the worker
+The script queues nothing: it emits one `discovered` row for the worker
 to copy into its report, and the HOST applies it. What is worth pinning is
 the part that is not obvious — it must never hand back a payload larger than
 the host will accept, because an oversized report is refused WHOLE and every
@@ -68,8 +68,8 @@ def test_it_emits_one_report_row_and_queues_nothing(monkeypatch, capsys):
 
 
 def test_the_script_shells_nothing():
-    """The property #587 is about — a confined worker has no queue and no
-    ledger, so this must not reach either.
+    """A confined worker has no queue and no ledger, so this must not
+    reach either.
 
     Over the AST, not the text. The substring version of this test split the
     source on triple quotes and searched element 2: a 223-byte window
@@ -171,8 +171,8 @@ def test_a_walk_that_cannot_advance_says_so(monkeypatch, capsys):
     """The inclusive ceiling has one failure mode: when `--max-urls` or more
     posts share the boundary date, the whole emission is one date, the
     ceiling cannot move below itself, and the next pass returns the same
-    set. That is the exact shape of the `--min-date` bug this PR fixed, so
-    it must not be silent — measured, 60 posts/day at cap 50 stalls on
+    set. That is the same no-progress shape as resuming with `--min-date`,
+    so it must not be silent — measured, 60 posts/day at cap 50 stalls on
     pass 2."""
     same_day = [{"slug": f"p{i}", "audience": "everyone",
                  "post_date": "2026-08-31T12:00:00.000Z",
