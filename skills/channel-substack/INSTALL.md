@@ -19,7 +19,7 @@ Customize the wiki's copy now, while the operator is present:
    default `page` scope silently rejects all of them as `out_of_scope`
    while the run still exits 0. That shows up host-side, in
    `harvest_apply.py apply`'s `reasons` for the discovered row — not in the
-   enumerator's own output, which no longer counts what intake did:
+   enumerator's own output:
    `llm-wiki-ops watch add --slug <newsletter> --description "<what this is>"
    --url <archive-url> --skill channel-substack
    --scope domain --mode continual [--max-age 3m] [--access free|licensed]`

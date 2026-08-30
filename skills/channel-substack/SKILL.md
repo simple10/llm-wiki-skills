@@ -60,16 +60,14 @@ llm-wiki-ops run ops/skills/channel-substack/scripts/enumerate_archive.py <domai
   job's own. Do not rebuild it and do not merge `summary` into it.
 - Child jobs still inherit scope, filters, tags and assets mode from the
   watch entry, and intake still applies the denylist, the watch's
-  `exclude_urls`, its scope prefix and the seen ledger. That work moved
-  behind the host's `apply`, it did not go away.
+  `exclude_urls`, its scope prefix and the seen ledger behind the host's
+  `apply` — re-runs skip what already landed.
 - **The watch MUST be `scope: domain`**: the default `page` scope rejects
   every queued URL as `out_of_scope` while the run still exits 0, so a
-  page-scoped watch silently harvests nothing. **Where you see that changed**:
-  it used to show here as `queued: 0` with `intake_reasons` full of
-  `out_of_scope`. Those are intake's counts and intake now runs host-side,
-  so the signal is in `harvest_apply.py apply`'s output — the `reasons` on
-  your discovered row. Check the watch's scope up front rather than waiting
-  for it, and flag it in your run report.
+  page-scoped watch silently harvests nothing. **Where the rejection shows
+  up**: intake runs host-side, so the signal is in `harvest_apply.py apply`'s
+  output — the `reasons` on your discovered row. Check the watch's scope up
+  front rather than waiting for it, and flag it in your run report.
 - `--access free` (the default) emits only `audience: everyone` posts; paid
   posts are counted in the summary, never fetched. After the owner
   subscribes, re-run with `--access licensed`.
