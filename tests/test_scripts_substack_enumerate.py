@@ -39,6 +39,8 @@ def _post(n, audience="everyone", date="2026-08-01"):
 
 def _run(monkeypatch, capsys, pages, *argv):
     mod = _module()
+    if "--max-urls" not in argv:  # required since the host's ceiling rides the assignment
+        argv = (*argv, "--max-urls", "2000")
     served = list(pages)
 
     def fake_fetch(domain, offset, limit):

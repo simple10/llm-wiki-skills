@@ -84,15 +84,9 @@ import argparse
 import json
 import sys
 
-# `harvest_apply.py`'s MAX_DISCOVERED_URLS and REPORT_MAX_BYTES, restated
-# rather than imported: this script is deliberately self-contained (stdlib
-# only, no sibling imports) so it runs inside a slice with nothing but its
-# own directory.
-# keep-in-sync: llm-wiki-ops/v1/plugin/scripts/harvest_apply.py
-MAX_DISCOVERED_URLS = 2000
-REPORT_MAX_BYTES = 256 * 1024
-
-#: What ONE discovered row may claim of that report-wide byte budget. Not
+#: What ONE discovered row may claim of the host's report-wide byte budget
+#: (`assignment.limits.report_max_bytes`, 256 KiB by default — restated
+#: nowhere here; `--max-urls` carries the URL ceiling the same way). Not
 #: the whole of it: the same report carries a `jobs` row per capture in the
 #: slice, and it is written with indentation this measurement does not see.
 #: At Frame.io's ~106-byte leaf URLs 2000 of them are ~220 KiB on their own,
@@ -158,12 +152,11 @@ def main() -> int:
     ap.add_argument(
         "--max-urls",
         type=int,
-        default=MAX_DISCOVERED_URLS,
-        help=f"stop at this many URLs (default "
-        f"{MAX_DISCOVERED_URLS}, the host's own ceiling "
-        f"across EVERY discovered row in one report). Past "
-        f"it the host applies none of the report and every "
-        f"job in the slice returns to pending/",
+        required=True,
+        help="stop at this many URLs — the host's ceiling across EVERY "
+        "discovered row in one report, handed to you as "
+        "assignment.limits.max_discovered_urls. Past it the host applies "
+        "none of the report and every job in the slice returns to pending/",
     )
     ap.add_argument(
         "--max-bytes",
@@ -171,8 +164,8 @@ def main() -> int:
         default=MAX_ROW_BYTES,
         help=f"stop once the row's compact serialization would "
         f"pass this many bytes (default {MAX_ROW_BYTES}, "
-        f"under the host's {REPORT_MAX_BYTES}-byte whole-"
-        f"report refusal). Frame.io leaf URLs are long and "
+        f"under the host's whole-report refusal at "
+        f"assignment.limits.report_max_bytes). Frame.io leaf URLs are long and "
         f"uniform, so this is the bound that usually bites",
     )
     args = ap.parse_args()

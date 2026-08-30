@@ -12,7 +12,7 @@
     "network": [
       "substack.com"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.62"
   },
   "stages": [
     "harvest",

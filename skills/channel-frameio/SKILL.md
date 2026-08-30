@@ -115,7 +115,8 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py tree.json \
   refused WHOLE — every job in your slice goes back to `pending/`. Frame.io
   leaf URLs are ~106 bytes each and every share emits them at full length,
   so the BYTE bound is the one that usually bites: the emitter stops at
-  `--max-bytes` (default 192 KiB) or `--max-urls` (default 2000), sets
+  `--max-bytes` (default 192 KiB) or `--max-urls` (REQUIRED — the host's
+  ceiling, `limits.max_discovered_urls` in your assignment), sets
   `summary.truncated`, names which bound in `summary.bound`, and gives
   `summary.resume_skip`. Report what you have, and take the rest on a later
   pass with **`--skip <that value>`**. Re-emitting from the start makes no
