@@ -12,7 +12,7 @@
     "network": [
       "frame.io"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.62"
   },
   "stages": [
     "harvest",

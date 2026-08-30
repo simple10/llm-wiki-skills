@@ -78,6 +78,8 @@ def _manifest(tmp_path, count, domain="next.frame.io"):
 
 def _emit(monkeypatch, capsys, manifest, *argv):
     mod = _module(EMIT)
+    if "--max-urls" not in argv:  # required since the host's ceiling rides the assignment
+        argv = (*argv, "--max-urls", "2000")
     monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(manifest),
                                       "--slug", "w1", "--parent", "j1",
                                       *argv])
@@ -181,7 +183,7 @@ def test_the_byte_bound_bites_before_the_url_ceiling_on_this_venue(
     # The row fits under the default with headroom for the rest of a report.
     mod = _module(EMIT)
     assert out["summary"]["row_bytes"] <= mod.MAX_ROW_BYTES
-    assert mod.MAX_ROW_BYTES < mod.REPORT_MAX_BYTES
+    assert mod.MAX_ROW_BYTES < 256 * 1024  # the host's default report_max_bytes; the script restates no host number
     # …and `row_bytes` is the real serialized size, not an estimate.
     assert out["summary"]["row_bytes"] == len(json.dumps(out["discovered"]))
 
@@ -224,7 +226,8 @@ def test_a_manifest_without_leaves_is_refused(monkeypatch, tmp_path):
     bad = tmp_path / "not-a-tree.json"
     bad.write_text('{"ok": true, "leaf_count": 3}', encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(bad),
-                                      "--slug", "w1", "--parent", "j1"])
+                                      "--slug", "w1", "--parent", "j1",
+                                      "--max-urls", "2000"])
     # `pytest.raises` would report a missing refusal as `Failed: DID NOT
     # RAISE`, which reads as a non-assertion red under mutation — so the
     # refusal is captured and asserted on.

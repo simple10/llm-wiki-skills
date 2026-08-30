@@ -13,6 +13,8 @@ from conftest import SKILLS, SOURCE, TACTICS, run, unit_manifest
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env, wiki, name):
     r = run(ops, env, "skills", str(wiki), "install", name, "--repo", SOURCE)
+    if r.returncode == 2 and "requires ops" in r.stderr:
+        pytest.skip(f"{name}: {r.stderr.strip()}")  # the CLI at hand is below this unit's floor
     assert r.returncode == 0, r.stderr
     src = r.data["source"]
     assert src["type"] == "package" and src["repo"] == SOURCE and len(src["ref"]) == 12, src
@@ -35,6 +37,8 @@ def test_channel_unit_binds_a_watch_with_the_flags_find_renders(ops, env, wiki, 
     found = run(ops, env, "skills", str(wiki), "find", url)
     assert found.returncode == 0, found.stderr
     installed = [row for row in found.data["installed"] if row["name"] == name]
+    if not installed and any(row["name"] == name for row in found.data["available"]):
+        pytest.skip(f"{name} is not installed here (its install case skipped on the floor)")
     assert installed, found.data
     flags = installed[0]["watch_flags"].split()
     slug = f"harness-{name}"
