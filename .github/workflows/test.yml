@@ -1,17 +1,47 @@
+# The package harness: every artifact installs, lists clean and enables
+# through the real ops CLI, and each unit script's own tests run. Same
+# checkout/uv actions and git identity step as llm-wiki-plugins' `suites`
+# job; GitHub-hosted rather than that job's Avrea runner, because this repo
+# is public and its Actions minutes are free.
 name: test
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref; a newer push to the same PR cancels the older one.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   harness:
+    name: harness
     runs-on: ubuntu-latest
+    # ~1 minute of work. The ceiling is a runaway's bill, not a target.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # The install tests `init` real git repos and commit in them; a bare
+      # runner has no git identity and every one of those commits would die
+      # on "Please tell me who you are".
+      - name: Set git identity
+        run: |
+          git config --global user.name "llm-wiki-ci"
+          git config --global user.email "ci@users.noreply.github.com"
       # The ops CLI comes from llm-wiki-plugins, which is not public. The
-      # secret holds an installable spec — `git+https://<token>@github.com/
-      # simple10/llm-wiki-plugins#subdirectory=llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1`
-      # or a wheel URL. Without it the install tests SKIP (and say so); the
+      # secret holds an installable spec — `llm-wiki-ops-v1 @ git+https://
+      # x-access-token:<token>@github.com/simple10/llm-wiki-plugins.git@main
+      # #subdirectory=llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1` — or
+      # a wheel URL. Without it the install tests SKIP (and say so); the
       # script tests run regardless, since a unit script is stdlib-only.
-      - name: install the ops CLI
+      # `--version` after the install: a resolvable spec that installs the
+      # wrong thing fails here, not as a wall of install-tier failures.
+      - name: Install the ops CLI
         env:
           LLM_WIKI_OPS_INSTALL: ${{ secrets.LLM_WIKI_OPS_INSTALL }}
         run: |
@@ -21,7 +51,9 @@ jobs:
           fi
           uv tool install "$LLM_WIKI_OPS_INSTALL"
           llm-wiki-ops-v1 --version
-      - name: check-manifest
+      - name: Check the manifest
         run: python3 scripts/check-manifest.py
-      - name: tests
-        run: uv run --with pytest --python 3.12 pytest -q tests
+      # `-rs`: every skip prints its reason, so a harness that skipped its
+      # install tier is visible in the log, never a quiet green.
+      - name: Run the harness
+        run: uv run --with pytest --python 3.12 pytest -q -rs tests
