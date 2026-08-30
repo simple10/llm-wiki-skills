@@ -1,0 +1,36 @@
+{
+  "kind": "channel",
+  "match": {
+    "custom_domains": true,
+    "hosts": []
+  },
+  "name": "channel-hubspot-video",
+  "requires": {
+    "credential": false
+  },
+  "stages": [
+    "harvest"
+  ],
+  "v": 2,
+  "venue": "hubspot-cms",
+  "version": "1.4.2",
+  "watch": {
+    "defaults": {
+      "harvest": {
+        "access": "free",
+        "scope": "section"
+      },
+      "pipeline": {
+        "assets": "download",
+        "transcript": "always"
+      },
+      "schedule": {
+        "mode": "once"
+      }
+    },
+    "dirs": {
+      "sources": "sources/courses/{slug}"
+    },
+    "note": "Keep `transcript: always`. On this platform a page's text is typically a heading plus the player \u2014 the video IS the content \u2014 so without a transcript the capture carries almost nothing. Point the watch at the section ROOT, not at a leaf: the prefix is derived from the URL you give, so a leaf-rooted watch rejects every sibling as out-of-scope while still exiting 0. Set the wiki's own `extract` block (content_selector / drop_selectors / title_selector) after the first capture \u2014 every HubSpot site themes differently."
+  }
+}

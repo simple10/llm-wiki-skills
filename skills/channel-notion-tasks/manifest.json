@@ -1,0 +1,32 @@
+{
+  "kind": "channel",
+  "name": "channel-notion-tasks",
+  "requires": {
+    "credential": false
+  },
+  "stages": [
+    "harvest",
+    "process"
+  ],
+  "v": 2,
+  "venue": "notion-tasks",
+  "version": "1.6.1",
+  "watch": {
+    "defaults": {
+      "schedule": {
+        "check_every": "1d",
+        "mode": "continual"
+      }
+    },
+    "dirs": {
+      "sources": "sources/tasks/{slug}"
+    },
+    "inputs": {
+      "workspace": {
+        "prompt": "Which Notion workspace does this watch pull?",
+        "required": true
+      }
+    },
+    "note": "The connector is session-level on the pulling machine and is named nowhere in this unit \u2014 it is an MCP tool whose name depends on which client the machine runs. One watch per workspace."
+  }
+}

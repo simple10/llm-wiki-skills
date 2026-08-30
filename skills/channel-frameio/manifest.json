@@ -1,0 +1,37 @@
+{
+  "kind": "channel",
+  "match": {
+    "hosts": [
+      "frame.io"
+    ]
+  },
+  "name": "channel-frameio",
+  "process_entry": "scripts/frameio_doc_note.py",
+  "requires": {
+    "credential": false,
+    "network": [
+      "frame.io"
+    ]
+  },
+  "stages": [
+    "harvest",
+    "process"
+  ],
+  "v": 2,
+  "venue": "frameio",
+  "version": "1.14.3",
+  "watch": {
+    "defaults": {
+      "harvest": {
+        "scope": "domain"
+      },
+      "schedule": {
+        "mode": "once"
+      }
+    },
+    "dirs": {
+      "sources": "sources/courses/{slug}"
+    },
+    "note": "`--scope domain` is MANDATORY: the host's intake applies the watch's scope prefix to every leaf this unit discovers, `page` rejects all of them while the run still exits 0, and `section` rejects them too whenever the watch URL is a folder inside the share rather than its root."
+  }
+}

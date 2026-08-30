@@ -1,0 +1,37 @@
+{
+  "kind": "channel",
+  "match": {
+    "custom_domains": true,
+    "hosts": [
+      "substack.com"
+    ]
+  },
+  "name": "channel-substack",
+  "requires": {
+    "credential": false,
+    "network": [
+      "substack.com"
+    ]
+  },
+  "stages": [
+    "harvest",
+    "process"
+  ],
+  "v": 2,
+  "venue": "substack",
+  "version": "1.9.2",
+  "watch": {
+    "defaults": {
+      "harvest": {
+        "scope": "domain"
+      },
+      "schedule": {
+        "mode": "continual"
+      }
+    },
+    "dirs": {
+      "sources": "sources/newsletters/{slug}"
+    },
+    "note": "Point it at the archive URL. `--max-age` and `--access free|licensed` are the operator's call."
+  }
+}

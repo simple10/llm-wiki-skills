@@ -1,0 +1,40 @@
+{
+  "kind": "channel",
+  "match": {
+    "hosts": [
+      "mail.google.com"
+    ]
+  },
+  "name": "channel-gmail",
+  "requires": {
+    "credential": true,
+    "network": [
+      "mail.google.com"
+    ]
+  },
+  "stages": [
+    "harvest",
+    "process"
+  ],
+  "v": 2,
+  "venue": "gmail",
+  "version": "2.2.1",
+  "watch": {
+    "defaults": {
+      "schedule": {
+        "check_every": "1d",
+        "mode": "continual"
+      }
+    },
+    "dirs": {
+      "sources": "sources/email/{slug}"
+    },
+    "inputs": {
+      "mailbox": {
+        "prompt": "Which mailbox does this watch pull? (e.g. joe@example.com)",
+        "required": true
+      }
+    },
+    "note": "One watch per mailbox \u2014 the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, so this machine must be bound to a credential before intake will queue it."
+  }
+}

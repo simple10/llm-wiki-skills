@@ -1,0 +1,38 @@
+{
+  "kind": "channel",
+  "match": {
+    "custom_domains": true,
+    "hosts": [
+      "circle.so"
+    ]
+  },
+  "name": "channel-circle",
+  "requires": {
+    "credential": false,
+    "network": [
+      "circle.so"
+    ]
+  },
+  "stages": [
+    "harvest",
+    "process"
+  ],
+  "v": 2,
+  "venue": "circle",
+  "version": "1.7.1",
+  "watch": {
+    "defaults": {
+      "harvest": {
+        "access": "licensed",
+        "scope": "section"
+      },
+      "schedule": {
+        "mode": "once"
+      }
+    },
+    "dirs": {
+      "sources": "sources/courses/{slug}"
+    },
+    "note": "The URL must be the space ROOT (/c/<slug>): scope `section` is a prefix test, so a lesson URL rejects every sibling lesson as out_of_scope while the run still exits 0."
+  }
+}

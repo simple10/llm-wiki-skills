@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "name": "llm-wiki-skills",
+  "repository": "simple10/llm-wiki-skills",
+  "version": "0.1.0",
+  "description": "Skill units and venue-tactics playbooks for llm-wiki wikis: the channel units the ops CLI installs, and the playbooks its research lanes read.",
+  "license": "MIT",
+  "min_ops_version": "1.3.0",
+  "platforms": [
+    "macos",
+    "linux"
+  ],
+  "runtimes": [
+    "python"
+  ],
+  "artifacts": [
+    {
+      "type": "skill",
+      "name": "channel-circle",
+      "path": "skills/channel-circle"
+    },
+    {
+      "type": "skill",
+      "name": "channel-frameio",
+      "path": "skills/channel-frameio"
+    },
+    {
+      "type": "skill",
+      "name": "channel-gmail",
+      "path": "skills/channel-gmail"
+    },
+    {
+      "type": "skill",
+      "name": "channel-hubspot-video",
+      "path": "skills/channel-hubspot-video"
+    },
+    {
+      "type": "skill",
+      "name": "channel-notion-tasks",
+      "path": "skills/channel-notion-tasks"
+    },
+    {
+      "type": "skill",
+      "name": "channel-spotify",
+      "path": "skills/channel-spotify"
+    },
+    {
+      "type": "skill",
+      "name": "channel-substack",
+      "path": "skills/channel-substack"
+    },
+    {
+      "type": "skill",
+      "name": "channel-youtube",
+      "path": "skills/channel-youtube"
+    },
+    {
+      "type": "tactic",
+      "name": "_TEMPLATE",
+      "path": "tactics/_TEMPLATE.md"
+    },
+    {
+      "type": "tactic",
+      "name": "skool",
+      "path": "tactics/skool.md"
+    },
+    {
+      "type": "tactic",
+      "name": "web-search",
+      "path": "tactics/web-search.md"
+    },
+    {
+      "type": "tactic",
+      "name": "x",
+      "path": "tactics/x.md"
+    },
+    {
+      "type": "tactic",
+      "name": "youtube",
+      "path": "tactics/youtube.md"
+    }
+  ]
+}

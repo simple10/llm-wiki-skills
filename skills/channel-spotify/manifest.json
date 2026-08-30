@@ -1,0 +1,42 @@
+{
+  "kind": "channel",
+  "match": {
+    "hosts": [
+      "spotify.com"
+    ]
+  },
+  "name": "channel-spotify",
+  "requires": {
+    "credential": false,
+    "network": [
+      "*.spotify.com",
+      "spotify.com",
+      "itunes.apple.com"
+    ]
+  },
+  "stages": [
+    "harvest"
+  ],
+  "v": 2,
+  "venue": "spotify",
+  "version": "1.7.3",
+  "watch": {
+    "defaults": {
+      "harvest": {
+        "access": "free",
+        "scope": "page"
+      },
+      "pipeline": {
+        "assets": "download",
+        "transcript": "if-no-captions"
+      },
+      "schedule": {
+        "mode": "once"
+      }
+    },
+    "dirs": {
+      "sources": "sources/podcasts/{slug}"
+    },
+    "note": "One watch per entity URL (playlist/show/episode/album/audiobook) \u2014 scope page; enumeration happens inside the capture via the API, not by link discovery. API credentials (the `spotify` credential, per machine) are needed for complete item lists and for search; keyless capture degrades to a possibly-truncated list. Audio downloads only when the show publishes an open RSS feed; Spotify-exclusive/music/audiobook audio is captured as DRM references, never ripped. A non-URL request (\"add episode 400 of X\") resolves via scripts/spotify.py search first. Confined harvest reaches metadata and the RSS lookup; media download needs a host the unit cannot declare (the creator's own feed and enclosure hosts, different per show)."
+  }
+}
