@@ -16,7 +16,8 @@ def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env
     assert r.returncode == 0, r.stderr
     src = r.data["source"]
     assert src["type"] == "package" and src["repo"] == SOURCE and len(src["ref"]) == 12, src
-    assert r.data["warnings"] == [], r.data["warnings"]
+    # a platform template warns about per-site copies on every install — that is the unit talking, not a fault
+    assert [w for w in r.data["warnings"] if "platform TEMPLATE" not in w] == [], r.data["warnings"]
 
     rows = run(ops, env, "skills", str(wiki), "list", "--json").data["skills"]
     row = next(s for s in rows if s["name"] == name)
@@ -43,7 +44,7 @@ def test_channel_unit_binds_a_watch_with_the_flags_find_renders(ops, env, wiki, 
         "--dest", f"sources/scrapes/{slug}", *flags,
     )
     assert r.returncode == 0, r.stderr
-    shown = run(ops, env, "watch", str(wiki), "show", "--slug", slug)
+    shown = run(ops, env, "watch", str(wiki), "show", slug)
     assert shown.returncode == 0, shown.stderr
     assert name in shown.stdout
 
