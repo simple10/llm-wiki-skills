@@ -34,13 +34,14 @@ jobs:
           git config --global user.name "llm-wiki-ci"
           git config --global user.email "ci@users.noreply.github.com"
       # The ops CLI comes from llm-wiki-plugins, which is not public. The
-      # secret holds an installable spec — `llm-wiki-ops-v1 @ git+https://
-      # x-access-token:<token>@github.com/simple10/llm-wiki-plugins.git@main
-      # #subdirectory=llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1` — or
-      # a wheel URL. Without it the install tests SKIP (and say so); the
-      # script tests run regardless, since a unit script is stdlib-only.
-      # `--version` after the install: a resolvable spec that installs the
-      # wrong thing fails here, not as a wall of install-tier failures.
+      # secret is a fine-grained token with Contents: read on that repo, and
+      # nothing else. It reaches git's credential rewrite only — never a
+      # package spec or a URL uv could echo back in an error — so a failed
+      # resolve prints `github.com/simple10/llm-wiki-plugins`, not the token.
+      # Without the secret the install tests SKIP (and say so); the script
+      # tests run regardless, since a unit script is stdlib-only.
+      # `--version` after the install: a token that installs the wrong thing
+      # fails here, not as a wall of install-tier failures.
       - name: Install the ops CLI
         env:
           LLM_WIKI_OPS_INSTALL: ${{ secrets.LLM_WIKI_OPS_INSTALL }}
@@ -49,7 +50,8 @@ jobs:
             echo "::warning::LLM_WIKI_OPS_INSTALL is unset — the install harness skips; only the script tests run"
             exit 0
           fi
-          uv tool install "$LLM_WIKI_OPS_INSTALL"
+          git config --global url."https://x-access-token:${LLM_WIKI_OPS_INSTALL}@github.com/".insteadOf "https://github.com/"
+          uv tool install "llm-wiki-ops-v1 @ git+https://github.com/simple10/llm-wiki-plugins.git@main#subdirectory=llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1"
           llm-wiki-ops-v1 --version
       - name: Check the manifest
         run: python3 scripts/check-manifest.py
