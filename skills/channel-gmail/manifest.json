@@ -11,7 +11,7 @@
     "network": [
       "mail.google.com"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.67.0"
   },
   "stages": [
     "harvest",
@@ -19,7 +19,7 @@
   ],
   "v": 2,
   "venue": "gmail",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "watch": {
     "defaults": {
       "schedule": {
@@ -28,7 +28,7 @@
       }
     },
     "dirs": {
-      "sources": "sources/email/{slug}"
+      "sources": "research/channels/{slug}"
     },
     "inputs": {
       "mailbox": {
@@ -36,6 +36,6 @@
         "required": true
       }
     },
-    "note": "One watch per mailbox \u2014 the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, so this machine must be bound to a credential before intake will queue it."
+    "note": "One watch per mailbox — the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, so this machine must be bound to a credential before intake will queue it."
   }
 }
