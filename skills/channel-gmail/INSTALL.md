@@ -21,9 +21,14 @@ Customize the wiki's copy now, while the operator is present:
 4. One watch per mailbox. Ask a slug and a description for each, then:
    `llm-wiki-ops watch add --slug <slug> --description "<whose mailbox>"
    --skill channel-gmail --inputs mailbox=<who>@example.com
-   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its notes
-   under `sources/email/<slug>/`; the watch's own `_raw/<slug>/` is
-   machine-local by construction, so there is nothing else to seed.
+   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its daily
+   ledgers under `research/channels/<slug>/` — the ledger route, outside the
+   searchable corpus and the curation lifecycle (a mailbox is a stream, not
+   a set of pages; the wiki's synthesize policy is how its substance reaches
+   `wiki/`). The watch's own `_raw/<slug>/` is machine-local by
+   construction, so there is nothing else to seed. A watch added before this
+   unit's 2.3.0 keeps its `sources/email/<slug>/` literal — re-point it with
+   `watch add --slug <slug> --dest research/channels/<slug>` if wanted.
 5. **Bind the credential on each pulling machine**, per watch:
    `llm-wiki-ops credential bind <slug> <credential>`. Connector auth is
    session-level on that machine, per mailbox; a watch with no binding is

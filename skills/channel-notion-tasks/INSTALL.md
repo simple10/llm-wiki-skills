@@ -21,8 +21,13 @@ Customize the wiki's copy now, while the operator is present:
 4. Ask a slug and a description, then point the watch at the unit:
    `llm-wiki-ops watch add --slug notion-tasks --description "<what this is>"
    --skill channel-notion-tasks --inputs workspace=<workspace>
-   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its notes
-   under `sources/tasks/<slug>/`; the watch's own `_raw/<slug>/` is already
-   machine-local by construction, so there is nothing else to seed. Remind
+   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its daily
+   ledgers under `research/channels/<slug>/` — the ledger route, outside the
+   searchable corpus and the curation lifecycle (tasks are a stream; the
+   wiki's synthesize policy is how their substance reaches `wiki/`). The
+   watch's own `_raw/<slug>/` is already machine-local by construction, so
+   there is nothing else to seed. A watch added before this unit's 1.7.0
+   keeps its `sources/tasks/<slug>/` literal — re-point it with
+   `watch add --slug <slug> --dest research/channels/<slug>` if wanted. Remind
    the operator that connector auth is session-level on the pulling
    machine.
