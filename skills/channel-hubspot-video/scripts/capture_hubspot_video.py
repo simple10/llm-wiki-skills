@@ -7,7 +7,8 @@
 
 Platform: HubSpot CMS + HubSpot Video, which is Mux underneath. Not tied to
 any one site — every HubSpot customer runs its own domain, which is why the
-unit matches on `custom_domains` and fingerprints rather than a host list.
+unit declares no `requires.network` host: it is reached by keywords and
+fingerprints, never by a host list.
 
 Why this exists: a plain HTTP fetch yields NO player. The video iframe is lazy
 — the markup carries `data-hsv-src`, never `src`, and HubSpot's script swaps it

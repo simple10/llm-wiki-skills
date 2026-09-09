@@ -21,13 +21,11 @@
   "version": "1.4.2",
   "watch": {
     "defaults": {
+      "every": "once",
       "harvest": {
         "access": "free",
         "assets": "download",
         "scope": "section"
-      },
-      "schedule": {
-        "every": "once"
       },
       "transcribe": {
         "when": "always"

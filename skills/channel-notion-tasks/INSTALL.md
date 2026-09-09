@@ -12,7 +12,7 @@ Customize the wiki's copy now, while the operator is present:
    with the lookback window for the FIRST pull (default 14d) and any
    statuses to exclude (e.g. Archived). These belong in the unit, not the
    watch entry.
-2. Ask the pull cadence (default daily) — that becomes `schedule.every` on
+2. Ask the pull cadence (default daily) — that becomes `every` on
    the watch.
 3. Diverged is the point: writing the operator's databases and filters into
    SKILL.md makes `skills list` report the unit `diverged`. That is
