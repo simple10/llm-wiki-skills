@@ -1,15 +1,18 @@
 {
+  "keywords": [
+    "community",
+    "course",
+    "courses",
+    "lesson",
+    "lessons",
+    "space"
+  ],
   "kind": "channel",
-  "match": {
-    "custom_domains": true,
-    "hosts": [
-      "circle.so"
-    ]
-  },
   "name": "channel-circle",
   "requires": {
     "credential": false,
     "network": [
+      "*.circle.so",
       "circle.so"
     ],
     "ops": ">=1.2"
@@ -28,12 +31,10 @@
         "scope": "section"
       },
       "schedule": {
-        "mode": "once"
+        "every": "once"
       }
     },
-    "dirs": {
-      "sources": "sources/courses/{slug}"
-    },
+    "dest": "sources/courses/{slug}",
     "note": "The URL must be the space ROOT (/c/<slug>): scope `section` is a prefix test, so a lesson URL rejects every sibling lesson as out_of_scope while the run still exits 0."
   }
 }

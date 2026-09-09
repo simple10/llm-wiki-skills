@@ -1,10 +1,12 @@
 {
+  "keywords": [
+    "mail",
+    "email",
+    "mailbox",
+    "inbox",
+    "google"
+  ],
   "kind": "channel",
-  "match": {
-    "hosts": [
-      "mail.google.com"
-    ]
-  },
   "name": "channel-gmail",
   "requires": {
     "credential": true,
@@ -23,13 +25,10 @@
   "watch": {
     "defaults": {
       "schedule": {
-        "check_every": "1d",
-        "mode": "continual"
+        "every": "1d"
       }
     },
-    "dirs": {
-      "sources": "research/channels/{slug}"
-    },
+    "dest": "research/channels/{slug}",
     "inputs": {
       "mailbox": {
         "prompt": "Which mailbox does this watch pull? (e.g. joe@example.com)",

@@ -1,4 +1,11 @@
 {
+  "keywords": [
+    "notion",
+    "task",
+    "tasks",
+    "todo",
+    "workspace"
+  ],
   "kind": "channel",
   "name": "channel-notion-tasks",
   "requires": {
@@ -15,13 +22,10 @@
   "watch": {
     "defaults": {
       "schedule": {
-        "check_every": "1d",
-        "mode": "continual"
+        "every": "1d"
       }
     },
-    "dirs": {
-      "sources": "research/channels/{slug}"
-    },
+    "dest": "research/channels/{slug}",
     "inputs": {
       "workspace": {
         "prompt": "Which Notion workspace does this watch pull?",

@@ -13,10 +13,9 @@ already carries the resolved config (scope, assets, transcript policy) — honor
 it; never re-ask the operator.
 
 This unit is **platform-general, not site-specific.** Every HubSpot CMS site
-runs on its own domain and themes its own markup, so `match.hosts` is empty and
-`custom_domains: true` — `skills find` reports this unit under `possible[]` for
-an unmatched host, and the *Fingerprints* section below is how you settle
-whether it applies. Once installed, the copy is **wiki-owned**: put the site's
+runs on its own domain and themes its own markup, so `requires.network` is
+empty and `skills search` reaches this unit by its keywords, never by host;
+the *Fingerprints* section below is how you settle whether it applies. Once installed, the copy is **wiki-owned**: put the site's
 own selectors, URL map and exclusions in it, and `skills list` reporting it as
 diverged is provenance, not a problem.
 
