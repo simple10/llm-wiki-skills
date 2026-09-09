@@ -12,7 +12,7 @@ Customize the wiki's copy now, while the operator is present:
    with the lookback window for the FIRST pull (default 14d) and any
    statuses to exclude (e.g. Archived). These belong in the unit, not the
    watch entry.
-2. Ask the pull cadence (default daily) — that becomes `--check-every` on
+2. Ask the pull cadence (default daily) — that becomes `schedule.every` on
    the watch.
 3. Diverged is the point: writing the operator's databases and filters into
    SKILL.md makes `skills list` report the unit `diverged`. That is
@@ -21,7 +21,7 @@ Customize the wiki's copy now, while the operator is present:
 4. Ask a slug and a description, then point the watch at the unit:
    `llm-wiki-ops watch add --slug notion-tasks --description "<what this is>"
    --skill channel-notion-tasks --inputs workspace=<workspace>
-   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its daily
+   [--check-every 1d]`. The manifest's `watch.dest` puts its daily
    ledgers under `research/channels/<slug>/` — the ledger route, outside the
    searchable corpus and the curation lifecycle (tasks are a stream; the
    wiki's synthesize policy is how their substance reaches `wiki/`). The

@@ -1,15 +1,18 @@
 {
+  "keywords": [
+    "frame",
+    "share",
+    "guest",
+    "video",
+    "assets",
+    "deck"
+  ],
   "kind": "channel",
-  "match": {
-    "hosts": [
-      "frame.io"
-    ]
-  },
   "name": "channel-frameio",
-  "process_entry": "scripts/frameio_doc_note.py",
   "requires": {
     "credential": false,
     "network": [
+      "*.frame.io",
       "frame.io"
     ],
     "ops": ">=1.62"
@@ -27,12 +30,10 @@
         "scope": "domain"
       },
       "schedule": {
-        "mode": "once"
+        "every": "once"
       }
     },
-    "dirs": {
-      "sources": "sources/courses/{slug}"
-    },
-    "note": "`--scope domain` is MANDATORY: the host's intake applies the watch's scope prefix to every leaf this unit discovers, `page` rejects all of them while the run still exits 0, and `section` rejects them too whenever the watch URL is a folder inside the share rather than its root."
+    "dest": "sources/courses/{slug}",
+    "note": "`harvest.scope: domain` is MANDATORY: the host's intake applies the watch's scope prefix to every leaf this unit discovers, `page` rejects all of them while the run still exits 0, and `section` rejects them too whenever the watch URL is a folder inside the share rather than its root."
   }
 }

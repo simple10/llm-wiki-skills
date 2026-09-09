@@ -19,10 +19,10 @@ turns site-specific the moment you customize it.
 2. **Confirm the platform** against the SKILL.md Fingerprints section:
    `hubfs/` / `hs-fs/hubfs/` asset paths, `data-hsv-src` iframes, `_hcms/`
    in robots.txt, `?hsLang=` params. A miss means this is not the unit.
-3. **Pin the match.** In the installed copy's `manifest.json` set
-   `match.hosts` to the site's real domain and `custom_domains` to `false`
-   — from then on `skills find <domain>` answers from the wiki's copy
-   directly instead of reporting a "possible" template.
+3. **Pin the host.** In the installed copy's `manifest.json` add the
+   site's real domain to `requires.network` — from then on
+   `skills search <domain>` answers from the wiki's copy directly, and the
+   slice is granted that host.
 4. **First capture, then selectors.** Run one capture, read the RENDERED
    `page.html`, and fill the manifest's `extract` block (`content_selector`,
    `drop_selectors`, `title_selector`) per the SKILL.md's "Content

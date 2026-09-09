@@ -12,7 +12,7 @@ Customize the wiki's copy now, while the operator is present:
    mechanical filters — Gmail labels and senders to exclude beyond the
    defaults. They go into the installed SKILL.md's `## Stages` section, and
    they are the WIKI's, applying to every mailbox this unit pulls.
-2. Ask the pull cadence (default daily) — that becomes `check_every` on the
+2. Ask the pull cadence (default daily) — that becomes `schedule.every` on the
    watch; the manifest pre-answers `1d`.
 3. Diverged is the point: writing the operator's filters into `## Stages`
    makes `skills list` report the unit `diverged`. That is configuration the
@@ -21,7 +21,7 @@ Customize the wiki's copy now, while the operator is present:
 4. One watch per mailbox. Ask a slug and a description for each, then:
    `llm-wiki-ops watch add --slug <slug> --description "<whose mailbox>"
    --skill channel-gmail --inputs mailbox=<who>@example.com
-   [--check-every 1d]`. The manifest's `watch.dirs.sources` puts its daily
+   [--check-every 1d]`. The manifest's `watch.dest` puts its daily
    ledgers under `research/channels/<slug>/` — the ledger route, outside the
    searchable corpus and the curation lifecycle (a mailbox is a stream, not
    a set of pages; the wiki's synthesize policy is how its substance reaches

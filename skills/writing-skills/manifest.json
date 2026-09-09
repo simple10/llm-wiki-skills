@@ -1,4 +1,11 @@
 {
+  "keywords": [
+    "skill",
+    "unit",
+    "author",
+    "customize",
+    "diverged"
+  ],
   "kind": "tool",
   "name": "writing-skills",
   "requires": {

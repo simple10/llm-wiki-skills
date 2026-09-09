@@ -14,7 +14,7 @@ is present:
    custom domain fronting it) and record it in the installed SKILL.md under
    a "Watched communities" heading — the skill body is wiki-owned. For a
    custom-domain community, also add that host to the installed copy's
-   `manifest.json` `match.hosts` (keep `circle.so` and `custom_domains`) so
+   `manifest.json` `requires.network` (keep `circle.so`) so
    `skills find <domain>` answers from the wiki's copy directly.
    Only if a community later needs genuinely different customization than
    the others: install a separate copy for it —

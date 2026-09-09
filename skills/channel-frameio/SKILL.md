@@ -197,7 +197,7 @@ is simply absent — not wrong.
   clicking, no API. Leaf cards prefix a duration or page-count badge
   before the real filename; prefer the line ending in a file extension.
 - Enumerate once up front; the tree does not change mid-run for a
-  `mode: once` share.
+  `every: once` share.
 
 ### Access / paywall
 

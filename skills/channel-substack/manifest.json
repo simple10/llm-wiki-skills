@@ -1,15 +1,17 @@
 {
+  "keywords": [
+    "newsletter",
+    "newsletters",
+    "archive",
+    "posts",
+    "paywall"
+  ],
   "kind": "channel",
-  "match": {
-    "custom_domains": true,
-    "hosts": [
-      "substack.com"
-    ]
-  },
   "name": "channel-substack",
   "requires": {
     "credential": false,
     "network": [
+      "*.substack.com",
       "substack.com"
     ],
     "ops": ">=1.62"
@@ -27,12 +29,10 @@
         "scope": "domain"
       },
       "schedule": {
-        "mode": "continual"
+        "every": "1d"
       }
     },
-    "dirs": {
-      "sources": "sources/newsletters/{slug}"
-    },
-    "note": "Point it at the archive URL. `--max-age` and `--access free|licensed` are the operator's call."
+    "dest": "sources/newsletters/{slug}",
+    "note": "Point it at the archive URL. `harvest.max_age` and `harvest.access` (free|licensed) are the operator's call."
   }
 }

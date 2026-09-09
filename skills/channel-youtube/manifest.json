@@ -1,13 +1,14 @@
 {
+  "keywords": [
+    "video",
+    "videos",
+    "channel",
+    "playlist",
+    "captions",
+    "transcript"
+  ],
   "kind": "channel",
-  "match": {
-    "hosts": [
-      "youtube.com",
-      "youtu.be"
-    ]
-  },
   "name": "channel-youtube",
-  "process_entry": "scripts/youtube_note.py",
   "requires": {
     "credential": false,
     "network": [
@@ -29,18 +30,14 @@
   "watch": {
     "defaults": {
       "harvest": {
+        "assets": "reference",
         "scope": "page"
       },
-      "pipeline": {
-        "assets": "reference"
-      },
       "schedule": {
-        "mode": "once"
+        "every": "once"
       }
     },
-    "dirs": {
-      "sources": "sources/youtube/{slug}"
-    },
+    "dest": "sources/youtube/{slug}",
     "note": "Single videos are the proven shape; channel/playlist enumeration is untested (see the SKILL.md's Discovery)."
   }
 }
