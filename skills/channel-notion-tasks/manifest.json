@@ -21,9 +21,7 @@
   "version": "1.7.0",
   "watch": {
     "defaults": {
-      "schedule": {
-        "every": "1d"
-      }
+      "every": "1d"
     },
     "dest": "research/channels/{slug}",
     "inputs": {

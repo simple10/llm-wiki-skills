@@ -25,11 +25,9 @@
   "version": "1.9.3",
   "watch": {
     "defaults": {
+      "every": "1d",
       "harvest": {
         "scope": "domain"
-      },
-      "schedule": {
-        "every": "1d"
       }
     },
     "dest": "sources/newsletters/{slug}",

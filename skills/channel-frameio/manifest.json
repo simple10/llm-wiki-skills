@@ -26,11 +26,9 @@
   "version": "1.14.4",
   "watch": {
     "defaults": {
+      "every": "once",
       "harvest": {
         "scope": "domain"
-      },
-      "schedule": {
-        "every": "once"
       }
     },
     "dest": "sources/courses/{slug}",

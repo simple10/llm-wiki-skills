@@ -28,13 +28,11 @@
   "version": "1.7.4",
   "watch": {
     "defaults": {
+      "every": "once",
       "harvest": {
         "access": "free",
         "assets": "download",
         "scope": "page"
-      },
-      "schedule": {
-        "every": "once"
       },
       "transcribe": {
         "when": "if-no-captions"

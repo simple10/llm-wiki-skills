@@ -26,12 +26,10 @@
   "version": "1.7.1",
   "watch": {
     "defaults": {
+      "every": "once",
       "harvest": {
         "access": "licensed",
         "scope": "section"
-      },
-      "schedule": {
-        "every": "once"
       }
     },
     "dest": "sources/courses/{slug}",

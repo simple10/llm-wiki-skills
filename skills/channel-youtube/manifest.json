@@ -29,12 +29,10 @@
   "version": "1.10.2",
   "watch": {
     "defaults": {
+      "every": "once",
       "harvest": {
         "assets": "reference",
         "scope": "page"
-      },
-      "schedule": {
-        "every": "once"
       }
     },
     "dest": "sources/youtube/{slug}",

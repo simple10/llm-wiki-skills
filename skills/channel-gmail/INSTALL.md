@@ -12,7 +12,7 @@ Customize the wiki's copy now, while the operator is present:
    mechanical filters — Gmail labels and senders to exclude beyond the
    defaults. They go into the installed SKILL.md's `## Stages` section, and
    they are the WIKI's, applying to every mailbox this unit pulls.
-2. Ask the pull cadence (default daily) — that becomes `schedule.every` on the
+2. Ask the pull cadence (default daily) — that becomes `every` on the
    watch; the manifest pre-answers `1d`.
 3. Diverged is the point: writing the operator's filters into `## Stages`
    makes `skills list` report the unit `diverged`. That is configuration the
