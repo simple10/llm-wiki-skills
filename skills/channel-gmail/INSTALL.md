@@ -31,9 +31,11 @@ Customize the wiki's copy now, while the operator is present:
    searchable corpus and the curation lifecycle (a mailbox is a stream, not
    a set of pages; the wiki's synthesize policy is how its substance reaches
    `wiki/`). The watch's own `_raw/<slug>/` is machine-local by
-   construction, so there is nothing else to seed. `dest` is fixed at `add` —
-   `pipeline edit` refuses it — so a job declared before this unit's 2.3.0
-   keeps its `sources/email/<slug>/` literal.
+   construction, so there is nothing else to seed. A job declared before this
+   unit's 2.3.0 keeps its `sources/email/<slug>/` literal. To re-point it:
+   `pipeline edit` refuses `dest`, but re-running `add` with the same target and slug moves it and
+   keeps every other key:
+   `llm-wiki-ops pipeline add gmail slug=<slug> dest=research/channels/<slug>`.
 5. **Bind the credential on each pulling machine**, per watch:
    `llm-wiki-ops credential bind <slug> <credential>` — the credential must
    already be set on that machine (`llm-wiki-ops credential set <credential>`,

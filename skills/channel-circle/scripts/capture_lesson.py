@@ -65,19 +65,43 @@ STREAM_RE = re.compile(
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
-# The front door's own re-entry guard. It is still set in here, because this
-# script is a grandchild of the front door that ran it, and a nested call that
-# carries it is refused (127) as a loop. This one is not a loop: it is a new
-# command, so it starts without the guard.
-REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. The re-entry guard is still set in here — this script is the front
+# door's grandchild — and a call carrying it is refused (127) as a loop, which
+# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
+# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
 
 
 def _ops(root, *args):
-    """One front-door command, bound to the wiki by running from its root.
-    An `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
-    `OSError`, which the caller already reports as an unreachable store."""
-    env = {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
-    return subprocess.run([OPS, *args], cwd=str(root), env=env, capture_output=True, text=True)
+    """One front-door command, bound to the wiki by running from its root,
+    answered as JSON — the CLI's plain answer is prose for a person. An
+    `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
+    `OSError`, which the caller reports as an unreachable store."""
+    env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+    return subprocess.run([OPS, "--json", *args], cwd=str(root), env=env, capture_output=True, text=True)
+
+
+def profile_dir(root, domain):
+    """`(path, None)` for a profile a login has minted; else `(None, (kind,
+    why))`, kind `absent` or `unreachable`.
+
+    `credential profile-dir` exits 0 whether or not the directory exists —
+    it reports, and creates nothing — so `exists` is the answer, never the
+    exit code. Launching a persistent context on a path that is not there
+    would MAKE it, and run the whole capture logged out without a word."""
+    proc = _ops(root, "credential", "profile-dir", domain)
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    if proc.returncode != 0 or not isinstance(answer, dict) or not answer.get("path"):
+        detail = answer.get("error") if isinstance(answer, dict) else None
+        detail = detail or (proc.stderr or proc.stdout or "").strip()
+        return None, ("unreachable", f"credential store unreachable ({proc.returncode}): {detail[:200]}")
+    if answer.get("exists") is not True:
+        return None, ("absent", f"no auth profile for {domain}")
+    return Path(answer["path"]), None
 
 
 def domain_of(url: str) -> str:
@@ -126,24 +150,16 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     try:
-        proc = _ops(args.root, "credential", "profile-dir", domain)
+        profile, refused = profile_dir(args.root, domain)
     except OSError as e:
         print(f"error: credential store unreachable ({e.__class__.__name__}: {e})", file=sys.stderr)
         return 5
-    if proc.returncode == 1:
-        print(
-            f"error: no auth profile for {domain}. Run the plugin's login "
-            f"helper: llm-wiki-ops run scripts/login.py {domain}",
-            file=sys.stderr,
-        )
-        return 2
-    if proc.returncode != 0:
-        print(
-            f"error: credential store unreachable ({proc.returncode}): {(proc.stderr or '').strip()[:200]}",
-            file=sys.stderr,
-        )
-        return 5
-    profile_dir = Path(proc.stdout.strip())
+    if refused:
+        kind, why = refused
+        if kind == "absent":
+            why += f". Run the plugin's login helper: llm-wiki-ops run scripts/login.py {domain}"
+        print(f"error: {why}", file=sys.stderr)
+        return 2 if kind == "absent" else 5
 
     net = []
 
@@ -154,9 +170,9 @@ def main() -> int:
             ignore_default_args=["--enable-automation"],
         )
         try:
-            context = p.chromium.launch_persistent_context(str(profile_dir), channel="chrome", **launch_kw)
+            context = p.chromium.launch_persistent_context(str(profile), channel="chrome", **launch_kw)
         except Exception:
-            context = p.chromium.launch_persistent_context(str(profile_dir), **launch_kw)
+            context = p.chromium.launch_persistent_context(str(profile), **launch_kw)
 
         page = context.pages[0] if context.pages else context.new_page()
         page.on(

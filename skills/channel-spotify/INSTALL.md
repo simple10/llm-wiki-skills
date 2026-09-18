@@ -30,7 +30,6 @@ Customize and set up now, while the operator is present:
    `every=once`, `harvest.scope=page` (the capture enumerates the entity's
    items itself — there is no link crawling), `harvest.assets=download` and a
    `dest` of `sources/podcasts/<slug>`; pass `dest=` to land it elsewhere.
-   `dest` is fixed at `add`.
 4. **Set audio expectations**: downloads happen only when the content is
    openly distributed (podcast episodes matched to their show's public
    RSS feed). Music tracks and Spotify-exclusive audio are captured as

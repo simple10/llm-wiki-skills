@@ -24,4 +24,4 @@ Customize the wiki's copy now, while the operator is present:
    `sources/newsletters/<slug>`. **Scope MUST stay `domain`**: an archive is
    every post under the newsletter's host, so never pass `harvest.scope=page`
    for this unit. `llm-wiki-ops pipeline edit <slug> every=<period>` changes
-   the cadence later; `dest` is fixed at `add`.
+   the cadence later.

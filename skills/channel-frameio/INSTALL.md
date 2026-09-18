@@ -26,4 +26,5 @@ Customize the wiki's copy now, while the operator is present:
    `every=once` and `harvest.scope=domain`. **Scope MUST stay `domain`**: a
    share's leaves sit under the share host, not under the watched URL, so
    `page` and (for a FOLDER inside the share) `section` both exclude them.
-   `dest` is fixed at `add` — name it for the content now.
+   Name `dest` for the content now: moving it later means re-running this
+   `add` with a new `dest=`, since `pipeline edit` refuses that key.

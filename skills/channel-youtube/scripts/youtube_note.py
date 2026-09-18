@@ -56,18 +56,19 @@ from pathlib import Path
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
-# The front door's own re-entry guard. It is still set in here, because this
-# script is a grandchild of the front door that ran it, and a nested call that
-# carries it is refused (127) as a loop. This one is not a loop: it is a new
-# command, so it starts without the guard.
-REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. The re-entry guard is still set in here — this script is the front
+# door's grandchild — and a call carrying it is refused (127) as a loop, which
+# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
+# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
 
 # An address `run` serves out of the plugin, not a path in this wiki.
 FORMATTER = "skills/process/scripts/format_transcript.py"
 
 
 def _front_door_env():
-    return {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
+    return {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
 
 URL_RE = re.compile(r"(?<![\(\]])\bhttps?://[^\s)]+")
 TS_LINE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—:]?\s*(.+)$")
@@ -212,7 +213,7 @@ def main():
         "--format-transcript",
         default=None,
         metavar="PATH",
-        help="run this format_transcript.py directly instead of reaching the plugin's copy through the wiki shim",
+        help="run this format_transcript.py directly instead of reaching the plugin's copy through the front door",
     )
     args = ap.parse_args()
 

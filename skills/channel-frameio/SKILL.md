@@ -35,8 +35,8 @@ watch rejects every leaf too. Only `domain` holds for every share URL the
 enumerator accepts. **Where the rejection shows up**: intake runs host-side,
 so the signal is in `harvest_apply.py apply`'s output — the `reasons`
 on your discovered row. Check the watch's scope up front rather than waiting
-for it, and flag it in your run report. The install notes and the watch
-example below both carry `--scope domain`.
+for it, and flag it in your run report. `harvest.scope=domain` is this unit's
+shipped default (`watch.defaults`); never override it.
 
 ## Stages
 

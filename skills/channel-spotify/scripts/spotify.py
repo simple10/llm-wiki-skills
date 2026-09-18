@@ -44,7 +44,7 @@ History:
               audiobook playlist, which turned out to be episodes of the
               openly-distributed show "The Game with Alex Hormozi").
   2026-08-04  Auth resolves through the wiki's credential store (`credential
-              get|set spotify` via the shim); the token is held in memory
+              get|set spotify` via the front door); the token is held in memory
               for the process lifetime, never cached to disk.
 """
 
@@ -102,19 +102,31 @@ def wiki_root(start=None):
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
-# The front door's own re-entry guard. It is still set in here, because this
-# script is a grandchild of the front door that ran it, and a nested call that
-# carries it is refused (127) as a loop. This one is not a loop: it is a new
-# command, so it starts without the guard.
-REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. The re-entry guard is still set in here — this script is the front
+# door's grandchild — and a call carrying it is refused (127) as a loop, which
+# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
+# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
 
 
 def _ops(root, *args, **kw):
-    """One front-door command, bound to the wiki by running from its root.
-    An `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
-    `OSError`, which every caller already reports as an unreachable store."""
-    env = {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
-    return subprocess.run([OPS, *args], cwd=str(root), env=env, capture_output=True, **kw)
+    """One front-door command, bound to the wiki by running from its root,
+    answered as JSON — the CLI's plain answer is prose for a person. Returns
+    `(exit code, answer)`, the answer always a dict: a failure that printed
+    no JSON object is `{"error": <what it did print>}`. An `llm-wiki-ops` that
+    is not on PATH raises `FileNotFoundError` — an `OSError`, which every
+    caller reports as an unreachable store."""
+    env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+    proc = subprocess.run([OPS, "--json", *args], cwd=str(root), env=env, capture_output=True, **kw)
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict):
+        said = (proc.stderr or proc.stdout).decode(errors="replace").strip()[:200]
+        answer = {"error": said} if proc.returncode else {}
+    return proc.returncode, answer
 
 
 def load_auth(root):
@@ -130,15 +142,18 @@ def load_auth(root):
     if root is None:  # outside a wiki there is no store to reach — degrade keyless
         return {}
     try:
-        proc = _ops(root, "credential", "get", "spotify")
+        rc, answer = _ops(root, "credential", "get", "spotify")
     except OSError as e:
         die(f"credential store unreachable ({e.__class__.__name__}: {e})")
-    if proc.returncode == 1:  # absent — degrade keyless
-        return {}
-    if proc.returncode != 0:  # 3 = unreadable, 2 = usage: real errors
-        die(f"credential lookup failed ({proc.returncode}): {proc.stderr.decode()[:200]}")
+    if rc != 0:
+        # Exit 1 is every "could not answer" — no wiki, an unreadable store —
+        # and only ONE of them is the documented keyless degradation, so it is
+        # told apart by what the CLI said. Anything else is a real error.
+        if str(answer.get("error", "")).startswith("no credential "):
+            return {}
+        die(f"credential lookup failed ({rc}): {answer.get('error', '')}")
     try:
-        data = json.loads(proc.stdout)
+        data = json.loads(answer.get("value") or "")  # the payload `auth` stored, as the text it was
     except ValueError as e:
         die(f"credential store returned invalid JSON: {e}")
     if not isinstance(data, dict):
@@ -622,11 +637,11 @@ def cmd_auth(a):
     if root is None:
         die("no wiki found above the current directory — run from the wiki root")
     try:
-        proc = _ops(root, "credential", "set", "spotify", input=json.dumps(data, indent=1).encode())
+        rc, answer = _ops(root, "credential", "set", "spotify", input=json.dumps(data, indent=1).encode())
     except OSError as e:
         die(f"credential store unreachable ({e.__class__.__name__}: {e})")
-    if proc.returncode != 0:
-        die(f"credential store failed ({proc.returncode}): {proc.stderr.decode()[:200]}")
+    if rc != 0:
+        die(f"credential store failed ({rc}): {answer.get('error', '')}")
     print(json.dumps({"stored": "spotify", "token_ok": bool(get_token(root))}))
 
 

@@ -118,7 +118,7 @@ column as is; that is display, not frontmatter.
 
 ```
 llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py capture <url> \
-    --capture-dir <job.capture_dir>                              # writes:
+    --capture-dir <capture_dir>                                  # writes:
 #   meta.json    entity + items + feeds + drm_refs + counts
 #   items.json   normalized item list
 #   page.md      ready for stage 2 (no HTML exists for this venue)

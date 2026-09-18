@@ -58,6 +58,9 @@ jobs:
           fi
           git config --global url."https://x-access-token:${LLM_WIKI_OPS_INSTALL}@github.com/".insteadOf "https://github.com/"
           plugins="$RUNNER_TEMP/llm-wiki-plugins"
+          # `main`, unpinned, on purpose: the docs and the harness are checked
+          # against the CLI as it IS, so a verb or flag the plugins change turns
+          # this repo red the day it lands rather than the day someone installs.
           git clone --quiet --depth 1 --branch main https://github.com/simple10/llm-wiki-plugins "$plugins"
           project="$plugins/llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1"
           uv run --project "$project" llm-wiki-ops-v1 --version

@@ -83,7 +83,7 @@ looking correct. Connector access is session-level on the pulling machine
 (`/llm-wiki:add` says so when it wires the channel up); a pull that cannot
 reach it should fail and report, never improvise a different source.
 
-This copy is wiki-owned, and **diverged is the intended state**: installing
+This copy is wiki-owned, and **customized is the intended state**: installing
 the unit writes the operator's database ids, lookback, and filters straight
 into this file, so `skills ls` reporting it `customized` is configuration
 the wiki owns, not drift to repair. Improve the filters and junk rules as

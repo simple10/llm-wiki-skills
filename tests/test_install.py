@@ -16,6 +16,16 @@ CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and u
 VTT = "WEBVTT\n\n00:00:00.080 --> 00:00:02.629\nAt its peak, it grew\n"
 
 
+def _enabled(ops, env, wiki, name):
+    """The unit, installed and enabled in the session wiki — by whichever case
+    gets there first. Both verbs are no-ops over an identical copy, so a case
+    that needs the unit asks for it rather than leaning on the install case
+    having run (`-k`, `--lf`, a shuffled or split run)."""
+    for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
+        r = run(ops, env, "--json", *verb, at(wiki))
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env, wiki, name):
     r = run(ops, env, "--json", "skills", "install", name, at(wiki))
@@ -23,14 +33,13 @@ def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env
     got = r.data
     assert got["package"] == SOURCE and len(got["ref"]) == 12, got
     assert got["version"] == unit_manifest(name)["version"], got
-    # a platform template warns about per-site copies on every install — that is the unit talking, not a fault
-    assert [w for w in got["warnings"] if "platform TEMPLATE" not in w] == [], got["warnings"]
+    assert got["warnings"] == [], got["warnings"]
 
     rows = run(ops, env, "--json", "skills", "ls", name, at(wiki)).data["skills"]
     row = next(s for s in rows if s["name"] == name)
     assert row["from"].startswith(f"{SOURCE}@"), row
     assert not row["customized"] and not row["drifted"], row
-    assert [w for w in row["warnings"] if "platform TEMPLATE" not in w] == [], row
+    assert row["warnings"] == [], row
 
     # `--confirm`: enable decides what this machine loads, so it refuses unattended without it
     r = run(ops, env, "--json", "skills", "enable", name, "--confirm", at(wiki))
@@ -44,6 +53,7 @@ def test_channel_unit_routes_a_job_by_its_own_manifest(ops, env, wiki, name):
     template routes the job and its `watch.defaults` seed the record. This is
     the contract the unit manifest exists for (what `match.hosts` plus
     `skills find`'s rendered flags used to carry)."""
+    _enabled(ops, env, wiki, name)  # `add` reads `dest` and the defaults off the ENABLED copy
     watch = unit_manifest(name)["watch"]
     slug = f"harness-{name}"
     # `research/channels/…` is the ledger route, and only a channel's pull lands
@@ -86,6 +96,14 @@ def _addresses_run_serves_from_the_plugin():
     return sorted(found)
 
 
+def test_the_address_scan_finds_the_one_it_was_written_for():
+    """A scan that finds nothing parametrizes nothing, and pytest reports that
+    as one quiet skip — how #6's `match.hosts` case sat dead. The formatter is
+    the known member: spell `FORMATTER` some way the pattern cannot read and
+    this fails, rather than the case below vanishing."""
+    assert ("channel-youtube", "skills/process/scripts/format_transcript.py") in _addresses_run_serves_from_the_plugin()
+
+
 @pytest.mark.parametrize(("unit", "rel"), _addresses_run_serves_from_the_plugin())
 def test_the_plugin_script_a_unit_runs_is_one_run_serves(ops, env, wiki, tmp_path, unit, rel):
     """A unit reaches plugin machinery by ADDRESS, and the plugin is free to
@@ -93,7 +111,9 @@ def test_the_plugin_script_a_unit_runs_is_one_run_serves(ops, env, wiki, tmp_pat
     `skills/process/scripts/…` and every youtube note aborted at its
     transcript, with each test here still green behind `--format-transcript`.
     `run` refuses an address it does not serve with exit 2, before anything
-    runs — so any other exit means the address resolved."""
+    runs — so any other exit means the address resolved. That is ALL this
+    asserts: a script that resolves and then crashes is its own tests' to
+    catch, not this one's."""
     vtt = tmp_path / "a.en.vtt"
     vtt.write_text(VTT, encoding="utf-8")
     r = run(ops, env, "run", rel, str(vtt), cwd=wiki)
@@ -102,8 +122,9 @@ def test_the_plugin_script_a_unit_runs_is_one_run_serves(ops, env, wiki, tmp_pat
 
 @pytest.mark.parametrize("name", TACTICS)
 def test_tactic_installs_or_is_already_seeded_and_lists_undiverged(ops, env, wiki, tactics_group, name):
-    # Spelled the way `skills` is today; nobody has run this against a ported
-    # group, so expect to correct the shape the day the skip above lifts.
+    # UNVERIFIED BODY. Spelled the way `skills` is today; nobody has run this
+    # against a ported group. The day the `tactics_group` skip lifts, a failure
+    # here most likely means this guess is wrong, not that the package is.
     r = run(ops, env, "--json", "tactics", "install", name, at(wiki)) if name != "_TEMPLATE" else None
     if r is not None:
         assert r.returncode == 0, r.stderr
