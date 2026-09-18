@@ -21,8 +21,8 @@ render, then dump:
   - meta.json         title, final_url, canonical, discovered sidebar links
 
 It does NOT write page.md, capture.json, or download assets — the caller
-runs to_markdown.py and assets.py on the outputs (keeps this script pure
-I/O).
+runs this unit's `to_markdown.py` and the harvest skill's `assets.py` on the
+outputs (keeps this script pure I/O).
 
 Usage:
   uv run capture_lesson.py <root> <lesson-url> --out <dir> \

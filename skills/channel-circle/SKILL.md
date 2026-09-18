@@ -64,8 +64,10 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/capture_lesson.py <root> <les
   login helper (below), not retry the capture. Exit 5 = the credential
   store itself could not be reached (denied/unreadable) — a real failure,
   not "no profile yet"; re-running the login helper will not fix it.
-- The script is pure capture I/O: run `to_markdown.py` and `assets.py` from
-  the plugin's scripts on its outputs as usual.
+- The script is pure capture I/O. Convert its `page.html` with this unit's own
+  converter — `llm-wiki-ops run ops/skills/channel-circle/scripts/to_markdown.py <capture_dir>/page.html`
+  writes `page.md` beside it — and detect and download assets with the
+  harvest skill's `llm-wiki-ops run skills/harvest/scripts/assets.py`.
 
 ## Auth (one-time, per domain)
 
