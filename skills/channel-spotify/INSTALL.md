@@ -2,7 +2,7 @@
 
 ## Customizing this unit
 
-Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+Install this package's `writing-skills` first — `llm-wiki-ops skills install simple10/llm-wiki-skills@writing-skills` (over an unedited copy this just refreshes it; a refusal means this wiki customized its copy, which is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
 
 Customize and set up now, while the operator is present:
 
@@ -19,13 +19,18 @@ Customize and set up now, while the operator is present:
    resolve through the unit's search before anything is watched:
    `llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py search "lex fridman #400" --type episode`
    — confirm the match with the operator, then watch the chosen URL.
-3. **Watch shape**: one watch per entity URL, `--scope page` (the capture
-   enumerates the entity's items itself — there is no link crawling).
-   open.spotify.com is a generic share host carrying no source identity,
-   so pick `--slug <content-name> --dest sources/scrapes/<content-name>`
-   named after the
-   content, and set `--group "<name>" --group-type playlist|series` — a
-   playlist or show is a bundle.
+3. **Declare the job**: one per entity URL. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-spotify`, which the
+   operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
+   defaults off the enabled copy, and answers `dest required` without it.
+   `llm-wiki-ops pipeline add <entity-url> slug=<content-name>
+   description="<what this is>" skill=channel-spotify
+   meta.group="<name>" meta.group_type=playlist|series` — a playlist or show
+   is a bundle. open.spotify.com is a generic share host carrying no source
+   identity, so name the slug after the content. The unit's manifest supplies
+   `every=once`, `harvest.scope=page` (the capture enumerates the entity's
+   items itself — there is no link crawling), `harvest.assets=download` and a
+   `dest` of `sources/podcasts/<slug>`; pass `dest=` to land it elsewhere.
+   `dest` is fixed at `add`.
 4. **Set audio expectations**: downloads happen only when the content is
    openly distributed (podcast episodes matched to their show's public
    RSS feed). Music tracks and Spotify-exclusive audio are captured as

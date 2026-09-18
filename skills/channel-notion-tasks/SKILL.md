@@ -85,7 +85,7 @@ reach it should fail and report, never improvise a different source.
 
 This copy is wiki-owned, and **diverged is the intended state**: installing
 the unit writes the operator's database ids, lookback, and filters straight
-into this file, so `skills list` reporting it `diverged` is configuration
+into this file, so `skills ls` reporting it `customized` is configuration
 the wiki owns, not drift to repair. Improve the filters and junk rules as
 the channel teaches you what matters.
 

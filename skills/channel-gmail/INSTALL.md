@@ -2,7 +2,7 @@
 
 ## Customizing this unit
 
-Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+Install this package's `writing-skills` first — `llm-wiki-ops skills install simple10/llm-wiki-skills@writing-skills` (over an unedited copy this just refreshes it; a refusal means this wiki customized its copy, which is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
 
 ## A fresh install
 
@@ -14,24 +14,32 @@ Customize the wiki's copy now, while the operator is present:
    they are the WIKI's, applying to every mailbox this unit pulls.
 2. Ask the pull cadence (default daily) — that becomes `every` on the
    watch; the manifest pre-answers `1d`.
-3. Diverged is the point: writing the operator's filters into `## Stages`
-   makes `skills list` report the unit `diverged`. That is configuration the
+3. Customized is the point: writing the operator's filters into `## Stages`
+   makes `skills ls` report the unit `customized`. That is configuration the
    wiki owns, not drift to repair — say so in your report so nobody "fixes"
-   it.
-4. One watch per mailbox. Ask a slug and a description for each, then:
-   `llm-wiki-ops watch add --slug <slug> --description "<whose mailbox>"
-   --skill channel-gmail --inputs mailbox=<who>@example.com
-   [--check-every 1d]`. The manifest's `watch.dest` puts its daily
+   it with `skills install --force`.
+4. One watch per mailbox. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-gmail`, which the
+   operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
+   defaults off the enabled copy, and answers `dest required` without it.
+   Ask a slug and a description for each, then:
+   `llm-wiki-ops pipeline add gmail slug=<slug>
+   description="<whose mailbox>" skill=channel-gmail
+   options.mailbox=<who>@example.com [every=1d]` — the target is the
+   channel's bare name, never a url, and `add` refuses without
+   `options.mailbox` (the unit's one required input). The manifest's `watch.dest` puts its daily
    ledgers under `research/channels/<slug>/` — the ledger route, outside the
    searchable corpus and the curation lifecycle (a mailbox is a stream, not
    a set of pages; the wiki's synthesize policy is how its substance reaches
    `wiki/`). The watch's own `_raw/<slug>/` is machine-local by
-   construction, so there is nothing else to seed. A watch added before this
-   unit's 2.3.0 keeps its `sources/email/<slug>/` literal — re-point it with
-   `watch add --slug <slug> --dest research/channels/<slug>` if wanted.
+   construction, so there is nothing else to seed. `dest` is fixed at `add` —
+   `pipeline edit` refuses it — so a job declared before this unit's 2.3.0
+   keeps its `sources/email/<slug>/` literal.
 5. **Bind the credential on each pulling machine**, per watch:
-   `llm-wiki-ops credential bind <slug> <credential>`. Connector auth is
+   `llm-wiki-ops credential bind <slug> <credential>` — the credential must
+   already be set on that machine (`llm-wiki-ops credential set <credential>`,
+   the value on stdin). Connector auth is
    session-level on that machine, per mailbox; a watch with no binding is
    skipped by intake with a named reason rather than failing mid-pull.
-6. Enable the unit on every machine that pulls
-   (`llm-wiki-ops skills enable channel-gmail`).
+6. Enable the unit on every OTHER machine that pulls
+   (`llm-wiki-ops skills enable channel-gmail`) — installed is not loaded,
+   and enablement never travels with a `git pull`.

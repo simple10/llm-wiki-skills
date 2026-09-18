@@ -16,7 +16,7 @@ never re-ask.
 
 This copy is wiki-owned. Improve it as you learn the venue (new
 fingerprints, changed selectors, corrected routes) — that is the intended
-lifecycle, and `skills list` reporting it as diverged is provenance, not a
+lifecycle, and `skills ls` reporting it as customized is provenance, not a
 problem. Keep claims about the pipeline's own scripts out of here; those go
 to the human via the run report.
 

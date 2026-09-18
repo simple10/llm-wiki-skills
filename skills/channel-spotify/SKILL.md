@@ -14,8 +14,8 @@ config (assets, transcript policy) — honor it; never re-ask the operator.
 
 This unit is **platform-general** — nothing in it is specific to any one
 show or playlist. Once installed, the copy is **wiki-owned**: record your
-wiki's watched entities and venue observations in it, and `skills list`
-reporting it as diverged is provenance, not a problem. Chaining to another
+wiki's watched entities and venue observations in it, and `skills ls`
+reporting it as customized is provenance, not a problem. Chaining to another
 unit means invoking it through the Skill tool — never read a sibling's
 SKILL.md and improvise its behavior.
 
@@ -123,8 +123,8 @@ llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py capture <url> \
 #   items.json   normalized item list
 #   page.md      ready for stage 2 (no HTML exists for this venue)
 #   assets.json  pending entries: cover image + matched MP3 enclosures
-llm-wiki-ops run scripts/assets.py download <cap>/assets.json \
-    --dest <job.dirs.assets> --referer <url>
+llm-wiki-ops run skills/harvest/scripts/assets.py download <cap>/assets.json \
+    --dest _raw/<slug>/assets --referer <url>
 # capture.json: assemble as usual; assets = assets.json entries (now
 # downloaded) + meta.json drm_refs verbatim. tool: "spotify-api".
 # published: copy the capture summary's `published` when non-empty (Dates).

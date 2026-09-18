@@ -16,8 +16,8 @@ This unit is **platform-general, not site-specific.** Every HubSpot CMS site
 runs on its own domain and themes its own markup, so `requires.network` is
 empty and `skills search` reaches this unit by its keywords, never by host;
 the *Fingerprints* section below is how you settle whether it applies. Once installed, the copy is **wiki-owned**: put the site's
-own selectors, URL map and exclusions in it, and `skills list` reporting it as
-diverged is provenance, not a problem.
+own selectors, URL map and exclusions in it, and `skills ls` reporting it as
+customized is provenance, not a problem.
 
 ## Stages
 

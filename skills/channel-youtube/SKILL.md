@@ -14,7 +14,7 @@ the venue is captured. The job already carries the resolved config — honor
 it; never re-ask.
 
 This copy is wiki-owned — body and `scripts/` both. Improve it as you learn
-the venue; `skills list` reporting it as diverged is provenance, not a
+the venue; `skills ls` reporting it as customized is provenance, not a
 problem. What is NOT yours to fix from here is the PLUGIN's own generic
 machinery (the scaffolder, the transcript formatter, asset handling): claims
 about those go to the human via the run report, never into this file.

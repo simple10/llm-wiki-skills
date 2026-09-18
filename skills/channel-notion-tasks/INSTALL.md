@@ -2,7 +2,7 @@
 
 ## Customizing this unit
 
-Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+Install this package's `writing-skills` first — `llm-wiki-ops skills install simple10/llm-wiki-skills@writing-skills` (over an unedited copy this just refreshes it; a refusal means this wiki customized its copy, which is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
 
 Customize the wiki's copy now, while the operator is present:
 
@@ -14,20 +14,23 @@ Customize the wiki's copy now, while the operator is present:
    watch entry.
 2. Ask the pull cadence (default daily) — that becomes `every` on
    the watch.
-3. Diverged is the point: writing the operator's databases and filters into
-   SKILL.md makes `skills list` report the unit `diverged`. That is
+3. Customized is the point: writing the operator's databases and filters into
+   SKILL.md makes `skills ls` report the unit `customized`. That is
    configuration the wiki owns, not drift to repair — say so in your report
-   so nobody "fixes" it.
-4. Ask a slug and a description, then point the watch at the unit:
-   `llm-wiki-ops watch add --slug notion-tasks --description "<what this is>"
-   --skill channel-notion-tasks --inputs workspace=<workspace>
-   [--check-every 1d]`. The manifest's `watch.dest` puts its daily
+   so nobody "fixes" it with `skills install --force`.
+4. Ask a slug and a description, then declare the job. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-notion-tasks`, which the
+   operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
+   defaults off the enabled copy, and answers `dest required` without it.
+   `llm-wiki-ops pipeline add notion-tasks slug=notion-tasks
+   description="<what this is>" skill=channel-notion-tasks
+   options.workspace=<workspace> [every=1d]` — the target is the channel's
+   bare name, never a url, and `add` refuses without `options.workspace`
+   (the unit's one required input). The manifest's `watch.dest` puts its daily
    ledgers under `research/channels/<slug>/` — the ledger route, outside the
    searchable corpus and the curation lifecycle (tasks are a stream; the
    wiki's synthesize policy is how their substance reaches `wiki/`). The
    watch's own `_raw/<slug>/` is already machine-local by construction, so
-   there is nothing else to seed. A watch added before this unit's 1.7.0
-   keeps its `sources/tasks/<slug>/` literal — re-point it with
-   `watch add --slug <slug> --dest research/channels/<slug>` if wanted. Remind
-   the operator that connector auth is session-level on the pulling
-   machine.
+   there is nothing else to seed. `dest` is fixed at `add` — `pipeline edit`
+   refuses it — so a job declared before this unit's 1.7.0 keeps its
+   `sources/tasks/<slug>/` literal. Remind the operator that connector auth
+   is session-level on the pulling machine.
