@@ -31,13 +31,13 @@ does not control.
 Transcript formatting is the one thing it does not do itself: cue parsing,
 rolling-caption dedup and chapter bucketing are generic across video venues, so
 they stay ABI machinery in the plugin. This script reaches them through the
-wiki's own front door —
+front door, by its bare name on PATH, run from the wiki root —
 
-    <wiki>/<ops dir>/bin/llm-wiki-ops run scripts/format_transcript.py <captions> \
+    llm-wiki-ops run skills/process/scripts/format_transcript.py <captions> \
         --chapters <metadata.json> --interval 60
 
-whose stdout is the markdown. `--format-transcript <path>` skips the shim and
-runs a known path directly (tests, and any caller that already has one).
+whose stdout is the markdown. `--format-transcript <path>` skips the front door
+and runs a known path directly (tests, and any caller that already has one).
 A non-zero status from either form ABORTS: a note that silently ships without
 its transcript, exit 0, reporting success, is the exact failure this script
 exists to prevent.
@@ -47,22 +47,27 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+# The front door, by the bare name every SKILL.md already runs this script
+# under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
 
-def _shim_rel():
-    """The wiki-relative shim path, from the tree name the front door
-    exported (`LLM_WIKI_OPS_DIRNAME`). None outside `llm-wiki-ops run` — the
-    caller aborts with the front-door hint rather than guessing a tree."""
-    dirname = os.environ.get("LLM_WIKI_OPS_DIRNAME") or None
-    if dirname is None:
-        return None
-    return Path(dirname) / "bin" / "llm-wiki-ops"
+# The front door's own re-entry guard. It is still set in here, because this
+# script is a grandchild of the front door that ran it, and a nested call that
+# carries it is refused (127) as a loop. This one is not a loop: it is a new
+# command, so it starts without the guard.
+REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+
+# An address `run` serves out of the plugin, not a path in this wiki.
+FORMATTER = "skills/process/scripts/format_transcript.py"
 
 
-FORMATTER = "scripts/format_transcript.py"
+def _front_door_env():
+    return {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
 
 URL_RE = re.compile(r"(?<![\(\]])\bhttps?://[^\s)]+")
 TS_LINE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—:]?\s*(.+)$")
@@ -109,33 +114,27 @@ def mmss(sec):
 
 
 def format_transcript(captions, chapters_json, wiki, override):
-    """The plugin's formatter, through the wiki's front door. Returns markdown.
+    """The plugin's formatter, through the front door. Returns markdown.
 
     Aborts on failure rather than returning empty: the caller writes the note
     either way, so a swallowed error here ships a transcript-less note that
     reports success."""
     if override:
-        cmd = [sys.executable, str(Path(override).resolve())]
+        cmd, where = [sys.executable, str(Path(override).resolve())], {}
     else:
-        rel = _shim_rel()
-        if rel is None:
+        ops = shutil.which(OPS)
+        if ops is None:
             sys.exit(
-                "youtube_note: LLM_WIKI_OPS_DIRNAME is not set — run "
-                "this through the wiki's front door (`llm-wiki-ops "
-                "run …`), which exports it"
+                f"youtube_note: `{OPS}` is not on PATH — the front door is "
+                "how this unit reaches the plugin's transcript formatter; "
+                "install the ops plugin on this machine"
             )
-        shim = (wiki / rel).resolve()
-        if not shim.is_file():
-            sys.exit(
-                f"youtube_note: {shim} is missing — the wiki's front door "
-                "is how this unit reaches the plugin's transcript "
-                "formatter; run /llm-wiki:init to restore the shim"
-            )
-        cmd = [str(shim), "run", FORMATTER]
+        # The wiki root is what binds the front door to THIS wiki.
+        cmd, where = [ops, "run", FORMATTER], {"cwd": str(wiki), "env": _front_door_env()}
     cmd += [str(Path(captions).resolve()), "--interval", "60"]
     if chapters_json:
         cmd += ["--chapters", str(Path(chapters_json).resolve())]
-    cp = subprocess.run(cmd, capture_output=True, text=True)
+    cp = subprocess.run(cmd, capture_output=True, text=True, **where)
     if cp.returncode != 0 or not cp.stdout.strip():
         sys.exit(
             "youtube_note: transcript formatting failed "

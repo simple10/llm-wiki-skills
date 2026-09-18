@@ -7,27 +7,39 @@ none of its own assets.
 The script now lives in the `channel-youtube` skill unit (wiki-owned, copied by
 `skills install`) rather than in `plugin/scripts/`, because exactly one unit
 calls it. It reaches the plugin's generic transcript formatter by INVOCATION —
-`llm-wiki-ops run scripts/format_transcript.py` — never by import, so these
-tests pass `--format-transcript` to skip the shim a tmp wiki does not have.
+`llm-wiki-ops run skills/process/scripts/format_transcript.py` — never by
+import, so most tests pass `--format-transcript` to skip a front door a tmp
+wiki is not behind; the front-door cases put a recording stub on PATH.
 """
 import json
 import os
+import re
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 SCRIPT = (Path(__file__).resolve().parents[1] / "skills" / "channel-youtube" / "scripts" / "youtube_note.py")
-# `format_transcript.py` is a HOST script (the ops plugin's `scripts/`), not
-# part of this package: `LLM_WIKI_OPS_PLUGIN_SCRIPTS` names that directory
-# where a checkout is at hand; without it the cases that need it skip.
-_HOST_SCRIPTS = os.environ.get("LLM_WIKI_OPS_PLUGIN_SCRIPTS")
-FORMATTER = Path(_HOST_SCRIPTS) / "format_transcript.py" if _HOST_SCRIPTS else None
+# The address the unit itself runs, read off the unit: the formatter's place
+# in the plugin is the plugin's to move, and a second spelling here is how
+# the move went unseen.
+FORMATTER_REL = re.search(r'^FORMATTER = "([^"]+)"$', SCRIPT.read_text(), re.M).group(1)
+# `format_transcript.py` is HOST code, not part of this package:
+# `LLM_WIKI_OPS_PLUGIN` names the ops plugin's root — the tree `run` serves
+# that address from — where a checkout is at hand; without it the cases that
+# need the real formatter skip.
+_PLUGIN = os.environ.get("LLM_WIKI_OPS_PLUGIN")
+FORMATTER = Path(_PLUGIN) / FORMATTER_REL if _PLUGIN else None
 
 
 def _need_formatter():
-    if FORMATTER is None or not FORMATTER.is_file():
-        pytest.skip("set LLM_WIKI_OPS_PLUGIN_SCRIPTS to the ops plugin's scripts/ dir — format_transcript.py is host code")
+    if FORMATTER is None:
+        pytest.skip("set LLM_WIKI_OPS_PLUGIN to the ops plugin's root — format_transcript.py is host code")
+    # Named and absent is a FAILURE, not a skip: a formatter that moved is
+    # what this suite skipped over, green, while every real capture aborted.
+    assert FORMATTER.is_file(), f"{FORMATTER_REL} is not under LLM_WIKI_OPS_PLUGIN={_PLUGIN} — did the plugin move it?"
 
 
 VTT = """WEBVTT
@@ -71,14 +83,10 @@ _DEFAULT = object()
 
 def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
          extra_argv=None):
-    # `LLM_WIKI_OPS_DIRNAME` is stripped by default so the tests are
-    # deterministic whichever environment the suite runs in; the shim-path
-    # tests set it the way the front door does.
     if formatter is _DEFAULT:  # the host formatter, where a checkout names it
         _need_formatter()
         formatter = FORMATTER
     env = dict(os.environ)
-    env.pop("LLM_WIKI_OPS_DIRNAME", None)
     if extra_env:
         env.update(extra_env)
     cp = subprocess.run(
@@ -180,20 +188,65 @@ def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     assert not list((tmp_path / "sources").rglob("*.md")), "note was written"
 
 
-def test_a_missing_shim_names_the_front_door(tmp_path):
-    """No `--format-transcript` and no shim: the failure has to say what is
-    missing, not traceback out of a subprocess call."""
-    cap = _capture(tmp_path)
-    cp = _run(tmp_path, cap, formatter=None, check=False,
-              extra_env={"LLM_WIKI_OPS_DIRNAME": "ops"})
-    assert cp.returncode != 0
-    assert "ops/bin/llm-wiki-ops" in cp.stderr and "front door" in cp.stderr
+def _stub_front_door(tmp_path, body):
+    """A recording `llm-wiki-ops` first on PATH. It writes what it was handed
+    — argv, cwd, the re-entry guard — to `seen.json`, then runs `body`."""
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir()
+    seen = tmp_path / "seen.json"
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+        f"           'guard': os.environ.get('LLM_WIKI_OPS_DISPATCHED')}}, open({str(seen)!r}, 'w'))\n"
+        f"{body}\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, seen
 
 
-def test_outside_the_front_door_the_failure_names_the_export(tmp_path):
-    """Run bare — no `LLM_WIKI_OPS_DIRNAME` — and the script must not guess
-    where the wiki keeps its tree: it names the export and the front door."""
+def test_the_formatter_is_reached_by_the_bare_front_door_from_the_wiki_root(tmp_path):
+    """No `--format-transcript`: the bare name on PATH, `run`, the plugin's
+    address, with the wiki root as cwd — that cwd is all that binds the front
+    door to this wiki, now that no path into the wiki names a shim.
+
+    And WITHOUT the re-entry guard. This script only ever runs as a
+    grandchild of the front door, which exports the guard and refuses (127)
+    any call that arrives carrying it — so the env below is the real one, and
+    a call that passed it through would abort every capture."""
     cap = _capture(tmp_path)
-    cp = _run(tmp_path, cap, formatter=None, check=False)
+    path, seen = _stub_front_door(tmp_path, "print('#### [00:00]\\n\\nstubbed transcript')")
+    res = _run(tmp_path, cap, formatter=None, extra_env={**path, "LLM_WIKI_OPS_DISPATCHED": "1"})
+    got = json.loads(seen.read_text())
+    assert got["argv"][:2] == ["run", FORMATTER_REL], got
+    assert got["argv"][2] == str(next((cap / "captions").glob("abc123.en.vtt"))), got
+    assert Path(got["cwd"]) == tmp_path.resolve(), got
+    assert got["guard"] is None, got
+    assert "stubbed transcript" in (tmp_path / res["note"]).read_text()
+
+
+def test_a_front_door_refusal_aborts_and_says_why(tmp_path):
+    """The front door answering non-zero — a formatter it no longer serves at
+    that address, say — aborts with its own words, and writes no note."""
+    cap = _capture(tmp_path)
+    path, _ = _stub_front_door(tmp_path, "sys.exit('run: no such script')")
+    cp = _run(tmp_path, cap, formatter=None, check=False, extra_env=path)
     assert cp.returncode != 0
-    assert "LLM_WIKI_OPS_DIRNAME" in cp.stderr and "front door" in cp.stderr
+    assert "transcript formatting failed" in cp.stderr and "no such script" in cp.stderr
+    assert not list((tmp_path / "sources").rglob("*.md")), "note was written"
+
+
+def test_a_machine_without_the_front_door_is_told_so(tmp_path, monkeypatch):
+    """No `llm-wiki-ops` on PATH: the failure names what is missing instead
+    of a traceback out of a subprocess call. In-process, because a PATH with
+    nothing on it cannot also start the `uv` the other cases run through."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("youtube_note", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing-here"))
+    with pytest.raises(SystemExit) as exc:
+        mod.format_transcript(tmp_path / "a.vtt", None, tmp_path, None)
+    assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)

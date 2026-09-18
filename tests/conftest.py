@@ -68,7 +68,10 @@ def env(tmp_path_factory, ops) -> dict:
     mp.parent.mkdir(parents=True)
     mp.symlink_to(ROOT, target_is_directory=True)
     e = dict(os.environ)
-    e.pop("LLM_WIKI_OPS_DIRNAME", None)
+    # A suite started from inside a wiki session must not act on THAT wiki:
+    # these are what bind one ambiently, ahead of the `cwd=` a `run` case uses.
+    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS_DISPATCHED"):
+        e.pop(ambient, None)
     e.update(
         LLM_WIKI_PACKAGES_HOME=str(home),
         LLM_WIKI_PACKAGES_OFFLINE="1",
@@ -81,9 +84,16 @@ def env(tmp_path_factory, ops) -> dict:
     return e
 
 
-def run(ops: list, env: dict, *args) -> Result:
-    cp = subprocess.run([*ops, *args], env=env, capture_output=True, text=True, check=False)
+def run(ops: list, env: dict, *args, cwd=None) -> Result:
+    cp = subprocess.run([*ops, *args], env=env, cwd=cwd, capture_output=True, text=True, check=False)
     return Result(cp.returncode, cp.stdout, cp.stderr)
+
+
+def at(wiki: Path) -> str:
+    """The CLI is root-bound — no verb takes a wiki positional. `wiki=<path>`
+    is the token every verb accepts anywhere among its own; a `run` child owns
+    its whole argv, so that one verb binds by `cwd=` instead."""
+    return f"wiki={wiki}"
 
 
 @pytest.fixture(scope="session")
@@ -91,6 +101,14 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     """One `init`ed wiki for the session — installs accumulate in it, which
     is what a real wiki does."""
     w = tmp_path_factory.mktemp("wiki") / "w"
-    r = run(ops, env, "init", str(w), "--preset", "general", "--commit")
+    r = run(ops, env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
     assert r.returncode == 0, r.stderr
     return w
+
+
+@pytest.fixture(scope="session")
+def tactics_group(ops, env) -> None:
+    """Skips unless the CLI at hand has a `tactics` group. Asked of the CLI
+    rather than assumed, so the cases run again the day it is ported."""
+    if run(ops, env, "tactics", "--help").returncode != 0:
+        pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")

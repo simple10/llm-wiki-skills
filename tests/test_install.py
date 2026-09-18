@@ -1,64 +1,112 @@
 """Every artifact the manifest names installs into a wiki through the real
-CLI, lists clean, and — for a skill — enables; a channel unit that matches a
-host binds a watch with the flags `skills find` renders for it. Scripted
-per artifact."""
+CLI, lists clean, and — for a skill — enables; a channel unit routes a
+pipeline job by its own manifest, with no dest named; the plugin script a unit
+reaches for is one `run` really serves. Scripted per artifact."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from conftest import SKILLS, SOURCE, TACTICS, run, unit_manifest
+from conftest import ROOT, SKILLS, SOURCE, TACTICS, at, run, unit_manifest
+
+CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
+
+VTT = "WEBVTT\n\n00:00:00.080 --> 00:00:02.629\nAt its peak, it grew\n"
 
 
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env, wiki, name):
-    r = run(ops, env, "skills", str(wiki), "install", name, "--repo", SOURCE)
-    if r.returncode == 2 and "requires ops" in r.stderr:
-        pytest.skip(f"{name}: {r.stderr.strip()}")  # the CLI at hand is below this unit's floor
+    r = run(ops, env, "--json", "skills", "install", name, at(wiki))
     assert r.returncode == 0, r.stderr
-    src = r.data["source"]
-    assert src["type"] == "package" and src["repo"] == SOURCE and len(src["ref"]) == 12, src
+    got = r.data
+    assert got["package"] == SOURCE and len(got["ref"]) == 12, got
+    assert got["version"] == unit_manifest(name)["version"], got
     # a platform template warns about per-site copies on every install — that is the unit talking, not a fault
-    assert [w for w in r.data["warnings"] if "platform TEMPLATE" not in w] == [], r.data["warnings"]
+    assert [w for w in got["warnings"] if "platform TEMPLATE" not in w] == [], got["warnings"]
 
-    rows = run(ops, env, "skills", str(wiki), "list", "--json").data["skills"]
+    rows = run(ops, env, "--json", "skills", "ls", name, at(wiki)).data["skills"]
     row = next(s for s in rows if s["name"] == name)
-    assert row["problems"] == [] and row["stale"] is None and not row["diverged"], row
+    assert row["from"].startswith(f"{SOURCE}@"), row
+    assert not row["customized"] and not row["drifted"], row
+    assert [w for w in row["warnings"] if "platform TEMPLATE" not in w] == [], row
 
-    r = run(ops, env, "skills", str(wiki), "enable", name)
+    # `--confirm`: enable decides what this machine loads, so it refuses unattended without it
+    r = run(ops, env, "--json", "skills", "enable", name, "--confirm", at(wiki))
     assert r.returncode == 0, r.stderr
     assert (wiki / ".agents" / "skills" / name / "SKILL.md").is_file()
 
 
-@pytest.mark.parametrize("name", [n for n in SKILLS if (unit_manifest(n).get("match") or {}).get("hosts")])
-def test_channel_unit_binds_a_watch_with_the_flags_find_renders(ops, env, wiki, name):
-    host = unit_manifest(name)["match"]["hosts"][0].lstrip("*.")
-    url = f"https://{host}/harness/{name}"
-    found = run(ops, env, "skills", str(wiki), "find", url)
-    assert found.returncode == 0, found.stderr
-    installed = [row for row in found.data["installed"] if row["name"] == name]
-    if not installed and any(row["name"] == name for row in found.data["available"]):
-        pytest.skip(f"{name} is not installed here (its install case skipped on the floor)")
-    assert installed, found.data
-    flags = installed[0]["watch_flags"].split()
+@pytest.mark.parametrize("name", CHANNELS)
+def test_channel_unit_routes_a_job_by_its_own_manifest(ops, env, wiki, name):
+    """`pipeline add skill=<unit>` with no `dest=`: the unit's `watch.dest`
+    template routes the job and its `watch.defaults` seed the record. This is
+    the contract the unit manifest exists for (what `match.hosts` plus
+    `skills find`'s rendered flags used to carry)."""
+    watch = unit_manifest(name)["watch"]
     slug = f"harness-{name}"
-    r = run(
-        ops, env, "watch", str(wiki), "add",
-        "--slug", slug, "--description", f"harness: {name}", "--url", url,
-        "--dest", f"sources/scrapes/{slug}", *flags,
-    )
-    assert r.returncode == 0, r.stderr
-    shown = run(ops, env, "watch", str(wiki), "show", slug)
+    # `research/channels/…` is the ledger route, and only a channel's pull lands
+    # there: that unit's target is the channel's bare name, never a url.
+    ledger = watch["dest"].startswith("research/channels/")
+    add = [
+        "--json", "pipeline", "add", unit_manifest(name)["venue"] if ledger else f"https://example.invalid/harness/{name}",
+        f"slug={slug}", f"skill={name}", f"description=harness: {name}", at(wiki),
+    ]
+    required = sorted(k for k, v in (watch.get("inputs") or {}).items() if v.get("required") is True)
+    if required:  # an add that skips a required input is refused, naming the key that answers it
+        r = run(ops, env, *add)
+        assert r.returncode == 2 and all(f"options.{k}=" in r.data["error"] for k in required), r.stdout
+    r = run(ops, env, *add, *(f"options.{k}=harness-{k}" for k in required))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.data["dest"] == watch["dest"].format(slug=slug), r.data
+
+    shown = run(ops, env, "--json", "pipeline", "show", slug, at(wiki))
     assert shown.returncode == 0, shown.stderr
-    assert name in shown.stdout
+    job = shown.data["job"]
+    assert {k: job["options"][k] for k in required} == {k: f"harness-{k}" for k in required}, job["options"]
+    for stage in unit_manifest(name)["stages"]:
+        assert job[stage]["skill"] == name, job[stage]
+    for key, want in watch["defaults"].items():
+        if isinstance(want, dict):
+            assert {k: job[key][k] for k in want} == want, (key, job[key])
+        else:
+            assert job[key] == want, (key, job[key])
+
+
+def _addresses_run_serves_from_the_plugin():
+    """Every `llm-wiki-ops run <plugin path>` a unit's script names in code —
+    the quoted constants, not prose. `ops/…` is the unit's own tree, not the
+    plugin's."""
+    quoted = re.compile(r"""["']((?:scripts|skills/[\w-]+/scripts)/[\w/-]+\.py)["']""")
+    found = set()
+    for script in sorted((ROOT / "skills").glob("*/scripts/*.py")):
+        unit = script.parts[-3]
+        found.update((unit, rel) for rel in quoted.findall(script.read_text(encoding="utf-8")))
+    return sorted(found)
+
+
+@pytest.mark.parametrize(("unit", "rel"), _addresses_run_serves_from_the_plugin())
+def test_the_plugin_script_a_unit_runs_is_one_run_serves(ops, env, wiki, tmp_path, unit, rel):
+    """A unit reaches plugin machinery by ADDRESS, and the plugin is free to
+    move its files: `scripts/format_transcript.py` became
+    `skills/process/scripts/…` and every youtube note aborted at its
+    transcript, with each test here still green behind `--format-transcript`.
+    `run` refuses an address it does not serve with exit 2, before anything
+    runs — so any other exit means the address resolved."""
+    vtt = tmp_path / "a.en.vtt"
+    vtt.write_text(VTT, encoding="utf-8")
+    r = run(ops, env, "run", rel, str(vtt), cwd=wiki)
+    assert r.returncode != 2 and "no such script" not in r.stderr, f"{unit} runs {rel}: {r.stderr}"
 
 
 @pytest.mark.parametrize("name", TACTICS)
-def test_tactic_installs_or_is_already_seeded_and_lists_undiverged(ops, env, wiki, name):
-    r = run(ops, env, "tactics", str(wiki), "install", name) if name != "_TEMPLATE" else None
+def test_tactic_installs_or_is_already_seeded_and_lists_undiverged(ops, env, wiki, tactics_group, name):
+    # Spelled the way `skills` is today; nobody has run this against a ported
+    # group, so expect to correct the shape the day the skip above lifts.
+    r = run(ops, env, "--json", "tactics", "install", name, at(wiki)) if name != "_TEMPLATE" else None
     if r is not None:
         assert r.returncode == 0, r.stderr
-        assert r.data["status"] in ("installed", "skipped"), r.data  # init may have seeded it
-    rows = run(ops, env, "tactics", str(wiki), "list", "--json").data["tactics"]
+    rows = run(ops, env, "--json", "tactics", "ls", at(wiki)).data["tactics"]
     row = next(t for t in rows if t["name"] == name)
-    assert row["source"]["type"] == "package" and not row["diverged"], row
+    assert row["from"].startswith(f"{SOURCE}@") and not row["customized"], row

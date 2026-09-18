@@ -98,16 +98,23 @@ def wiki_root(start=None):
     return None
 
 
-def _shim(root):
-    """The wiki's front door. `wiki_root()` may return None — outside a wiki
-    there is no store to reach, and the caller degrades keyless. The tree's
-    name comes from `LLM_WIKI_OPS_DIRNAME` (exported by the front door that
-    ran this script); absent, the store is likewise unreachable and the
-    caller degrades the same way rather than this script guessing a tree."""
-    dirname = os.environ.get("LLM_WIKI_OPS_DIRNAME") or None
-    if root is None or dirname is None:
-        return None
-    return Path(root) / dirname / "bin" / "llm-wiki-ops"
+# The front door, by the bare name every SKILL.md already runs this script
+# under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
+
+# The front door's own re-entry guard. It is still set in here, because this
+# script is a grandchild of the front door that ran it, and a nested call that
+# carries it is refused (127) as a loop. This one is not a loop: it is a new
+# command, so it starts without the guard.
+REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+
+
+def _ops(root, *args, **kw):
+    """One front-door command, bound to the wiki by running from its root.
+    An `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
+    `OSError`, which every caller already reports as an unreachable store."""
+    env = {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
+    return subprocess.run([OPS, *args], cwd=str(root), env=env, capture_output=True, **kw)
 
 
 def load_auth(root):
@@ -120,11 +127,10 @@ def load_auth(root):
     cid, sec = os.environ.get("SPOTIFY_CLIENT_ID"), os.environ.get("SPOTIFY_CLIENT_SECRET")
     if cid and sec:
         return {"client_id": cid, "client_secret": sec}
-    shim = _shim(root)
-    if shim is None:
+    if root is None:  # outside a wiki there is no store to reach — degrade keyless
         return {}
     try:
-        proc = subprocess.run([str(shim), "credential", "get", "spotify"], capture_output=True)
+        proc = _ops(root, "credential", "get", "spotify")
     except OSError as e:
         die(f"credential store unreachable ({e.__class__.__name__}: {e})")
     if proc.returncode == 1:  # absent — degrade keyless
@@ -613,13 +619,10 @@ def cmd_auth(a):
     # persist a bearer token to the store; it now lives only in-process.
     data.pop("token", None)
     data.pop("expires_at", None)
-    shim = _shim(root)
-    if shim is None:
+    if root is None:
         die("no wiki found above the current directory — run from the wiki root")
     try:
-        proc = subprocess.run(
-            [str(shim), "credential", "set", "spotify"], input=json.dumps(data, indent=1).encode(), capture_output=True
-        )
+        proc = _ops(root, "credential", "set", "spotify", input=json.dumps(data, indent=1).encode())
     except OSError as e:
         die(f"credential store unreachable ({e.__class__.__name__}: {e})")
     if proc.returncode != 0:

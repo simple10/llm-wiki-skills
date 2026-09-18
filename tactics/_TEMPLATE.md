@@ -6,7 +6,7 @@ them. Librarian-only file — workers file field notes instead.
 
 Playbooks live at `<ops dir>/tactics/<name>.md` and belong to this wiki —
 one copy, edited in place, with nothing to resolve at read time. Copy this file
-to start a new one; `<ops dir>/bin/llm-wiki-ops tactics install <name>` adds
+to start a new one; `llm-wiki-ops tactics install <name>` adds
 one the machinery ships, and `... tactics refresh <name>` replaces this wiki's
 copy with the machinery's when the upstream one has improved (including this
 template — `refresh` is the only verb that can name it). Contributing a

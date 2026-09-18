@@ -107,9 +107,9 @@ read a sibling's SKILL.md and improvise its behavior from what you read.
   sound tags. The plugin's `format_transcript.py` handles both (longest
   suffix/prefix word-overlap dedup + sound-tag stripping) and buckets the
   result under the video's chapters as timestamped `### [mm:ss] Title`
-  sections. This unit's `youtube_note.py` calls it through the wiki's front
-  door (`llm-wiki-ops run scripts/format_transcript.py`) rather than
-  importing it — don't reimplement the dedup by hand.
+  sections. This unit's `youtube_note.py` calls it through the front door
+  (`llm-wiki-ops run skills/process/scripts/format_transcript.py`) rather
+  than importing it — don't reimplement the dedup by hand.
 - **Reference-mode (no video download)**: with `assets: reference`, record
   the watch URL and thumbnail URL in `capture.json` as asset entries with
   `status: "referenced"` — that is the asset script's own vocabulary for

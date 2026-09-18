@@ -61,12 +61,23 @@ STREAM_RE = re.compile(
 )
 
 
-def _ops_dirname():
-    """The wiki's machinery-tree name, exported by the front door that ran
-    this script (`LLM_WIKI_OPS_DIRNAME`). None outside `llm-wiki-ops run` —
-    the caller treats the wiki as unreachable rather than guessing where its
-    tree lives."""
-    return os.environ.get("LLM_WIKI_OPS_DIRNAME") or None
+# The front door, by the bare name every SKILL.md already runs this script
+# under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
+
+# The front door's own re-entry guard. It is still set in here, because this
+# script is a grandchild of the front door that ran it, and a nested call that
+# carries it is refused (127) as a loop. This one is not a loop: it is a new
+# command, so it starts without the guard.
+REENTRY_GUARD = "LLM_WIKI_OPS_DISPATCHED"
+
+
+def _ops(root, *args):
+    """One front-door command, bound to the wiki by running from its root.
+    An `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
+    `OSError`, which the caller already reports as an unreachable store."""
+    env = {k: v for k, v in os.environ.items() if k != REENTRY_GUARD}
+    return subprocess.run([OPS, *args], cwd=str(root), env=env, capture_output=True, text=True)
 
 
 def domain_of(url: str) -> str:
@@ -114,20 +125,8 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    dirname = _ops_dirname()
-    if dirname is None:
-        print(
-            "error: LLM_WIKI_OPS_DIRNAME is not set — run this through the "
-            "wiki's front door (`llm-wiki-ops run …`), which exports it",
-            file=sys.stderr,
-        )
-        return 5
     try:
-        proc = subprocess.run(
-            [str(Path(args.root) / dirname / "bin" / "llm-wiki-ops"), "credential", "profile-dir", domain],
-            capture_output=True,
-            text=True,
-        )
+        proc = _ops(args.root, "credential", "profile-dir", domain)
     except OSError as e:
         print(f"error: credential store unreachable ({e.__class__.__name__}: {e})", file=sys.stderr)
         return 5
