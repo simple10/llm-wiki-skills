@@ -7,8 +7,8 @@ Install this package's `writing-skills` first — `llm-wiki-ops skills install s
 Customize the wiki's copy now, while the operator is present:
 
 1. Ask which Notion databases hold the operator's tasks and record their
-   ids/names in the installed SKILL.md's `## Stages` harvest section's
-   "Mechanical filters", along
+   ids/names in the installed SKILL.md's `### harvest` "Mechanical filters",
+   along
    with the lookback window for the FIRST pull (default 14d) and any
    statuses to exclude (e.g. Archived). These belong in the unit, not the
    watch entry.
@@ -34,15 +34,15 @@ Customize the wiki's copy now, while the operator is present:
    there is nothing else to seed.
    **A job declared before this unit's 1.7.0 MUST be re-pointed before its
    next pull — this is not optional.** Such a job keeps its staged literal,
-   `sources/tasks/<slug>/`, and the rebuilt extractor decides the route from `dest`
-   alone (`pipeline/extract.py::_route`): a dest that is not
-   `research/channels/<slug>` sends the day directory down the one-page-per-
-   capture route, which wants a `capture.json` a day directory never has.
-   What that looks like: harvest says `ok`, and EVERY process ticket then
-   fails — `no_capture`, "`_raw/<slug>/<day>` carries no capture.json" — with
-   no ledger written. The unit cannot detect it: a download ticket's `dest`
-   is null. Check each job with `llm-wiki-ops pipeline show <slug>` (it names
-   `dest` and the target), and re-point any that is not under
+   `sources/tasks/<slug>/`, and `dest` is the whole of the route: it is where
+   the unit's process step writes the day's ledger, and it is what the host
+   reads to decide what a day directory is. A dest outside
+   `research/channels/` puts a `type: ledger` page in the corpus, staged and
+   in the curation lifecycle, where a ledger does not belong — and sends the
+   day directory down the one-page-per-capture route, which is not what a
+   channel harvest leaves. The unit cannot detect it: a harvest ticket's
+   `dest` is null. Check each job with `llm-wiki-ops pipeline show <slug>` (it
+   names `dest` and the target), and re-point any that is not under
    `research/channels/`. `pipeline edit` refuses `dest`, but re-running `add`
    with the same target and slug moves it and keeps every other key:
    `llm-wiki-ops pipeline add <its target> slug=<slug> dest=research/channels/<slug>`.
@@ -66,8 +66,8 @@ Customize the wiki's copy now, while the operator is present:
    `requires.network` and its target is a channel name, so its slice is
    minted with no hosts and its network is BLOCKED outright
    (`pipeline/dispatch.py`, `schedule/runner/slice.py`). No host was invented
-   to cover that. Under a spawning runner the worker reports `failed`, "no
-   notion connector in this session", with `missing: [{"host": "connector",
+   to cover that. Under a spawning runner the harvest worker reports
+   `failed`, "no notion connector in this session", with `missing: [{"host": "connector",
    "url": "mcp:notion", "why": "denied"}]` — tell the operator now, so a
    scheduled run that fails this way is recognised and not retried into the
    ground.

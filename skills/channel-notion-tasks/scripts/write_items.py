@@ -3,86 +3,96 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""One notion-tasks pull, written down: the day's item files, the watermark, `report.json`.
+"""The two arms of `channel-notion-tasks`: the pull harvest writes down, and the
+ledger process writes.
 
-  write_items.py since <capture_dir> [--lookback-days 14]
-  write_items.py write <capture_dir> [--from pull.json] \\
+  write_items.py since  <capture_dir> [--lookback-days 14]
+  write_items.py write  <capture_dir> [--from pull.json] \\
                  [--database ID]... [--exclude-status S]... [--cap N] \\
                  [--partial <reason>] [--missing <host> <url> <denied|timeout|auth|error>]...
-  write_items.py write <capture_dir> --failed <reason> [--missing ...]
+  write_items.py write  <capture_dir> --failed <reason> [--missing ...]
+  write_items.py ledger <capture_dir> --dest <dest> [--from lines.json] [--partial <reason>]
 
 `<capture_dir>` is the ticket's own `capture_dir`, VERBATIM — the job's DAY
 directory, `_raw/<slug>/<YYYY-MM-DD>`, WIKI-RELATIVE: `llm-wiki-ops run` starts
-a script at the wiki root, not in the capture directory the worker stands
-in, so `.` is the wrong answer here. `ticket.json` in it is read for the ticket
-id, the `capture_dir` the report names, `options.workspace` and `min_date`; a
-directory with none is refused unless `--ticket` says this is a hand run
-(`--workspace` and `--min-date` stand in for the rest). A bare `--from` name is
-looked for INSIDE the capture directory; no `--from` is `pull.json` there,
-else stdin.
+a script at the wiki root, not in the capture directory the worker stands in,
+so `.` is the wrong answer here. `ticket.json` in it is read for the ticket id,
+the `capture_dir` the report names, `options.workspace`, `min_date` and — on
+`ledger` — `dest`; a directory with none is refused unless `--ticket` says this
+is a hand run (`--workspace`, `--min-date` and `--dest` stand in for the rest).
+A bare `--from` name is looked for INSIDE the capture directory.
 
-`since` is the run's FIRST step, and removes a stale `report.json` before it
+Which arm runs is the caller's word, never a guess: `since` and `write` are
+harvest, `ledger` is process.
+
+`since` is HARVEST's first step, and removes a stale `report.json` before it
 answers: the day directory is stable across the day's pulls, every pull of a
-job carries the same ticket id, and the extractor writes its own report into
-this directory — so a unit that died before its last step would otherwise
-leave an old `ok` for `apply` to land.
+job carries the same ticket id, and `apply` does not check whose ticket a
+report answers — so a unit that died before its last step would otherwise
+leave an old `ok` to land.
 
 `since` answers where this pull starts, as JSON: the watermark in
 `_raw/<slug>/.cursor.json` when it is there, else now minus the lookback;
 never earlier than the ticket's `min_date`.
 
-`write` takes the tasks the worker read off the connector — a JSON list on
-stdin or in `--from` — and does the rest with no judgment of its own:
+`write` is HARVEST's last step. It takes the tasks the worker read off the
+connector AS THEY ARRIVED — a JSON list on stdin or in `--from` — and writes
+them down with no judgment of its own. No summary and no junk rule: both are
+judgment, and judgment is the process step's.
 
     [{"id": "<task-id>", "last_edited": "<ISO-8601>", "database": "<id or name>",
       "title": "<the task's own>", "status": "…", "due": "…", "assignee": "…",
-      "url": "https://www.notion.so/…", "body": "<plain-text notes>",
-      "summary": "<one factual line, the WORKER's words>", "junk": null | "<rule>"}]
+      "url": "https://www.notion.so/…", "body": "<plain-text notes>"}]
 
-Oldest `--cap` first, so the watermark it leaves is a clean resume point;
-then the mechanical filters (databases, statuses, `min_date`, already behind
-the watermark); then one file per task under `<capture_dir>/items/`:
+Oldest `--cap` first, so the watermark it leaves is a clean resume point; then
+the mechanical filters (databases, statuses, `min_date`, already behind the
+watermark); then one file per task, `items/<last-edited>--<task-id>.json`. A
+task edited twice in one day is ONE file: the newer replaces the older, so the
+day carries one entry per task however often it is pulled.
 
-- kept   → `items/<last-edited>--<task-id>.json`
-- junked → `items/.<last-edited>--<task-id>.json`, holding the pointer and the
-  rule's name and NONE of the task. The host's ledger counts a dot-file into
-  its `discarded: N (junk rules)` tally and never renders one.
-
-A task edited twice in one day is ONE file: the newer replaces the older, so
-the day's ledger carries one bullet per task.
-
-What the host's ledger reads from a kept file is `subject|title|summary|text`
-(first present) and `id|source` — `pipeline/extract.py::_item_bullet`. So a
-task that carries a `summary` is written with NO `title` key (the task's own
-title is kept as `venue_title`, which the host does not read) and the
-ledger's bullet is the worker's own words. One with no summary falls back to
-`title`, and the bullet is the task's title as the host neutralizes it.
-Either way what the host's folding leaves live is swapped for look-alikes in
-that one field here (`host_line`): raw HTML's `<` `>`, the ` — ` the host's own
-bullet puts before its pointer, a bare url, `*` and `|`.
-
-An item with an id and no trustworthy time — none, unparseable, or more than
-a day ahead of this machine's clock (one seconds/ms/µs slip) — is KEPT, filed
-under the pull's own clock, marked `time_untrusted` and counted `bad_time`; it
-never moves the watermark. A watermark file that is unreadable or ahead of the
-clock is ignored, out loud, and the lookback stands in.
+`capture.json` beside them is FLAT — `slug`, `item`, `title` (the day, which is
+the ledger's title), `body`, `content_type`, `fetched_at` — with no key a host
+verb owns and no `frontmatter` object. Its `body` names the day's `items/`
+DIRECTORY rather than one file: this route accumulates a whole day across
+sub-daily pulls, and one file per task is what keeps a task edited twice one
+entry.
 
 Then `report.json`, and only THEN the watermark (never backwards, never past
 the clock, never by a failed pull). `captured[]` names the day directory
 whenever its `items/` holds a file — not only when THIS invocation wrote one —
-so a rerun never reports `captured: []` over items no ledger has; and a
-report an earlier `write` on this ticket left with captures is never
-downgraded: a later failure makes it `partial` and says why. `apply` mints
-the extraction from `captured[]`, and the extractor regenerates the day's
-ledger WHOLE.
+so a rerun never reports `captured: []` over items no ledger has; and a report
+an earlier `write` on this ticket left with captures is never downgraded: a
+later failure makes it `partial` and says why.
+
+An item with an id and no trustworthy time — none, unparseable, or more than a
+day ahead of this machine's clock (one seconds/ms/µs slip) — is KEPT, filed
+under the pull's own clock, marked `time_untrusted` and counted `bad_time`; it
+never moves the watermark. A watermark file that is unreadable or ahead of the
+clock is ignored, out loud, and the lookback stands in.
+
+`ledger` is the PROCESS arm. It reads the day's `items/` and the process step's
+own words — `[{"id": "<task-id>", "line": "<one factual line>", "junk": null |
+"<rule>"}]`, one row per item, on stdin or in `--from` — and writes the day's
+ledger under `dest` through the front door: `page create`, or `page edit` over
+the page that day already has. The page is regenerated WHOLE every run, because
+the day directory is the source of truth. An item no row names keeps its own
+title as its bullet and the run reports `partial`: a rerun loses no item, and
+no run claims words it did not write. Then `report.json`, LAST, naming the page
+in `written[]`.
+
+A bullet is the host's own shape — `- <line> — <pointer>`, folded to one line
+and capped at 200 — so a ledger reads the same whoever wrote it, and what that
+fold leaves live is swapped for look-alikes first (`host_line`): raw HTML's `<`
+`>`, the ` — ` before the pointer, a bare url, `*` and `|`.
 
 Wiki-owned, stdlib only, imports nothing from the plugin.
 """
-
 import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -106,6 +116,31 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_-]+")
 _SWAPS = str.maketrans({"<": "‹", ">": "›", "—": "-", "―": "-", "*": "∗", "|": "¦"})
 _WWW = re.compile(r"(?i)\bwww\.")
 PULL_NAME = "pull.json"
+LINES_NAME = "lines.json"  # the process step's own words, one row per item in the day
+CAPTURE_NAME = "capture.json"
+LEDGER_TYPE = "ledger"
+BULLET_MAX = 200  # the host's own cap on a ledger bullet: `pipeline/extract.py::BULLET_MAX`
+_FOLD = re.compile(r"\s+")
+_FORGES = str.maketrans({"`": "'", "[": "(", "]": ")"})  # `pipeline/extract.py::_FORGES`
+
+# The front door, by the bare name every SKILL.md already runs this script
+# under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. Both names belong to the machine-global dispatcher that is the bare
+# `llm-wiki-ops` on PATH: it exports `LLM_WIKI_OPS_DISPATCHED=1` before it execs
+# the wiki's shim and refuses (127) any call arriving with it, as a loop. The
+# guard is still set in here — this script is the dispatcher's grandchild — and
+# this call is not a loop. And the dispatcher seeds its walk for the wiki root
+# from `$CLAUDE_PROJECT_DIR` AHEAD of the cwd, so without dropping it the cwd
+# would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# `page create`'s one refusal that is not a failure: this day already has a
+# ledger. The TAIL only: the CLI says `<path> already exists — the filename is
+# the title`, and `--json` prints that em dash escaped, so a marker carrying
+# one matches the prose voice and never the JSON one this script asks for.
+EXISTS = "the filename is the title"
+EXTRACTED = "true"  # the string `pipeline/pages.py` reads as DONE
 AHEAD_MS = 86_400_000  # how far ahead of this machine's clock an item's own time is still believed: a day of skew
 
 
@@ -258,15 +293,13 @@ def host_line(value):
 
 
 def item_doc(item, sid, *, trusted=True):
-    """One kept message as the file the host's `_item_bullet` reads. The
-    pointer is built from the safe id alone, so it needs no neutralizing."""
+    """One pulled task as it arrived. The pointer is built from the safe id
+    alone, so it needs no neutralizing; the venue's own one-line name is kept
+    twice — under `title`, ready for a bullet, and raw under `venue_title` for
+    the process step, which has the whole task to judge from."""
     doc = {"v": ITEM_V, "id": pointer_of(item, sid)}
     raw = _text(item.get(RAW_LINE_KEY))
-    summary = _text(item.get("summary"))
-    if summary and summary.strip():
-        # No `subject`/`title` key on purpose: either would win over `summary`.
-        doc["summary"] = host_line(summary.strip())
-    elif raw and raw.strip():
+    if raw and raw.strip():
         doc[HOST_LINE_KEY] = host_line(raw)
     doc[f"venue_{RAW_LINE_KEY}"] = raw
     doc.update(stored_of(item))
@@ -276,10 +309,6 @@ def item_doc(item, sid, *, trusted=True):
     doc["body"] = body[:BODY_MAX]
     doc["body_truncated"] = len(body) > BODY_MAX
     return doc
-
-
-def junk_doc(item, sid):
-    return {"v": ITEM_V, "id": pointer_of(item, sid), "junk": host_line(_text(item.get("junk")) or "junk")[:80]}
 
 
 def id_in(name):
@@ -344,7 +373,7 @@ def plan(items, args, *, cursor, min_date, slice_dir, day_dir, now):
     cursor passed its true time. It never moves the cursor, and it is counted
     under `bad_time` so the report says it happened.
     """
-    counts = {"fetched": len(items), "written": 0, "junked": 0, "invalid": 0, "bad_time": 0, "held_back": 0, "unsummarised": 0}
+    counts = {"fetched": len(items), "written": 0, "invalid": 0, "bad_time": 0, "held_back": 0}
     skipped = {}
     usable = []
     for item in items:
@@ -366,7 +395,7 @@ def plan(items, args, *, cursor, min_date, slice_dir, day_dir, now):
     for when, sid, item, trusted in usable:
         if trusted:
             newest = (when, sid)
-        names = (f"{stamp_of(when)}--{sid}.json", f".{stamp_of(when)}--{sid}.json")
+        names = (f"{stamp_of(when)}--{sid}.json",)
         why = None
         if trusted and (behind_cursor(when, sid, cursor) or held_elsewhere(slice_dir, day_dir, names)):
             why = "already_pulled"
@@ -377,14 +406,7 @@ def plan(items, args, *, cursor, min_date, slice_dir, day_dir, now):
         if why:
             skipped[why] = skipped.get(why, 0) + 1
             continue
-        if _text(item.get("junk")) and item["junk"].strip():
-            files.append((names[1], junk_doc(item, sid), sid))
-            counts["junked"] += 1
-            continue
-        doc = item_doc(item, sid, trusted=trusted)
-        if "summary" not in doc:
-            counts["unsummarised"] += 1
-        files.append((names[0], doc, sid))
+        files.append((names[0], item_doc(item, sid, trusted=trusted), sid))
         counts["written"] += 1
     counts["filtered"] = skipped
     return files, newest, counts
@@ -402,16 +424,34 @@ def land(day_dir, files):
         _write_json(items_dir / name, doc)
 
 
-def report_for(job, *, outcome, reason, captured, missing):
+def report_for(job, *, outcome, reason, captured, missing, written=()):
     return {
         "v": REPORT_V,
         "ticket": job.get("ticket"),
         "outcome": outcome,
         "reason": reason,
         "captured": captured,
-        "written": [],
+        "written": list(written),
         "missing": missing,
         "discovered": [],
+    }
+
+
+def capture_record(directory, job, now):
+    """What harvest leaves to say the day landed. FLAT, and it carries no key a
+    host verb owns and no `frontmatter` object: the facts reach the page
+    because this unit's process step writes the page.
+
+    `body` names the day's `items/` DIRECTORY, where every other route names
+    one file. A channel day accumulates across sub-daily pulls, and one file
+    per task is what keeps a task edited twice one entry."""
+    return {
+        "slug": job.get("slug") or directory.parent.name,
+        "item": job.get("item") or job.get("target"),
+        "title": directory.name,  # the day, which is the ledger's title; `DAY_RE` already holds it to a filename
+        "body": ITEMS_DIRNAME,
+        "content_type": "application/json",
+        "fetched_at": show(now),
     }
 
 
@@ -434,6 +474,9 @@ def load_job(directory, args):
     answer = getattr(args, INPUT_KEY, None) or options.get(INPUT_KEY)
     job[INPUT_KEY] = answer if isinstance(answer, str) and answer.strip() else None
     job.setdefault("capture_dir", directory.as_posix())
+    given = getattr(args, "dest", None)
+    if given:
+        job["dest"] = given
     floor = getattr(args, "min_date", None) or job.get("min_date")
     try:
         job["min_date"] = floor if isinstance(floor, str) and DAY_RE.fullmatch(floor) and from_day(floor) >= 0 else None
@@ -442,20 +485,20 @@ def load_job(directory, args):
     return job
 
 
-def source_of(directory, given):
-    """Where the pull is read from — a path, or None for stdin.
+def source_of(directory, given, default=PULL_NAME):
+    """Where the arm's input is read from — a path, or None for stdin.
 
     `llm-wiki-ops run` starts this script at the WIKI ROOT, not in the capture
-    directory the worker stands in. So a bare name (`pull.json`) is looked for
-    INSIDE the capture directory, which is where the worker wrote it; anything
-    with a directory in it is as given — wiki-relative, like `capture_dir`
-    itself. No `--from`: `pull.json` in the capture directory when it is
-    there, else stdin. `-` is stdin outright."""
+    directory the worker stands in. So a bare name (`pull.json`, `lines.json`)
+    is looked for INSIDE the capture directory, which is where the worker wrote
+    it; anything with a directory in it is as given — wiki-relative, like
+    `capture_dir` itself. No `--from`: the arm's own default name in the capture
+    directory when it is there, else stdin. `-` is stdin outright."""
     if given == "-":
         return None
     if given is None:
-        default = directory / PULL_NAME
-        return default if default.is_file() or sys.stdin is None or sys.stdin.isatty() else None
+        fallback = directory / default
+        return fallback if fallback.is_file() or sys.stdin is None or sys.stdin.isatty() else None
     path = Path(given)
     return directory / path if not path.is_absolute() and len(path.parts) == 1 else path
 
@@ -548,6 +591,8 @@ def write(directory, args, *, now=None):
         return finish("failed", f"{len(items)} item(s) and none carries a usable id", counts)
     try:
         land(directory, files)
+        if holds_items(directory):
+            _write_json(directory / CAPTURE_NAME, capture_record(directory, job, now))
     except OSError as exc:
         return finish("failed", f"{type(exc).__name__}: {exc}", counts)
 
@@ -579,10 +624,183 @@ def write(directory, args, *, now=None):
     return code
 
 
+# ------------------------------------------------------------------ the ledger
+
+
+class PageRefused(Exception):
+    """The front door refused, and NO page was written. The caller still owes
+    a report, so this is raised rather than exited on."""
+
+
+def _front_door_env():
+    return {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+
+
+def plain(value):
+    """One line as a ledger bullet carries it — the host's own `_plain`
+    (`pipeline/extract.py`), so a ledger reads the same whoever wrote it."""
+    folded = _FOLD.sub(" ", value).strip().translate(_FORGES)
+    return folded[: BULLET_MAX - 1] + "\u2026" if len(folded) > BULLET_MAX else folded
+
+
+def lines_by_id(rows):
+    """The process step's own words, keyed by the safe id the item files carry.
+    A row that is not a dict, or names no usable id, is counted, not obeyed."""
+    by_id, unusable = {}, 0
+    for row in rows if isinstance(rows, list) else []:
+        sid = safe_id(row.get("id")) if isinstance(row, dict) else None
+        if sid is None:
+            unusable += 1
+            continue
+        by_id[sid] = row
+    return by_id, unusable
+
+
+def ledger_body(items, by_id):
+    """`(body, counts)` — one bullet per kept item, oldest first, then the tally
+    of what junk rules dropped. The discarded content itself never appears.
+
+    An item no row names keeps its OWN title as its bullet and is counted
+    `unlined`: dropping it would lose a task the day pulled, and inventing a
+    line for it would be words this unit did not write."""
+    bullets = []
+    counts = {"items": len(items), "kept": 0, "discarded": 0, "unlined": 0}
+    for path in items:
+        doc = _read_json(path)
+        row = by_id.get(id_in(path.name)) or {}
+        junk = _text(row.get("junk"))
+        if junk and junk.strip():
+            counts["discarded"] += 1
+            continue
+        line = _text(row.get("line"))
+        if not (line and line.strip()):
+            line = _text(doc.get(HOST_LINE_KEY)) or ""
+            counts["unlined"] += 1
+        # `host_line` first, then the fold and the cap: the values started as
+        # the venue's text, and a line written here is read as this unit's.
+        line = plain(host_line(line)) if line else ""
+        pointer = plain(str(doc.get("id") or path.name))
+        bullets.append(f"- {line} \u2014 {pointer}" if line else f"- {pointer}")
+        counts["kept"] += 1
+    body = "\n".join(bullets) + f"\n\ndiscarded: {counts['discarded']} (junk rules)\n"
+    return body, counts
+
+
+def write_page(dest, title, front, body):
+    """The day's ledger under `dest`, through the front door. Returns it,
+    wiki-relative.
+
+    `page create` first, `page edit` on the one refusal that means this day
+    already has a ledger — the day directory is the source of truth and the
+    page is regenerated whole from it every run. The arguments are an argv
+    LIST and never a shell line: every value on one started as the venue's
+    text, and a venue that can type onto a Bash line can run a command.
+
+    The wiki is the cwd: `llm-wiki-ops run` starts this script at the wiki
+    root, and that is what binds the front door to THIS wiki."""
+    ops = shutil.which(OPS)
+    if ops is None:
+        raise PageRefused(f"`{OPS}` is not on PATH \u2014 the front door is how this unit writes a page; install the ops plugin on this machine")
+    where = {"cwd": os.getcwd(), "env": _front_door_env()}
+    keys = [f"{key}={value}" for key, value in front.items()]
+    # `status=` EMPTY, on create only. A ledger is outside the corpus and the
+    # lifecycle by location, and a `draft` here would put every day of every
+    # channel in curate's list. `page edit` REFUSES the same key (exit 2 —
+    # curate, revise and retire are what move a status) and does not need it:
+    # a page created without a status still has none after an edit.
+    created = subprocess.run(
+        [ops, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "status=", "--stdin"],
+        input=body, capture_output=True, text=True, **where,
+    )
+    rel = f"{dest}/{title}.md"
+    if created.returncode == 0:
+        return rel
+    said = ((created.stdout or "") + (created.stderr or "")).strip()
+    if EXISTS not in said:
+        raise PageRefused(f"`page create` refused (exit {created.returncode}): {said[-300:]}")
+    edited = subprocess.run(
+        [ops, "--json", "page", "edit", rel, *keys, "--stdin"],
+        input=body, capture_output=True, text=True, **where,
+    )
+    if edited.returncode != 0:
+        said = ((edited.stdout or "") + (edited.stderr or "")).strip()
+        raise PageRefused(f"`page edit` refused (exit {edited.returncode}) over {rel}: {said[-300:]}")
+    return rel
+
+
+def ledger(directory, args, *, now=None):
+    # FIRST, as harvest's `since` does: the capture directory is the same one
+    # on every pull, and `apply` does not check whose ticket a report answers.
+    # The freshness rule harvest reports under does NOT apply here — a process
+    # ticket rewrites `ticket.json` long after harvest wrote the items.
+    (directory / REPORT_NAME).unlink(missing_ok=True)
+    job = load_job(directory, args)
+    now = _ms(now or datetime.now(timezone.utc))
+    dest = str(job.get("dest") or "").strip().rstrip("/")
+
+    def finish(outcome, reason, written=(), counts=None):
+        """The report, LAST. A process report names its pages in `written[]`
+        and captures nothing: the day was captured by harvest."""
+        _write_json(directory / REPORT_NAME, report_for(job, outcome=outcome, reason=reason, captured=[], missing=[], written=written))
+        print(json.dumps({"outcome": outcome, "reason": reason, "written": list(written), **(counts or {})}, indent=2))
+        return 1 if outcome == "failed" else 0
+
+    if not dest or Path(dest).is_absolute() or ".." in Path(dest).parts:
+        return finish("failed", f"no usable dest: the ticket's `dest` is the directory the day's ledger goes in, wiki-relative (got {dest!r})")
+    items_dir = directory / ITEMS_DIRNAME
+    items = sorted(path for path in items_dir.iterdir() if path.is_file() and id_in(path.name)) if items_dir.is_dir() else []
+    if not items:
+        return finish("skipped", f"{directory.name} holds no {ITEMS_DIRNAME}/ to make a ledger from")
+
+    source = source_of(directory, args.source, default=LINES_NAME)
+    rows, no_lines = [], f"no {LINES_NAME}: every bullet is the task's own title, not this unit's words"
+    try:
+        raw = source.read_text(encoding="utf-8") if source is not None else sys.stdin.read()
+    except OSError as exc:
+        # Only a `--from` the caller named must exist; the default name and an
+        # empty stdin are a run with no words of its own, which still renders.
+        if args.source:
+            return finish("failed", f"the lines could not be read: {type(exc).__name__}: {exc}")
+        raw = ""
+    if raw.strip():
+        no_lines = None
+        try:
+            rows = json.loads(raw)
+        except ValueError as exc:
+            return finish("failed", f"the lines could not be read: {type(exc).__name__}: {exc}")
+        if not isinstance(rows, list):
+            return finish("failed", "the lines are not a JSON list of `{id, line, junk}` rows")
+
+    by_id, unusable = lines_by_id(rows)
+    body, counts = ledger_body(items, by_id)
+    counts["unmatched"] = len(set(by_id) - {id_in(path.name) for path in items})
+    if not counts["kept"]:
+        return finish("skipped", f"every one of {counts['items']} item(s) was dropped by a junk rule", counts=counts)
+
+    front = {
+        "type": LEDGER_TYPE,
+        "channel": job.get("slug") or directory.parent.name,
+        "date": directory.name,
+        "items": str(counts["kept"]),
+        "extracted": EXTRACTED,
+    }
+    try:
+        written = [write_page(dest, directory.name, front, body)]
+    except PageRefused as exc:
+        return finish("failed", str(exc), counts=counts)
+
+    reasons = [one for one in (args.partial, no_lines) if one]
+    if counts["unlined"]:
+        reasons.append(f"{counts['unlined']} item(s) had no line of this unit's own and carry the task's own title")
+    if counts["unmatched"] or unusable:
+        reasons.append(f"{counts['unmatched'] + unusable} line(s) named no task this day holds")
+    return finish("partial" if reasons else "ok", "; ".join(reasons) or None, written=written, counts=counts)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     subs = parser.add_subparsers(dest="verb", required=True)
-    for verb in ("since", "write"):
+    for verb in ("since", "write", "ledger"):
         sub = subs.add_parser(verb)
         sub.add_argument("capture_dir", help="the ticket's own `capture_dir`, WIKI-RELATIVE as the ticket spells it: the job's day directory")
         sub.add_argument("--ticket", help=f"the ticket id, when there is no {TICKET_NAME} (a hand run, or `spawn: none`)")
@@ -591,9 +809,13 @@ def main(argv=None):
         if verb == "since":
             sub.add_argument("--lookback-days", type=int, default=LOOKBACK_DAYS, help="the FIRST pull's window")
             continue
-        sub.add_argument("--from", dest="source", help=f"the pull as a JSON file: a bare name is looked for IN the capture directory, a path is wiki-relative, `-` is stdin; absent, `{PULL_NAME}` in the capture directory, else stdin")
+        default_name = LINES_NAME if verb == "ledger" else PULL_NAME
+        sub.add_argument("--from", dest="source", help=f"this arm's input as a JSON file: a bare name is looked for IN the capture directory, a path is wiki-relative, `-` is stdin; absent, `{default_name}` in the capture directory, else stdin")
+        sub.add_argument("--partial", metavar="REASON", help="this step stopped early, and why")
+        if verb == "ledger":
+            sub.add_argument("--dest", help="the ticket's `dest`: the directory the day's ledger goes in, wiki-relative")
+            continue
         sub.add_argument("--cap", type=int, default=CAP, help="items per run, oldest first; at least 1" + ("" if CAP else " (absent: no cap)"))
-        sub.add_argument("--partial", metavar="REASON", help="the pull stopped early, and why")
         sub.add_argument("--failed", metavar="REASON", help="nothing was pulled, and why; writes the report alone")
         sub.add_argument("--missing", nargs=3, action="append", default=[], metavar=("HOST", "URL", "WHY"))
         venue_args(sub)
@@ -616,7 +838,7 @@ def main(argv=None):
     if args.verb == "write" and args.cap is not None and args.cap < 1:
         print("write_items: --cap is at least 1 — a cap below that would drop the newest item(s) in silence", file=sys.stderr)
         return 2
-    return since(directory, args) if args.verb == "since" else write(directory, args)
+    return {"since": since, "write": write, "ledger": ledger}[args.verb](directory, args)
 
 
 if __name__ == "__main__":
