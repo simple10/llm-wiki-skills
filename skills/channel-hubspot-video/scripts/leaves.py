@@ -126,6 +126,7 @@ from the plugin.
 
 from __future__ import annotations
 
+import unicodedata
 import argparse
 import fnmatch
 import hashlib
@@ -239,7 +240,7 @@ TITLE_MAX_BYTES = 200  # UTF-8 bytes: the host checks no length, and a filename 
                        # dies `OSError: [Errno 36] File name too long` (measured, channel-youtube)
 
 def safe_title(text, fallback="Untitled"):
-    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))   # control chars, newlines, tabs
+    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))  # control chars, newlines, tabs
     for bad, good in _TITLE_SWAPS.items():
         text = text.replace(bad, good)
     text = " ".join(text.split()).lstrip(". ").rstrip(" .")
@@ -248,6 +249,10 @@ def safe_title(text, fallback="Untitled"):
         cut = cut[:-1]
     if cut != text:
         text = cut.rstrip(" .-") + "…"
+    if text.casefold() == "index":
+        # `index.md` is the host's one RESERVED page name (note.py::RESERVED): its page walker skips
+        # it, so the page never appears in `known[]` and the item is re-pulled forever.
+        text = f"{text} (page)"
     return text or fallback
 
 
@@ -1127,8 +1132,10 @@ QUALIFIER_MAX = 60
 
 
 def page_key(title: str) -> str:
-    """What two titles share when they make one page file."""
-    return title.strip().casefold()
+    """What two titles share when they make one page file: the host strips, a
+    case-insensitive filesystem folds case, and APFS folds Unicode form too —
+    `é` composed and `e` + combining accent are one name there."""
+    return unicodedata.normalize("NFC", title.strip()).casefold()
 
 
 def qualifier(text) -> str:

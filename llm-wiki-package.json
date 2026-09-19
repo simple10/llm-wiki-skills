@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "description": "Skill units and venue-tactics playbooks for llm-wiki wikis: the channel units the ops CLI installs, and the playbooks its research lanes read.",
   "license": "MIT",
-  "min_ops_version": "1.3.0",
+  "min_ops_version": "1.88.0",
   "platforms": [
     "macos",
     "linux"

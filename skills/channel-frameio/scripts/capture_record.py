@@ -38,6 +38,7 @@ of those — `dest` is null on it and a harvest slice cannot write there — so
 nothing here reads or writes them.
 """
 
+import unicodedata
 import hashlib
 import json
 import os
@@ -221,6 +222,10 @@ def safe_title(text, fallback="Untitled"):
         cut = cut[:-1]
     if cut != text:
         text = cut.rstrip(" .-") + "…"
+    if text.casefold() == "index":
+        # `index.md` is the host's one RESERVED page name (note.py::RESERVED): its page walker skips
+        # it, so the page never appears in `known[]` and the item is re-pulled forever.
+        text = f"{text} (page)"
     return text or fallback
 
 
@@ -323,8 +328,10 @@ QUALIFIER_MAX = 60
 
 
 def page_key(title: str) -> str:
-    """What two titles share when they make one page file."""
-    return title.strip().casefold()
+    """What two titles share when they make one page file: the host strips, a
+    case-insensitive filesystem folds case, and APFS folds Unicode form too —
+    `é` composed and `e` + combining accent are one name there."""
+    return unicodedata.normalize("NFC", title.strip()).casefold()
 
 
 def qualifier(text) -> str:

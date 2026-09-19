@@ -130,7 +130,7 @@ TITLE_MAX_BYTES = 200
 
 
 def safe_title(text, fallback="Untitled"):
-    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))   # control chars, newlines, tabs
+    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))  # control chars, newlines, tabs
     for bad, good in _TITLE_SWAPS.items():
         text = text.replace(bad, good)
     text = " ".join(text.split()).lstrip(". ").rstrip(" .")
@@ -139,6 +139,10 @@ def safe_title(text, fallback="Untitled"):
         cut = cut[:-1]
     if cut != text:
         text = cut.rstrip(" .-") + "…"
+    if text.casefold() == "index":
+        # `index.md` is the host's one RESERVED page name (note.py::RESERVED): its page walker skips
+        # it, so the page never appears in `known[]` and the item is re-pulled forever.
+        text = f"{text} (page)"
     return text or fallback
 
 

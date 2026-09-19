@@ -143,6 +143,10 @@ def safe_title(text, fallback="Untitled"):
         cut = cut[:-1]
     if cut != text:
         text = cut.rstrip(" .-") + "…"
+    if text.casefold() == "index":
+        # `index.md` is the host's one RESERVED page name (note.py::RESERVED): its page walker skips
+        # it, so the page never appears in `known[]` and the item is re-pulled forever.
+        text = f"{text} (page)"
     return text or fallback
 
 

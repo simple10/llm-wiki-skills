@@ -65,6 +65,7 @@ History:
   whose post is gone reports `gone`.
 """
 
+import unicodedata
 import argparse
 import hashlib
 import json
@@ -123,8 +124,10 @@ QUALIFIER_MAX = 60
 
 
 def page_key(title: str) -> str:
-    """What two titles share when they make one page file."""
-    return title.strip().casefold()
+    """What two titles share when they make one page file: the host strips, a
+    case-insensitive filesystem folds case, and APFS folds Unicode form too —
+    `é` composed and `e` + combining accent are one name there."""
+    return unicodedata.normalize("NFC", title.strip()).casefold()
 
 
 def qualifier(text) -> str:

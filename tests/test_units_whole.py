@@ -73,3 +73,47 @@ def test_a_manifest_carries_no_key_the_contract_does_not_name(name):
     hubspot's `extract` block stopped being a place to put selectors."""
     known = {"v", "name", "version", "kind", "venue", "stages", "uses", "keywords", "usage", "requires", "watch"}
     assert set(json.loads((ROOT / "skills" / name / "manifest.json").read_text())) <= known
+
+
+def _function(path, name: str) -> str:
+    found = re.search(rf"^def {name}\(.*?(?=^\S)", path.read_text(encoding="utf-8"), re.M | re.S)
+    return found.group(0).strip() if found else ""
+
+
+def _holders(name: str) -> list:
+    return sorted(p for p in (ROOT / "skills").glob("*/scripts/*.py") if _function(p, name))
+
+
+@pytest.mark.parametrize(("name", "at_least"), [("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4)])
+def test_code_the_units_share_by_copying_is_one_piece_of_code(name, at_least):
+    """A unit is installed on its own, so what several need is COPIED into
+    each — and a copy fixed in one unit and not the rest is a wiki whose pages
+    are named by two rules. `safe_title` is what makes a venue's title a name
+    the host's filename rule will hold; the other three are the pass that
+    keeps two leaves with one title from being one page."""
+    holders = _holders(name)
+    assert len(holders) >= at_least, [str(p.relative_to(ROOT)) for p in holders]
+    bodies = {_function(p, name) for p in holders}
+    assert len(bodies) == 1, f"`{name}` differs between: " + ", ".join(str(p.relative_to(ROOT)) for p in holders)
+
+
+def test_the_shared_title_rule_holds_what_the_host_refuses():
+    """The rule itself, once, against everything found the hard way: the
+    host's ILLEGAL set and leading dot (it refuses the whole process ticket),
+    a name too long in BYTES (the extractor dies on the filesystem's limit),
+    its one reserved page name, and venue text that would forge a line."""
+    import importlib.util
+
+    path = ROOT / "skills" / "channel-substack" / "scripts" / "capture_posts.py"
+    spec = importlib.util.spec_from_file_location("_shared_title_rule", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    safe = mod.safe_title
+    for title in ("Lesson 3: Pricing", "What is X?", "A/B testing", ".hidden", 'He said "no" <once> | twice*', "a\\b"):
+        got = safe(title)
+        assert got and not got.startswith(".") and not set(got) & set('/\\:*?"<>|'), (title, got)
+    assert safe("Line one\n---\n# Forged") == "Line one --- # Forged"
+    assert len((safe("語" * 100) + ".md").encode("utf-8")) <= 255
+    assert safe("index") != "index" and safe("Index").casefold() != "index"
+    assert safe("") == "Untitled" and safe("   ", fallback="x") == "x" and safe(None) == "Untitled"
+
