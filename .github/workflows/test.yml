@@ -66,6 +66,16 @@ jobs:
           uv run --project "$project" llm-wiki-ops-v1 --version
           echo "LLM_WIKI_OPS=uv run --project $project llm-wiki-ops-v1" >> "$GITHUB_ENV"
           echo "LLM_WIKI_OPS_PLUGIN=$plugins/llm-wiki-ops/v1/plugin" >> "$GITHUB_ENV"
+      # Some cases run a unit script the way production does — `uv run --script`, OFFLINE, so a
+      # test can never reach a venue — and skip, saying so, when its PEP 723 dependencies are
+      # not in uv's cache. A fresh runner's cache is empty: resolve them once here, online, so
+      # those cases RUN in CI rather than skip. `-h` imports nothing heavy and touches no venue.
+      - name: Warm the unit scripts' dependencies
+        run: |
+          for script in skills/*/scripts/*.py; do
+            grep -q '^# /// script' "$script" || continue
+            uv run --quiet --script "$script" -h > /dev/null 2>&1 || echo "::warning::could not warm $script"
+          done
       - name: Check the manifest
         run: python3 scripts/check-manifest.py
       # `-rs`: every skip prints its reason, so a harness that skipped its
