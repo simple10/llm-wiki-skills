@@ -32,15 +32,27 @@ The outcome, unless `--outcome` overrides it (a refresh ticket's `gone`, say):
              refused for auth the reason is `auth_expired:<domain>`; when
              `harvest.scope` kept no post, the reason names the scope.
 
+**Titles are settled first.** The extractor files a page under its TITLE and
+overwrites what is there, so two posts of one run sharing a title ("Open
+thread", "Links") would be ONE page. In plan order the first post to make a
+filename keeps its title; a later one is retitled `<title> (<published
+date>)` — the 8-hex hash of its URL where there is no date, or the date is the
+namesake's too — in its own `capture.json`, and `captured[].title` says the
+same. See "page names" below for the rule and its limit.
+
 It writes `<capture-dir>/report.json` and prints the same object. Exit 0 for
 `ok`, `partial`, `skipped`, `unchanged` and `gone`; exit 1 for `failed`.
 
 History:
 - 2026-09-19: new with the port to the rebuilt pipeline's worker contract.
+- 2026-09-19: titles are settled before the report is built — two same-titled
+  posts of one run landed as one page, the second overwriting the first.
 """
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -73,9 +85,113 @@ def captured_record(directory):
     return record
 
 
+# --- page names
+#
+# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
+# capture's title and writes it with no existence check (llm-wiki-ops
+# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
+# name_for` -> `page/note.py::filename_for`): the filename is
+# `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
+# one of `ILLEGAL` or a control character is REFUSED, not altered — and a
+# capture with no title is filed under its body's stem (`page`). So two leaves
+# of one run whose titles differ only in outer whitespace are ONE page, the
+# second overwriting the first; on a filesystem that folds case (macOS,
+# Windows) so are two that differ only in that. `page_key` folds both: a
+# needless qualifier costs nothing, an overwritten page is lost. NOT folded:
+# Unicode form (NFC/NFD), which the same filesystems also fold — stdlib has it
+# only in `unicodedata`, and one venue spelling one title two ways is rare.
+# Duplicated per unit on purpose — units install one by one, nothing is shared.
+
+TITLE_ILLEGAL = '/\\:*?"<>|'  # `page/note.py::ILLEGAL`
+QUALIFIER_MAX = 60
+
+
+def page_key(title: str) -> str:
+    """What two titles share when they make one page file."""
+    return title.strip().casefold()
+
+
+def qualifier(text) -> str:
+    """Venue text made safe inside a title: one line, capped, and none of the
+    characters the host refuses a title for."""
+    if not isinstance(text, str):
+        return ""
+    safe = "".join("-" if (char in TITLE_ILLEGAL or ord(char) < 32) else char for char in text)
+    return " ".join(safe.split())[:QUALIFIER_MAX].strip(" -.")
+
+
+def unique_title(title: str, qualifiers, taken: dict) -> str:
+    """`title`, untouched, when no leaf before this one makes its filename;
+    else `title (<qualifier>)` with the first qualifier that tells it apart.
+
+    `taken` maps a `page_key` to the qualifiers of the leaf holding it, and the
+    answer is claimed in it. A qualifier the holder shares distinguishes
+    nothing and is passed over; callers end the list with the leaf's hash8,
+    which no other leaf has, and a counter closes it, so the answer is always
+    free. A title this already qualified is free on the next pass and comes
+    back as it is — re-running never renames a leaf a second time.
+    """
+    given = list(dict.fromkeys(q for q in map(qualifier, qualifiers) if q))
+    chosen = title
+    holder = taken.get(page_key(title))
+    if holder is not None:
+        shared = {page_key(q) for q in holder}
+        options = [q for q in given if page_key(q) not in shared]
+        base = title.strip()
+        chosen = next((f"{base} ({q})" for q in options if page_key(f"{base} ({q})") not in taken), None)
+        stem, n = (f"{base} ({options[-1]})" if options else base), 2
+        while chosen is None:
+            if page_key(f"{stem} ({n})") not in taken:
+                chosen = f"{stem} ({n})"
+            n += 1
+    taken[page_key(chosen)] = given
+    return chosen
+
+
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def leaf_qualifiers(leaf, record):
+    """What tells this post from a namesake: the day it was published — the one
+    thing a newsletter re-using a title always changes — then its URL's hash."""
+    front = (record or {}).get("frontmatter")
+    published = (front.get("published") if isinstance(front, dict) else None) or leaf.get("published")
+    day = _DAY.match(published) if isinstance(published, str) else None
+    return [day.group(0) if day else None, hashlib.sha1(leaf["item"].encode("utf-8")).hexdigest()[:8]]
+
+
+def settle_titles(leaves, leaf_root):
+    """One page per post: in plan order the first leaf to make a filename keeps
+    its title, and a later one is retitled in its own `capture.json`.
+
+    Here and not in `capture_posts.py`, because a post's final title is only
+    settled once it is captured (the plan's, else `og:title`, else a hand
+    `--only --title`), one `--only` pass sees one leaf, and this runs last,
+    over all of them, before anything is extracted. A planned post that did
+    not land still holds the title the archive gave it, so what landed is
+    titled the same whether or not its namesake did.
+    """
+    taken = {}
+    for leaf in leaves:
+        directory = Path(leaf_root) / leaf["dir"].rsplit("/", 1)[-1]
+        record = captured_record(directory)
+        if record is None:
+            if isinstance(leaf.get("title"), str) and leaf["title"].strip():
+                unique_title(leaf["title"], leaf_qualifiers(leaf, None), taken)
+            continue
+        title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
+        held = title or Path(record["body"]).stem
+        final = unique_title(held, leaf_qualifiers(leaf, record), taken)
+        if final != held:
+            record["title"] = final
+            (directory / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
 def build(plan, rows, ticket, leaf_root, *, extra_missing=(), outcome=None, reason=None):
-    """The report, as a dict. Pure but for reading the leaf directories."""
+    """The report, as a dict. Pure but for reading the leaf directories — and
+    for settling the titles in them, which is what makes `captured[]` true."""
     leaves = [leaf for leaf in plan.get("leaves") or [] if isinstance(leaf, dict) and leaf.get("item") and leaf.get("dir")]
+    settle_titles(leaves, leaf_root)
     summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
     by_item = {row.get("item"): row for row in rows if isinstance(row, dict)}
 

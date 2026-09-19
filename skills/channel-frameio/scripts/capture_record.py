@@ -17,6 +17,12 @@ so a second caller can never drift from them:
     verb for it, so this unit composes that shape itself for every leaf it
     captures beside the ticket's own capture dir.
 
+  - `settle_titles()` — the page-name rule. The extractor files a page under
+    its TITLE and overwrites what is there, so two assets of one share with
+    one name (`Brief.pdf` in two folders) would be ONE page; the driver calls
+    this before every report, and a later namesake is retitled
+    `<title> (<folder breadcrumb>)` in its own `capture.json`.
+
 Plus the small utilities the per-leaf path is built from: `run()`,
 `source_hosts_for()`, `strip_title()`, `read_json()`/`write_json()`.
 
@@ -189,3 +195,99 @@ def capture_record(*, slug: str, item: str, title, body: str, content_type: str,
         "fetched_at": now_utc(),
         "frontmatter": clean_frontmatter(frontmatter),
     }
+
+
+# ---------------------------------------------------------------- page names
+#
+# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
+# capture's title and writes it with no existence check (llm-wiki-ops
+# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
+# name_for` -> `page/note.py::filename_for`): the filename is
+# `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
+# one of `ILLEGAL` or a control character is REFUSED, not altered — and a
+# capture with no title is filed under its body's stem (`page`). So two leaves
+# of one run whose titles differ only in outer whitespace are ONE page, the
+# second overwriting the first; on a filesystem that folds case (macOS,
+# Windows) so are two that differ only in that. `page_key` folds both: a
+# needless qualifier costs nothing, an overwritten page is lost. NOT folded:
+# Unicode form (NFC/NFD), which the same filesystems also fold — stdlib has it
+# only in `unicodedata`, and one venue spelling one title two ways is rare.
+# Duplicated per unit on purpose — units install one by one, nothing is shared.
+
+TITLE_ILLEGAL = '/\\:*?"<>|'  # `page/note.py::ILLEGAL`
+QUALIFIER_MAX = 60
+
+
+def page_key(title: str) -> str:
+    """What two titles share when they make one page file."""
+    return title.strip().casefold()
+
+
+def qualifier(text) -> str:
+    """Venue text made safe inside a title: one line, capped, and none of the
+    characters the host refuses a title for."""
+    if not isinstance(text, str):
+        return ""
+    safe = "".join("-" if (char in TITLE_ILLEGAL or ord(char) < 32) else char for char in text)
+    return " ".join(safe.split())[:QUALIFIER_MAX].strip(" -.")
+
+
+def unique_title(title: str, qualifiers, taken: dict) -> str:
+    """`title`, untouched, when no leaf before this one makes its filename;
+    else `title (<qualifier>)` with the first qualifier that tells it apart.
+
+    `taken` maps a `page_key` to the qualifiers of the leaf holding it, and the
+    answer is claimed in it. A qualifier the holder shares distinguishes
+    nothing and is passed over; callers end the list with the leaf's hash8,
+    which no other leaf has, and a counter closes it, so the answer is always
+    free. A title this already qualified is free on the next pass and comes
+    back as it is — re-running never renames a leaf a second time.
+    """
+    given = list(dict.fromkeys(q for q in map(qualifier, qualifiers) if q))
+    chosen = title
+    holder = taken.get(page_key(title))
+    if holder is not None:
+        shared = {page_key(q) for q in holder}
+        options = [q for q in given if page_key(q) not in shared]
+        base = title.strip()
+        chosen = next((f"{base} ({q})" for q in options if page_key(f"{base} ({q})") not in taken), None)
+        stem, n = (f"{base} ({options[-1]})" if options else base), 2
+        while chosen is None:
+            if page_key(f"{stem} ({n})") not in taken:
+                chosen = f"{stem} ({n})"
+            n += 1
+    taken[page_key(chosen)] = given
+    return chosen
+
+
+def leaf_qualifiers(leaf: dict) -> list:
+    """What tells this asset from a namesake: the folders it sits in, below
+    the top one every leaf of a share carries (the same breadcrumb a
+    document's `page.md` shows, joined with ` - ` because a title cannot carry
+    a `/`), then the hash of its view URL."""
+    bits = [b for b in (leaf.get("path") or []) if isinstance(b, str) and b.strip()]
+    return [" - ".join(bits[1:]), hash8(leaf["item"])]
+
+
+def settle_titles(root: Path, leaves) -> None:
+    """One page per leaf: in manifest order the first leaf to make a filename
+    keeps its title, and a later one is retitled in its own `capture.json`.
+
+    In the driver's report step and not in `capture_job.py`, because a title
+    is the captured page's own — unknown until the viewer has been opened —
+    and one capture sees one leaf; the driver sees all of them, on every
+    pass, before anything is extracted. A title already qualified is free on
+    the next pass, so a later pass renames nothing a second time.
+    """
+    taken: dict = {}
+    for leaf in leaves:
+        directory = Path(root) / leaf["dir"]
+        record = read_json(directory / CAPTURE_NAME)
+        if not record or not isinstance(record.get("body"), str) or not (directory / record["body"]).is_file():
+            continue
+        title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
+        held = title or Path(record["body"]).stem
+        final = unique_title(held, leaf_qualifiers(leaf), taken)
+        if final != held:
+            record["title"] = final
+            write_json(directory / CAPTURE_NAME, record)

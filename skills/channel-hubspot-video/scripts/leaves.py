@@ -46,6 +46,11 @@ them to `plan` as flags; `page` and `report` then read them back off
   report <capture-dir> [--missing <why> <url> ...] [--reason TEXT] [--failed]
          Reads `plan.json`, lists every leaf that really holds a capture in
          `captured[]`, and writes `<capture-dir>/report.json`. Run it LAST.
+         First it settles the titles: the extractor files a page under its
+         TITLE and overwrites what is there, so a later page whose title makes
+         the filename an earlier one made is retitled `<title> (<the url path
+         segment that tells them apart>)` in its own `capture.json`, its media
+         leaf following it (see "page names" below).
 
 Usage:
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py plan <capture_dir> --urls <capture_dir>/sitemap.xml
@@ -77,7 +82,7 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 HERE = Path(__file__).resolve().parent
 SITES = HERE.parent / "references" / "sites.json"
@@ -581,12 +586,116 @@ def held(root: Path, leaf: dict) -> dict | None:
     return {"item": leaf["item"], "dir": leaf["dir"], "title": title if isinstance(title, str) else None}
 
 
+# ------------------------------------------------------------ page names
+#
+# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
+# capture's title and writes it with no existence check (llm-wiki-ops
+# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
+# name_for` -> `page/note.py::filename_for`): the filename is
+# `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
+# one of `ILLEGAL` or a control character is REFUSED, not altered — and a
+# capture with no title is filed under its body's stem (`page`). So two leaves
+# of one run whose titles differ only in outer whitespace are ONE page, the
+# second overwriting the first; on a filesystem that folds case (macOS,
+# Windows) so are two that differ only in that. `page_key` folds both: a
+# needless qualifier costs nothing, an overwritten page is lost. NOT folded:
+# Unicode form (NFC/NFD), which the same filesystems also fold — stdlib has it
+# only in `unicodedata`, and one venue spelling one title two ways is rare.
+# Duplicated per unit on purpose — units install one by one, nothing is shared.
+
+TITLE_ILLEGAL = '/\\:*?"<>|'  # `page/note.py::ILLEGAL`
+QUALIFIER_MAX = 60
+
+
+def page_key(title: str) -> str:
+    """What two titles share when they make one page file."""
+    return title.strip().casefold()
+
+
+def qualifier(text) -> str:
+    """Venue text made safe inside a title: one line, capped, and none of the
+    characters the host refuses a title for."""
+    if not isinstance(text, str):
+        return ""
+    safe = "".join("-" if (char in TITLE_ILLEGAL or ord(char) < 32) else char for char in text)
+    return " ".join(safe.split())[:QUALIFIER_MAX].strip(" -.")
+
+
+def unique_title(title: str, qualifiers, taken: dict) -> str:
+    """`title`, untouched, when no leaf before this one makes its filename;
+    else `title (<qualifier>)` with the first qualifier that tells it apart.
+
+    `taken` maps a `page_key` to the qualifiers of the leaf holding it, and the
+    answer is claimed in it. A qualifier the holder shares distinguishes
+    nothing and is passed over; callers end the list with the leaf's hash8,
+    which no other leaf has, and a counter closes it, so the answer is always
+    free. A title this already qualified is free on the next pass and comes
+    back as it is — re-running never renames a leaf a second time.
+    """
+    given = list(dict.fromkeys(q for q in map(qualifier, qualifiers) if q))
+    chosen = title
+    holder = taken.get(page_key(title))
+    if holder is not None:
+        shared = {page_key(q) for q in holder}
+        options = [q for q in given if page_key(q) not in shared]
+        base = title.strip()
+        chosen = next((f"{base} ({q})" for q in options if page_key(f"{base} ({q})") not in taken), None)
+        stem, n = (f"{base} ({options[-1]})" if options else base), 2
+        while chosen is None:
+            if page_key(f"{stem} ({n})") not in taken:
+                chosen = f"{stem} ({n})"
+            n += 1
+    taken[page_key(chosen)] = given
+    return chosen
+
+
+def leaf_qualifiers(leaf: dict) -> list:
+    """What tells this page from a namesake: its url's path segments, deepest
+    first — `unique_title` passes over the ones the namesake shares, so what is
+    left is the segment that tells them apart (`module-2` of
+    `/learn/module-2/intro`) — then the hash of its item. A media leaf is
+    qualified by its PAGE's url: a stream url says nothing a person can read."""
+    path = urlsplit(leaf.get("media_of") or leaf["item"]).path
+    bits = [unquote(bit) for bit in path.split("/") if bit]
+    return [*reversed(bits), hashlib.sha1(leaf["item"].encode("utf-8")).hexdigest()[:8]]
+
+
+def settle_titles(root: Path, planned: list[dict]) -> None:
+    """One page per leaf: in plan order the first leaf to make a filename keeps
+    its title, and a later one is retitled in its own `capture.json`.
+
+    In `report` and not in `page`, because `page` sees one leaf, pages are
+    rendered in whatever order the worker reaches them, and `report` runs
+    last, over all of them, before anything is extracted. Pages first, then
+    media leaves: a retitled page's media leaf becomes `<new title> (video)`,
+    so the stub and the lesson still read as a pair. A title already qualified
+    is free on the next pass, so a second report renames nothing twice.
+    """
+    taken: dict = {}
+    retitled: dict = {}
+    ordered = [leaf for leaf in planned if not leaf.get("media_of")] + [leaf for leaf in planned if leaf.get("media_of")]
+    for leaf in ordered:
+        directory = root / leaf["dir"]
+        record = _read_json(directory / CAPTURE_NAME)
+        if held(root, leaf) is None:
+            continue
+        title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
+        on_disk = title or Path(record["body"]).stem
+        wanted = f"{retitled[leaf['media_of']]} (video)" if leaf.get("media_of") in retitled else on_disk
+        final = unique_title(wanted, leaf_qualifiers(leaf), taken)
+        if final != on_disk:
+            record["title"] = final
+            _write_json(directory / CAPTURE_NAME, record)
+            retitled[leaf["item"]] = final
+
+
 def cmd_report(args) -> int:
     capture = Path(args.capture_dir).resolve()
     job = job_facts(capture)
     root = wiki_root(capture, job["capture_dir"])
     plan = _read_json(capture / PLAN_NAME) or {}
     planned = plan.get("leaves") or []
+    settle_titles(root, planned)
     captured = [row for row in (held(root, leaf) for leaf in planned) if row]
     missing = []
     for why, url in args.missing or []:

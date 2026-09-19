@@ -37,7 +37,8 @@ you customize it.
    harvest, which is the only time this venue's rendering happens: processing
    is the generic extractor's. Set `title_selector` whenever the site reuses
    one `<title>` across a section — HubSpot sites commonly do, and pages are
-   FILED by title, so identically titled lessons overwrite each other.
+   FILED by title, so identically titled lessons overwrite each other
+   (`leaves.py report` tells namesakes apart within one run only).
    Check it without the network:
    `llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> <leaf_dir> --sites <ops dir>/skills/channel-hubspot-video/references/sites.json --no-media-leaf`
    re-renders `page.md` from the `page.html` already on disk.

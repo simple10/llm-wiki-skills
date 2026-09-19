@@ -42,7 +42,11 @@ record  after `capture_lesson.py` and `to_markdown.py` have filled one leaf:
         Safe to re-run: neither block is stacked twice.
 report  LAST: writes `report.json` in the ticket's capture dir. `captured[]`
         is derived, never claimed — a leaf counts when its `capture.json`
-        names a body file that is there.
+        names a body file that is there. First it settles the titles: the
+        extractor files a page under its TITLE and overwrites what is there,
+        so a later lesson whose title makes the filename an earlier one made
+        is retitled `<title> (<section name>)` — in its `capture.json` and in
+        `captured[]` (see "page names" below).
 
 Scope is the ticket's own: `page` keeps only the target; `section` keeps the
 lessons under the target's path (so the target must be the space root,
@@ -61,6 +65,10 @@ for `ok`, `partial` and `skipped`, 1 for `failed`.
 History:
   2026-09-19  created — the rebuilt pipeline fans nothing out: one ticket
               captures every leaf, and the unit applies scope itself.
+  2026-09-19  `report` settles titles first: two lessons of one run sharing a
+              title ("Introduction" in every section) were ONE page under
+              `dest`, the second silently overwriting the first. `plan` reads
+              each section's name off the sidebar for the qualifier.
 """
 
 import argparse
@@ -229,12 +237,19 @@ def build_plan(ticket: dict, meta: dict, *, capture_rel: str) -> dict:
             if isinstance(link, dict):
                 candidates.append((link.get("href"), link.get("text") or "", False))
 
-    leaves, dropped, seen = [], [], set()
+    leaves, dropped, seen, sections = [], [], set(), {}
     for raw, text, is_root in candidates:
         url = clean_url(raw)
         if url is None:
             continue
         key = same_key(url)
+        if not is_lesson(url):
+            # A bare `/sections/<id>` link is the sidebar's section header: no
+            # leaf, but its text is the section's NAME — what tells two
+            # "Introduction" lessons apart (see "page names").
+            header = SECTION_RE.search(urlsplit(url).path)
+            if header and link_facts(text)[0]:
+                sections.setdefault(header.group(1), link_facts(text)[0])
         if key in seen:
             # The sidebar repeats a link (section header + lesson row); the
             # first text that names a title wins.
@@ -271,6 +286,10 @@ def build_plan(ticket: dict, meta: dict, *, capture_rel: str) -> dict:
                 "root": is_root,
             }
         )
+
+    for leaf in leaves:
+        within = SECTION_RE.search(urlsplit(leaf["url"]).path)
+        leaf["section"] = sections.get(within.group(1)) if within else None
 
     space = SPACE_RE.match(urlsplit(target).path)
     return {
@@ -466,7 +485,107 @@ def landed(directory: Path) -> dict | None:
     return record
 
 
+# --- page names ---------------------------------------------------------------
+#
+# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
+# capture's title and writes it with no existence check (llm-wiki-ops
+# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
+# name_for` -> `page/note.py::filename_for`): the filename is
+# `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
+# one of `ILLEGAL` or a control character is REFUSED, not altered — and a
+# capture with no title is filed under its body's stem (`page`). So two leaves
+# of one run whose titles differ only in outer whitespace are ONE page, the
+# second overwriting the first; on a filesystem that folds case (macOS,
+# Windows) so are two that differ only in that. `page_key` folds both: a
+# needless qualifier costs nothing, an overwritten page is lost. NOT folded:
+# Unicode form (NFC/NFD), which the same filesystems also fold — stdlib has it
+# only in `unicodedata`, and one venue spelling one title two ways is rare.
+# Duplicated per unit on purpose — units install one by one, nothing is shared.
+
+TITLE_ILLEGAL = '/\\:*?"<>|'  # `page/note.py::ILLEGAL`
+QUALIFIER_MAX = 60
+
+
+def page_key(title: str) -> str:
+    """What two titles share when they make one page file."""
+    return title.strip().casefold()
+
+
+def qualifier(text) -> str:
+    """Venue text made safe inside a title: one line, capped, and none of the
+    characters the host refuses a title for."""
+    if not isinstance(text, str):
+        return ""
+    safe = "".join("-" if (char in TITLE_ILLEGAL or ord(char) < 32) else char for char in text)
+    return " ".join(safe.split())[:QUALIFIER_MAX].strip(" -.")
+
+
+def unique_title(title: str, qualifiers, taken: dict) -> str:
+    """`title`, untouched, when no leaf before this one makes its filename;
+    else `title (<qualifier>)` with the first qualifier that tells it apart.
+
+    `taken` maps a `page_key` to the qualifiers of the leaf holding it, and the
+    answer is claimed in it. A qualifier the holder shares distinguishes
+    nothing and is passed over; callers end the list with the leaf's hash8,
+    which no other leaf has, and a counter closes it, so the answer is always
+    free. A title this already qualified is free on the next pass and comes
+    back as it is — re-running never renames a leaf a second time.
+    """
+    given = list(dict.fromkeys(q for q in map(qualifier, qualifiers) if q))
+    chosen = title
+    holder = taken.get(page_key(title))
+    if holder is not None:
+        shared = {page_key(q) for q in holder}
+        options = [q for q in given if page_key(q) not in shared]
+        base = title.strip()
+        chosen = next((f"{base} ({q})" for q in options if page_key(f"{base} ({q})") not in taken), None)
+        stem, n = (f"{base} ({options[-1]})" if options else base), 2
+        while chosen is None:
+            if page_key(f"{stem} ({n})") not in taken:
+                chosen = f"{stem} ({n})"
+            n += 1
+    taken[page_key(chosen)] = given
+    return chosen
+
+
+def leaf_qualifiers(leaf: dict, record: dict | None) -> list:
+    """What tells this lesson from a namesake, most meaningful first: its
+    section's name, its "Topic N of M", both, and last the hash of its url."""
+    front = (record or {}).get("frontmatter")
+    position = front.get("position") if isinstance(front, dict) else None
+    section = leaf.get("section")
+    both = f"{section}, {position}" if section and position else None
+    return [section, position, both, hashlib.sha1(leaf["url"].encode("utf-8")).hexdigest()[:8]]
+
+
+def settle_titles(capture_dir: Path, plan: dict) -> None:
+    """One page per leaf: in plan order the first leaf to make a filename
+    keeps its title, and a later one is retitled in its own `capture.json`.
+
+    Here and not in `record`, because a lesson's final title is only known
+    once it is recorded (a truncated sidebar text falls back to the body's
+    heading) and lessons may be recorded in any order; `report` runs last,
+    sees every one, and runs before anything is extracted. A planned lesson
+    that has not landed still holds the name the sidebar gave it, so what
+    landed is titled the same whether or not its namesake did.
+    """
+    taken: dict = {}
+    for leaf in plan.get("leaves") or []:
+        directory = leaf_path(capture_dir, leaf)
+        record = landed(directory)
+        if record is None:
+            if leaf.get("title"):
+                unique_title(leaf["title"], leaf_qualifiers(leaf, None), taken)
+            continue
+        title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
+        final = unique_title(title or Path(record["body"]).stem, leaf_qualifiers(leaf, record), taken)
+        if final != (title or Path(record["body"]).stem):
+            record["title"] = final
+            write_json(directory / CAPTURE_NAME, record)
+
+
 def build_report(capture_dir: Path, ticket: dict, plan: dict, *, missing=(), auth_expired=False, reason=None) -> dict:
+    settle_titles(capture_dir, plan)
     captured, pending = [], []
     for leaf in plan.get("leaves") or []:
         record = landed(leaf_path(capture_dir, leaf))

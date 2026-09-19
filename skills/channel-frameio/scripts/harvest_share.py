@@ -80,6 +80,9 @@ History:
               into its own `_raw/<slug>/<leaf>/`, and writes `report.json`.
               The URL/byte bounds and `--skip` went with the row they bounded;
               `known[]` is the resume state now.
+  2026-09-19  titles are settled before every report: two assets of one share
+              with one name landed as one page, the second overwriting the
+              first (`capture_record.py::settle_titles`).
 """
 
 import argparse
@@ -100,6 +103,7 @@ from capture_record import (
     now_utc,
     read_json,
     run,
+    settle_titles,
     write_json,
 )
 
@@ -428,6 +432,10 @@ def main() -> int:
                 write_json(leaf_dir / ERROR_NAME, {"ticket": ticket_id, "item": leaf["item"], "why": why, "exit": rc, "detail": text})
             print(f"[{fetched}] {leaf['dir']} exit {rc}", file=sys.stderr)
 
+    if not args.plan_only:
+        # Before the report reads a title: two leaves with one title are ONE
+        # page to the extractor, the second overwriting the first.
+        settle_titles(root, plan["leaves"])
     states = {leaf["item"]: leaf_state(root, leaf, ticket_id) for leaf in plan["leaves"]}
     report = report_of(ticket, plan, states)
     if not args.plan_only:

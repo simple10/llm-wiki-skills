@@ -150,6 +150,23 @@ stop cleanly between leaves, report `partial`, and the next run resumes through
 (`auth_expired:<domain>`). Then say the target, the outcome and any `missing[]`
 host, and stop.
 
+**It settles the titles first.** The extractor files a page under its TITLE
+(`<dest>/<title>.md`, the title stripped of outer whitespace and nothing
+else) and overwrites whatever is there, so two pages of one run sharing a
+title would be ONE page, both tickets `ok` — `title_selector` (see Content
+extraction) makes that rare, not impossible. In plan order the first page to
+make a filename keeps its title untouched; a later one is retitled in its own
+`capture.json` with the url path segment that tells it from its namesake —
+`Introduction (module-2)` for `/learn/module-2/intro` — or the 8-hex hash of
+its url where no segment does, and its media leaf follows it
+(`Introduction (module-2) (video)`); `captured[].title` says the same. Titles
+differing only in case count as one (a Mac's filesystem folds
+them), and a second `report` renames nothing twice. **Across runs this cannot
+be known**: `known[]` carries `resource` and `harvested_at`, never a title, so
+a page captured by a LATER ticket can still overwrite a namesake an earlier
+one landed. The real fix is the host's (a collision-safe page name); until
+then a site that repeats titles needs its `title_selector` right.
+
 ## Fingerprints — is this venue HubSpot CMS?
 
 `possible[]` sent you here on a host nobody enumerated. Confirm before
@@ -256,7 +273,10 @@ WHY behind a selector belongs in this file, under the site's own heading.
 - **`title_selector`** — set it whenever the site reuses one `<title>` across a
   section, which HubSpot sites commonly do. Without it every page in a course
   is named identically — and the extractor names the page FILE from the title,
-  so identically titled lessons overwrite each other under `dest`.
+  so identically titled lessons overwrite each other under `dest`. `report`
+  qualifies namesakes within one run (*Stages* §4), which keeps the pages
+  apart but names them `<shared title> (<url segment>)`; across runs nothing
+  does.
 - **`strip_params`** / **`exclude_urls`** — query parameters beyond `hsLang`
   that do not change the page, and URL globs this site should never yield.
 
@@ -322,3 +342,9 @@ and a thirty-minute slice, expect a section to take many `partial` runs;
   (`leaves.py`), `page.md` is rendered at harvest because only harvest reaches
   a unit, and the site's selectors moved from a manifest `extract` object —
   which nothing read and `skills doctor` refuses — to `references/sites.json`.
+- **2026-09-19** — Two pages of one run sharing a title landed as ONE page:
+  the extractor names the file from the title and overwrites. `leaves.py
+  report` now settles titles within the run (the first keeps its own; later
+  namesakes get the distinguishing url segment, else `(<hash8>)`, and the
+  media leaf follows its page). Not fixed across runs — `known[]` carries no
+  titles; that one is the host's.

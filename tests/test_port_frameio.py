@@ -284,6 +284,62 @@ def test_a_capture_dir_that_is_not_the_tickets_is_refused_before_anything_runs(m
 # ------------------------------------------------- one leaf: capture_job.py
 
 
+# ---- page names: one page per asset, whatever two assets are called -------------------
+
+
+def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
+    """`page/note.py::filename_for` is `title.strip() + ".md"` and nothing else:
+    outer whitespace is all the HOST folds; case is what a case-insensitive
+    filesystem folds under it."""
+    rec = _module("capture_record")
+    assert rec.page_key("Brief.pdf") == rec.page_key(" Brief.pdf\n") == rec.page_key("BRIEF.PDF")
+    assert rec.page_key("Brief.pdf") != rec.page_key("Brief")  # nothing else is dropped
+    assert rec.TITLE_ILLEGAL == '/\\:*?"<>|'  # `page/note.py::ILLEGAL` — a title carrying one is refused
+    taken = {}
+    assert rec.unique_title("Brief.pdf ", ["Client A", "aaaaaaaa"], taken) == "Brief.pdf "  # the first: untouched
+    assert rec.unique_title("brief.pdf", ["Client B", "bbbbbbbb"], taken) == "brief.pdf (Client B)"
+    assert rec.unique_title("Brief.pdf", ["Client A", "cccccccc"], taken) == "Brief.pdf (cccccccc)"  # same folder: tells nothing apart
+    assert rec.unique_title("Brief.pdf", ["Client B", "dddddddd"], taken) == "Brief.pdf (dddddddd)"  # that name is taken
+    assert rec.unique_title("Brief.pdf", ["Client B"], taken) == "Brief.pdf (Client B) (2)"
+    # The breadcrumb is below the shared top folder, and never carries the `/` a title is refused for.
+    leaf = {"item": f"{SHARE}/view/x", "path": ["Share", "Client A/B", "Drafts: v2"]}
+    assert rec.leaf_qualifiers(leaf) == ["Client A/B - Drafts: v2", rec.hash8(leaf["item"])]
+    assert rec.unique_title("Brief.pdf", rec.leaf_qualifiers(leaf), taken) == "Brief.pdf (Client A-B - Drafts- v2)"
+    assert rec.leaf_qualifiers({"item": "u", "path": ["Share"]})[0] == ""  # only the shared top folder: nothing meaningful
+
+
+def _titled_capture_job(titles):
+    """As `_fake_capture_job`, the captured title read off the leaf's `--name`."""
+
+    def run(cmd):
+        leaf_dir, url = Path(cmd[3]), cmd[cmd.index("--url") + 1]
+        (leaf_dir / "page.md").write_text("# x\n", encoding="utf-8")
+        title = titles[cmd[cmd.index("--name") + 1]]
+        (leaf_dir / "capture.json").write_text(json.dumps({"item": url, "title": title, "body": "page.md"}), encoding="utf-8")
+        return 0, "{}", ""
+
+    return run
+
+
+def test_same_named_assets_are_told_apart_by_their_folder_on_every_pass(monkeypatch, capsys, tmp_path):
+    leaves = [_leaf(1, "Brief.pdf", ("Share", "Client A")), _leaf(2, "Brief.pdf", ("Share", "Client B", "Drafts")),
+              _leaf(3, "brief.PDF", ("Share", "Client A")), _leaf(4, "Notes.pdf", ("Share",)), _leaf(5, "Untitled", ("Share",)),
+              _leaf(6, "Untitled 2", ("Share",))]
+    cap = _share_dir(tmp_path, leaves)
+    titles = {"Brief.pdf": "Brief.pdf", "brief.PDF": "brief.PDF ", "Notes.pdf": "Notes.pdf", "Untitled": None, "Untitled 2": None}
+    mod, hash8 = _module("harvest_share"), _module("capture_record").hash8
+    want = ["Brief.pdf", "Brief.pdf (Client B - Drafts)", f"brief.PDF ({hash8(leaves[2]['view_url'])})", "Notes.pdf",
+            None, f"page ({hash8(leaves[5]['view_url'])})"]  # no title: the extractor files it under its body's stem
+    for _ in range(2):  # a second pass fetches nothing and renames nothing a second time
+        monkeypatch.setattr(mod, "run", _titled_capture_job(titles))
+        monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0"])
+        assert mod.main() == 0
+        capsys.readouterr()
+        report = json.loads((cap / "report.json").read_text())
+        assert [c["title"] for c in report["captured"]] == want
+        assert [json.loads((tmp_path / c["dir"] / "capture.json").read_text()).get("title") for c in report["captured"]] == want
+
+
 def _fake_asset_run(calls, kind):
     """`capture_asset.py` stubbed — it needs a browser and the venue — and
     `frameio_doc_note.py` run FOR REAL, under this interpreter."""
@@ -432,6 +488,51 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki):
         assert "Quarterly roadmap for the fixture share" in rendered
     else:
         assert "(extraction failed: ModuleNotFoundError" in rendered
+
+
+def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki):
+    """The extractor files a page under its title and overwrites what is there:
+    before the driver settled titles, `Brief.pdf` in a second folder WAS the
+    first one's page, and both process tickets said ok."""
+    share = "https://next.frame.io/share/22222222-2222-2222-2222-222222222222"
+    job = declared_job(ops, env, wiki, UNIT, share, "dest=sources/scrapes/port-frameio-names", slug="port-channel-frameio-names")
+    cap = ticket_in(wiki, job, "share-2222--e2e00002", unit=UNIT, item=share)
+    leaves = []
+    for n, folder in ((1, "Client A"), (2, "Client B")):
+        asset = f"{n:08d}-eeee-bbbb-cccc-dddddddddddd"
+        leaves.append({"asset_id": asset, "name": "Brief.pdf", "path": ["Fixture Share", folder], "view_url": f"{share}/view/{asset}"})
+    (cap / "tree.json").write_text(json.dumps({"leaves": leaves}), encoding="utf-8")
+    rel = str(cap.relative_to(wiki))
+    code, out, err = _run_script("harvest_share.py", rel, "--plan-only", cwd=wiki)
+    assert code == 0, err
+    planned = json.loads((cap / "plan.json").read_text())["leaves"]
+    assert len(planned) == 2 and len({leaf["dir"] for leaf in planned}) == 2
+
+    for leaf in planned:  # what `capture_asset.py` leaves, then the unit's own render
+        (wiki / leaf["dir"]).mkdir()
+        shutil.copy(FIXTURES / "deck.pdf", wiki / leaf["dir"] / "document.pdf")
+        (wiki / leaf["dir"] / "meta.json").write_text(json.dumps({
+            "url": leaf["item"], "title": "Brief.pdf - Fixture Share", "name": leaf["name"], "kind": "document", "bytes": 614,
+        }), encoding="utf-8")
+        code, out, err = _run_script("frameio_doc_note.py", leaf["dir"], "--slug", job.slug, "--path", leaf["path"][0],
+                                     "--path", leaf["path"][1], "--title-strip", " - Fixture Share", cwd=wiki)
+        assert code == 0, err
+
+    reports = []
+    for _ in range(2):  # the driver is re-run pass after pass: same names
+        code, out, err = _run_script("harvest_share.py", rel, "--budget-seconds", "-1", cwd=wiki)
+        assert code == 0, err
+        reports.append(json.loads((cap / "report.json").read_text()))
+    report = reports[-1]
+    assert report["outcome"] == "ok"
+
+    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    assert len({page.resolve() for page in pages}) == 2 and all(page.is_relative_to(wiki / job.dest) for page in pages)
+    assert [page.name for page in pages] == ["Brief.pdf.md", "Brief.pdf (Client B).md"]
+    assert [[c["title"] for c in r["captured"]] for r in reports] == [["Brief.pdf", "Brief.pdf (Client B)"]] * 2
+    first, second = (page.read_text(encoding="utf-8") for page in pages)
+    assert leaves[0]["view_url"] in first and "*Client A*" in first  # still the FIRST asset's page
+    assert leaves[1]["view_url"] in second and "*Client B*" in second
 
 
 def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki, monkeypatch, capsys):

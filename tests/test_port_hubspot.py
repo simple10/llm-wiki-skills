@@ -313,6 +313,64 @@ def test_the_stages_speak_the_new_contract():
 # ------------------------------------------------------------ end to end, the real extractor
 
 
+# ------------------------------------------------------------ page names
+
+
+def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
+    """`page/note.py::filename_for` is `title.strip() + ".md"` and nothing else:
+    outer whitespace is all the HOST folds; case is what a case-insensitive
+    filesystem folds under it."""
+    assert leaves.page_key("Introduction") == leaves.page_key(" Introduction\n") == leaves.page_key("INTRODUCTION")
+    assert leaves.page_key("Introduction") != leaves.page_key("Introduction?")  # nothing else is dropped
+    assert leaves.TITLE_ILLEGAL == '/\\:*?"<>|'  # `page/note.py::ILLEGAL` — a title carrying one is refused
+
+
+def test_a_namesake_is_qualified_by_the_url_segment_that_tells_it_apart():
+    def leaf(path, **over):
+        return {"item": f"https://x.example{path}", **over}
+
+    taken = {}
+    first, second, third = leaf("/learn/module-1/intro"), leaf("/learn/module-2/intro"), leaf("/learn/module-2/intro?page=2")
+    assert leaves.leaf_qualifiers(second) == ["intro", "module-2", "learn", _hash8(second["item"])]
+    assert leaves.unique_title("Introduction ", leaves.leaf_qualifiers(first), taken) == "Introduction "  # the first: untouched
+    assert leaves.unique_title("introduction", leaves.leaf_qualifiers(second), taken) == "introduction (module-2)"
+    # Nothing in the path tells it apart (module-1's segments are the holder's, module-2 is taken): the hash.
+    assert leaves.unique_title("Introduction", leaves.leaf_qualifiers(third), taken) == f"Introduction ({_hash8(third['item'])})"
+    assert leaves.unique_title("Introduction", ["module-2"], taken) == "Introduction (module-2) (2)"
+    # A media leaf is qualified by its PAGE's url, and a segment never smuggles in a refused character.
+    media = leaf("/v.m3u8", item="https://stream.example/v.m3u8", media_of="https://x.example/learn/what%3F/a%2Fb")
+    assert leaves.leaf_qualifiers(media)[:2] == ["a/b", "what?"]
+    assert leaves.unique_title("Introduction", leaves.leaf_qualifiers(media), taken) == "Introduction (a-b)"
+
+
+def _held_leaf(root: Path, item: str, title, body="page.md", **over) -> dict:
+    rel = f"_raw/site-learn/{leaves.leaf_name(item + over.get('media_of', ''))}"
+    (root / rel).mkdir(parents=True)
+    (root / rel / body).write_text("x\n", encoding="utf-8")
+    (root / rel / "capture.json").write_text(json.dumps({"item": item, "title": title, "body": body}), encoding="utf-8")
+    return {"item": item, "dir": rel, "lastmod": None, **over}
+
+
+def test_settling_titles_is_idempotent_and_a_media_leaf_follows_its_page(tmp_path):
+    one, two = f"{SECTION}/module-1/intro", f"{SECTION}/module-2/intro"
+    planned = [
+        _held_leaf(tmp_path, one, "Intro"), _held_leaf(tmp_path, two, "Intro"),
+        _held_leaf(tmp_path, f"{SECTION}/a", None), _held_leaf(tmp_path, f"{SECTION}/b", None),  # no title: filed as `page`
+        _held_leaf(tmp_path, STREAM, "Intro (video)", "media.mp4", media_of=one),
+        _held_leaf(tmp_path, STREAM, "Intro (video)", "media.mp4", media_of=two),
+        {"item": f"{SECTION}/never-rendered", "dir": "_raw/site-learn/never--00000000", "lastmod": None},
+    ]
+    want = ["Intro", "Intro (module-2)", None, "page (b)", "Intro (video)", "Intro (module-2) (video)"]
+    for _ in range(2):
+        leaves.settle_titles(tmp_path, planned)
+        assert [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned[:-1]] == want
+    # `page` run again writes the plain titles back; the next report ends on the SAME names.
+    for leaf, plain in ((planned[1], "Intro"), (planned[5], "Intro (video)")):
+        (tmp_path / leaf["dir"] / "capture.json").write_text(json.dumps({"item": leaf["item"], "title": plain, "body": "page.md" if plain == "Intro" else "media.mp4"}), encoding="utf-8")
+    leaves.settle_titles(tmp_path, planned)
+    assert [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned[:-1]] == want
+
+
 def _captured_lesson(ops, env, wiki, *extra_page_args):
     job = declared_job(ops, env, wiki, UNIT, SECTION)
     assert job.record["harvest"]["scope"] == "section"
@@ -389,6 +447,42 @@ def test_a_downloaded_video_becomes_a_queued_transcription_stub(ops, env, wiki, 
     assert "extracted: queued" in text and "media.mp4" in text and STREAM in text
     (page,) = extracted(ops, env, wiki, lesson_dir)
     assert page != stub  # two titles, two pages: the stub never overwrites the lesson
+
+
+def test_two_pages_with_one_title_land_as_two_pages_and_so_do_their_videos(ops, env, wiki, tmp_path):
+    """The extractor files a page under its title and overwrites what is there:
+    before `report` settled titles, a section's second "Pricing the offer" WAS
+    the first one's page — and its `(video)` stub the first one's stub."""
+    section = "https://www.example-hubspot.invalid/academy"
+    one, two = f"{section}/module-1/intro", f"{section}/module-2/intro"
+    job = declared_job(ops, env, wiki, UNIT, section, slug="port-channel-hubspot-names")
+    cap = ticket_in(wiki, job, f"academy--{_hash8(section)}", unit=UNIT, item=section)
+    urls = cap / "urls.json"
+    urls.write_text(json.dumps([{"url": one, "lastmod": "2026-07-15"}, {"url": two, "lastmod": "2026-07-01"}]), encoding="utf-8")
+    assert _run("plan", str(cap), "--urls", str(urls), "--sites", str(FIX / "sites.json")).returncode == 0
+    planned = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"]
+    assert [leaf["item"] for leaf in planned] == [one, two]
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42 not really a video")
+    for leaf in planned:
+        _fill(wiki / leaf["dir"])
+        done = _run("page", str(cap), str(wiki / leaf["dir"]), "--sites", str(FIX / "sites.json"), "--media-file", str(video))
+        assert done.returncode == 0, done.stderr
+
+    reports = []
+    for _ in range(2):  # a respawned worker reports again: same names
+        assert _run("report", str(cap)).returncode == 0
+        reports.append(json.loads((cap / "report.json").read_text(encoding="utf-8")))
+    report = reports[-1]
+    assert report["outcome"] == "ok" and len(report["captured"]) == 4
+
+    pages = [extracted(ops, env, wiki, wiki / row["dir"])[0] for row in report["captured"]]
+    assert len({page.resolve() for page in pages}) == 4 and all(page.is_relative_to(wiki / job.dest) for page in pages)
+    names = ["Pricing the offer", "Pricing the offer (module-2)", "Pricing the offer (video)", "Pricing the offer (module-2) (video)"]
+    assert [page.name for page in pages] == [f"{name}.md" for name in names]
+    assert [[row["title"] for row in r["captured"]] for r in reports] == [names] * 2
+    first, second = pages[0].read_text(encoding="utf-8"), pages[1].read_text(encoding="utf-8")
+    assert f"resource: {one}" in first and f"resource: {two}" in second  # still the FIRST page's page
 
 
 def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):

@@ -78,8 +78,10 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py plan <capture
 With no url, `capture_lesson.py` captures the `target` of
 `<capture_dir>/ticket.json`. Its `meta.json` records the sidebar's lesson
 links in the order the course lists them, and `plan` turns those into
-`plan.json`: the ordered `leaves[]` (each `url`, `dir`, `title`, `duration`)
-and `dropped[]` with a `why` for each link it refused —
+`plan.json`: the ordered `leaves[]` (each `url`, `dir`, `title`, `duration`,
+and `section` — the section's NAME, off the sidebar's bare `/sections/<id>`
+header link, null where the sidebar shows none) and `dropped[]` with a `why`
+for each link it refused —
 
 - `scope` — `section` keeps lessons under the target's own path (which is why
   the target must be the space root: from a lesson url every sibling is
@@ -160,8 +162,8 @@ track (`meta.json` `captions[]`). `record` then finishes the leaf:
   Media (wiki-relative paths of what `assets.json` says was downloaded; a
   signed url is never written down), Source;
 - appends `transcript.md` under `## Transcript`;
-- writes `capture.json` — `slug`, `item` (the planned url), `title`, `body:
-  "page.md"`, `content_type: "text/markdown"`, `fetched_at`, and a
+- writes `capture.json` — `slug`, `item` (the planned url), `title` (the
+  lesson's own; step 5 may qualify it), `body: "page.md"`, `content_type: "text/markdown"`, `fetched_at`, and a
   `frontmatter` object carrying the same facts (`type: lesson`, `course`,
   `space`, `section_id`, `lesson_id`, `position`, `duration`, `author`,
   `captions`, `media`; unknown ones omitted). The extractor ignores
@@ -181,8 +183,24 @@ lesson.
 llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <capture_dir> [--missing <host> <url> <denied|timeout|auth|error>]... [--auth-expired] [--reason <text>]
 ```
 
-Writes the one `report.json`, in the ticket's `capture_dir`. `captured[]` is
-derived, never claimed: a planned leaf counts when its `capture.json` names a
+**It settles the titles first.** The extractor files a page under its TITLE
+(`<dest>/<title>.md`, the title stripped of outer whitespace and nothing
+else) and overwrites whatever is there, so two lessons of one run called
+"Introduction" would be ONE page, both tickets `ok`. In plan order the first
+lesson to make a filename keeps its title untouched; a later one is retitled
+in its own `capture.json` — `Introduction (<section name>)`, else
+`(Topic N of M)`, else both, else the 8-hex hash of its url — and
+`captured[].title` says the same. Titles differing only in case count
+as one (a Mac's filesystem folds them). A planned lesson that did
+not land still holds its sidebar title, and a second `report` renames nothing
+twice. **Across runs this cannot be known**: `known[]` carries `resource` and
+`harvested_at`, never a title, so a lesson captured by a LATER ticket can
+still overwrite a namesake an earlier one landed. The real fix is the host's
+(a collision-safe page name); until then say so in the run report when a
+resumed course has repeated lesson titles.
+
+Then it writes the one `report.json`, in the ticket's `capture_dir`.
+`captured[]` is derived, never claimed: a planned leaf counts when its `capture.json` names a
 body that is on disk, and `apply` mints one extraction ticket per entry.
 `outcome` is derived too — `ok` when every planned leaf landed and nothing is
 missing; `partial` when some landed (the 30-minute cap, a refused media host,
@@ -359,3 +377,4 @@ harvest behind an outage.
 ## Quirks log
 
 - 2026-09-19 — ported to the rebuilt worker contract: invoked as `ticket=<id>`; one ticket walks the section (`section_plan.py` plans the leaves, applies scope/exclusions/`known[]` itself, records each and writes the one `report.json`); body, facts and transcript are rendered at harvest because processing is the generic extractor's. Not yet run against a live community under a spawned slice — profile-directory access from inside the jail is unverified.
+- 2026-09-19 — two lessons of one run sharing a title landed as ONE page: the extractor names the file from the title and overwrites. `report` now settles titles within the run (first keeps its own, later namesakes get `(<section name>)` / `(Topic N of M)` / `(<hash8>)`). Not fixed across runs — `known[]` carries no titles; that one is the host's.

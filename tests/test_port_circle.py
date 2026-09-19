@@ -166,6 +166,87 @@ def test_only_downloaded_media_is_named_and_never_by_a_path_into_raw(tmp_path):
     assert mod.downloaded_media(tmp_path / "nowhere", "_raw/course/leaf--00000000") == []
 
 
+# --- page names: one page per lesson, whatever two lessons are called ----------
+
+
+def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
+    """`page/note.py::filename_for` is `title.strip() + ".md"` and nothing else,
+    so outer whitespace is the one thing the HOST folds; case is what a
+    case-insensitive filesystem folds under it."""
+    assert mod.page_key("Introduction") == mod.page_key("  Introduction\t") == mod.page_key("INTRODUCTION")
+    assert mod.page_key("Introduction") != mod.page_key("Introduction.")  # nothing else is dropped
+    assert mod.TITLE_ILLEGAL == '/\\:*?"<>|'  # `page/note.py::ILLEGAL` — a title carrying one is refused
+
+
+def test_a_later_namesake_is_qualified_and_the_first_is_never_touched():
+    taken = {}
+    assert mod.unique_title("Introduction ", ["Module One", "aaaaaaaa"], taken) == "Introduction "  # untouched
+    assert mod.unique_title("introduction", ["Module Two", "bbbbbbbb"], taken) == "introduction (Module Two)"
+    # A qualifier the holder shares tells nothing apart; the next one is used.
+    assert mod.unique_title("Introduction", ["Module One", "Topic 3 of 5", "cccccccc"], taken) == "Introduction (Topic 3 of 5)"
+    # Nothing meaningful left: the hash. And a name that is itself taken is never handed out.
+    assert mod.unique_title("Introduction", ["Module One", "dddddddd"], taken) == "Introduction (dddddddd)"
+    assert mod.unique_title("Introduction", ["Module Two"], taken) == "Introduction (Module Two) (2)"
+    assert mod.unique_title("Introduction", [], taken) == "Introduction (2)"
+    assert len(taken) == 6
+    # Venue text never smuggles in a character the host refuses a title for.
+    assert mod.unique_title("Introduction", ['Module 3: "Basics" / Extras\n'], taken) == "Introduction (Module 3- -Basics- - Extras)"
+    assert not set(mod.qualifier("a/b\\c:d*e?f\"g<h>i|j\x00k")) & set(mod.TITLE_ILLEGAL + "\x00")
+
+
+def landed_leaf(parent: Path, name: str, url: str, title, position=None) -> dict:
+    leaf = parent / name
+    leaf.mkdir(parents=True)
+    (leaf / "page.md").write_text(f"# {title}\n\nBody of {url}.\n", encoding="utf-8")
+    front = {"type": "lesson", **({"position": position} if position else {})}
+    (leaf / "capture.json").write_text(json.dumps(
+        {"v": 1, "slug": "course", "item": url, "title": title, "body": "page.md", "content_type": "text/markdown",
+         "fetched_at": "2026-09-19T00:00:00Z", "frontmatter": front}), encoding="utf-8")
+    return {"url": url, "dir": f"_raw/course/{name}", "title": title, "section": None, "root": False}
+
+
+def titles_on_disk(parent: Path, leaves) -> list:
+    return [json.loads((parent / leaf["dir"].split("/")[-1] / "capture.json").read_text(encoding="utf-8")).get("title")
+            for leaf in leaves if (parent / leaf["dir"].split("/")[-1] / "capture.json").is_file()]
+
+
+def test_settling_titles_is_stable_however_often_and_in_whatever_state_it_runs(tmp_path):
+    cap = tmp_path / "_raw" / "course" / "c-course-one--aaaaaaaa"
+    cap.mkdir(parents=True)
+    a = landed_leaf(cap.parent, "a--00000001", f"{TARGET}/sections/1/lessons/1", "Welcome", "Topic 1 of 3")
+    b = landed_leaf(cap.parent, "b--00000002", f"{TARGET}/sections/2/lessons/2", "Welcome", "Topic 1 of 3")
+    c = landed_leaf(cap.parent, "c--00000003", f"{TARGET}/sections/2/lessons/3", "welcome ", "Topic 2 of 3")
+    a["section"], b["section"], c["section"] = "Module One", "Module Two", "Module Two"
+    # Planned, never landed: it still holds the name the sidebar gave it.
+    ghost = {"url": f"{TARGET}/sections/0/lessons/0", "dir": "_raw/course/ghost--00000000", "title": "Welcome",
+             "section": "Module Zero", "root": False}
+    plan = {"leaves": [ghost, a, b, c]}
+    for _ in range(2):  # idempotent: a second report renames nothing a second time
+        mod.settle_titles(cap, plan)
+        assert titles_on_disk(cap.parent, [a, b, c]) == [
+            "Welcome (Module One)", "Welcome (Module Two)", "welcome (Topic 2 of 3)"]
+    # `record` run again puts the plain title back; the next report settles it to the SAME name.
+    landed_leaf(cap.parent, "b2--00000002", b["url"], "Welcome", "Topic 1 of 3")
+    shutil.copy(cap.parent / "b2--00000002" / "capture.json", cap.parent / "b--00000002" / "capture.json")
+    mod.settle_titles(cap, plan)
+    assert titles_on_disk(cap.parent, [a, b, c])[1] == "Welcome (Module Two)"
+    # Without the ghost the first LANDED leaf keeps its title untouched; no section, no position -> the url's hash.
+    solo = tmp_path / "_raw" / "other" / "t--aaaaaaaa"
+    solo.mkdir(parents=True)
+    x = landed_leaf(solo.parent, "x--00000001", f"{BASE}/c/o/sections/1/lessons/1", "Welcome")
+    y = landed_leaf(solo.parent, "y--00000002", f"{BASE}/c/o/sections/1/lessons/2", "Welcome")
+    z = landed_leaf(solo.parent, "z--00000003", f"{BASE}/c/o/sections/1/lessons/3", None)  # filed as `page`, its body's stem
+    w = landed_leaf(solo.parent, "w--00000004", f"{BASE}/c/o/sections/1/lessons/4", None)
+    mod.settle_titles(solo, {"leaves": [x, y, z, w]})
+    assert titles_on_disk(solo.parent, [x, y, z, w]) == [
+        "Welcome", f"Welcome ({hashlib.sha1(y['url'].encode()).hexdigest()[:8]})", None,
+        f"page ({hashlib.sha1(w['url'].encode()).hexdigest()[:8]})"]
+
+
+def test_the_plan_names_each_lessons_section_off_the_sidebar():
+    assert [leaf["section"] for leaf in plan_of()["leaves"]] == ["Section One", "Section One"]
+
+
 # --- plan → record → report over files, no CLI needed -------------------------
 
 
@@ -315,6 +396,46 @@ def test_one_ticket_walks_the_section_and_every_lesson_becomes_a_page(ops, env, 
     for text in texts:
         assert len(re.findall(r"^---$", text, flags=re.M)) == 2, "one frontmatter block, the extractor's own"
         assert "Powered by a community platform" not in text and "logo123" not in text  # chrome stripped
+
+
+def test_two_lessons_with_one_title_land_as_two_pages(ops, env, wiki):
+    """The extractor files a page under its title and overwrites what is there:
+    before `report` settled titles, the second "Introduction" of a course WAS
+    the first one's page, and both process tickets said ok."""
+    target = f"{BASE}/c/course-names"
+    one, two = f"{target}/sections/111/lessons/3001", f"{target}/sections/222/lessons/3002"
+    job = declared_job(ops, env, wiki, UNIT, target, slug="port-channel-circle-names")
+    cap = ticket_in(wiki, job, f"c-course-names--{hashlib.sha1(target.encode()).hexdigest()[:8]}", unit=UNIT, item=target)
+    (cap / "meta.json").write_text(json.dumps({"url": target, "title": "Course Names", "discovered_lesson_links": [
+        {"href": f"{target}/sections/111", "text": "Module One"}, {"href": one, "text": "Introduction\n\n01:00"},
+        {"href": f"{target}/sections/222", "text": "Module Two"}, {"href": two, "text": "Introduction\n\n02:00"},
+    ]}), encoding="utf-8")
+    rel = str(cap.relative_to(wiki))
+
+    def plan_cli(*args):
+        done = subprocess.run([sys.executable, str(PLAN), *args], cwd=wiki, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        return done
+
+    plan = json.loads(plan_cli("plan", rel).stdout)
+    assert [(leaf["title"], leaf["section"]) for leaf in plan["leaves"]] == [
+        ("Introduction", "Module One"), ("Introduction", "Module Two")]
+    for leaf, fixture in zip(plan["leaves"], ("lesson-1", "lesson-2")):
+        converted(wiki / leaf["dir"], fixture, leaf["url"])
+        plan_cli("record", rel, leaf["url"])
+    reports = []
+    for _ in range(2):  # the report is written again by a respawned worker: same names
+        plan_cli("report", rel)
+        reports.append(json.loads((cap / "report.json").read_text(encoding="utf-8")))
+    report = reports[-1]
+
+    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    assert len({page.resolve() for page in pages}) == 2 and all(page.is_relative_to(wiki / job.dest) for page in pages)
+    assert [[c["title"] for c in r["captured"]] for r in reports] == [["Introduction", "Introduction (Module Two)"]] * 2
+    assert [page.name for page in pages] == ["Introduction.md", "Introduction (Module Two).md"]
+    first, second = (page.read_text(encoding="utf-8") for page in pages)
+    assert f"resource: {one}" in first and "marmalade-sandwich rule" in first  # still the FIRST lesson's page
+    assert f"resource: {two}" in second and "heliotrope question" in second
 
 
 def test_capture_lesson_takes_its_url_off_the_ticket_when_none_is_given(tmp_path):

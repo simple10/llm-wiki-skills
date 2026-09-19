@@ -259,6 +259,53 @@ def test_an_empty_plan_is_skipped_and_a_dead_session_is_auth_expired(tmp_path):
     assert dead["outcome"] == "failed" and dead["reason"] == "auth_expired:n.invalid"
 
 
+# ---- page names: one page per post, whatever two posts are called --------
+
+
+def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
+    """`page/note.py::filename_for` is `title.strip() + ".md"` and nothing else:
+    outer whitespace is all the HOST folds; case is what a case-insensitive
+    filesystem folds under it."""
+    mod = _module("write_report")
+    assert mod.page_key("Open Thread") == mod.page_key(" Open Thread\n") == mod.page_key("OPEN THREAD")
+    assert mod.page_key("Open Thread") != mod.page_key("Open Thread!")  # nothing else is dropped
+    assert mod.TITLE_ILLEGAL == '/\\:*?"<>|'  # `page/note.py::ILLEGAL` — a title carrying one is refused
+    taken = {}
+    assert mod.unique_title("Links ", ["2026-09-01", "aaaaaaaa"], taken) == "Links "  # the first: untouched
+    assert mod.unique_title("links", ["2026-09-08", "bbbbbbbb"], taken) == "links (2026-09-08)"
+    assert mod.unique_title("Links", ["2026-09-01", "cccccccc"], taken) == "Links (cccccccc)"  # the holder's own day tells nothing apart
+    assert mod.unique_title("Links", ["2026-09-08", "dddddddd"], taken) == "Links (dddddddd)"  # that name is taken
+    assert mod.unique_title("Links", ["2026-09-08"], taken) == "Links (2026-09-08) (2)"
+    assert mod.qualifier("2026-09-08T10:00:00Z / x") == "2026-09-08T10-00-00Z - x"
+
+
+def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_path):
+    mod = _module("write_report")
+    leaves = [
+        {"item": f"{HOST}/p/gone", "dir": "_raw/news/p-gone--00000000", "title": "Open Thread", "published": "2026-09-15"},
+        {"item": f"{HOST}/p/a", "dir": "_raw/news/p-a--11111111", "title": "Open Thread", "published": "2026-09-08"},
+        {"item": f"{HOST}/p/b", "dir": "_raw/news/p-b--22222222", "title": "Open Thread", "published": None},
+        {"item": f"{HOST}/p/c", "dir": "_raw/news/p-c--33333333", "title": "Something Else", "published": "2026-09-01"},
+    ]
+    plan = {"ticket": "abc", "newsletter": "example-newsletter.invalid", "leaves": leaves, "summary": {}}
+    for leaf in leaves[1:]:  # the newest never landed: it still holds the archive's title
+        _land(tmp_path, leaf, title=leaf["title"])
+    want = ["Open Thread (2026-09-08)", f"Open Thread ({hashlib.sha1(leaves[2]['item'].encode()).hexdigest()[:8]})", "Something Else"]
+    for _ in range(2):  # a second report renames nothing a second time
+        report = mod.build(plan, [], {}, tmp_path)
+        assert [c["title"] for c in report["captured"]] == want
+        assert [json.loads((tmp_path / leaf["dir"].rsplit("/", 1)[-1] / "capture.json").read_text(encoding="utf-8"))["title"]
+                for leaf in leaves[1:]] == want
+    # `--only` re-renders one leaf with its plain title; the next report settles it to the SAME name.
+    _land(tmp_path, leaves[1], title="Open Thread")
+    assert [c["title"] for c in mod.build(plan, [], {}, tmp_path)["captured"]] == want
+    # With nothing before it, the first LANDED post keeps its title untouched.
+    report = mod.build({**plan, "leaves": leaves[1:]}, [], {}, tmp_path)
+    assert [c["title"] for c in report["captured"]][0] == "Open Thread (2026-09-08)"  # already settled: left as it is
+    _land(tmp_path, leaves[1], title="Open Thread")
+    assert [c["title"] for c in mod.build({**plan, "leaves": leaves[1:]}, [], {}, tmp_path)["captured"]][:2] == ["Open Thread", want[1]]
+
+
 # ---- end to end, through the real extractor ------------------------------
 
 
@@ -332,3 +379,42 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     again = _plan(monkeypatch, capsys, cap, None, "--max-leaves", "1")
     assert [(leaf["item"].rsplit("/", 1)[-1], leaf["on_disk"]) for leaf in again["leaves"]] == [
         ("the-newest-one", True), ("members-only", False), ("a-podcast-episode", True)]
+
+
+def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
+    """The extractor files a page under its title and overwrites what is there:
+    before the report settled titles, a newsletter's second "Open Thread" WAS
+    the first one's page, and both process tickets said ok."""
+    if shutil.which("uv") is None:
+        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+    host = "https://second-newsletter.invalid"
+    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-names")
+    cap = ticket_in(wiki, job, "archive--0badc0de", unit=UNIT, item=f"{host}/archive")
+    leaves = []
+    for name, published, fixture in (("open-thread-2", "2026-09-10", "the-newest-one"), ("open-thread", "2026-08-13", "a-podcast-episode")):
+        item = f"{host}/p/{name}"
+        rel = f"_raw/{job.slug}/p-{name}--{hashlib.sha1(item.encode()).hexdigest()[:8]}"
+        (wiki / rel).mkdir(parents=True, exist_ok=True)
+        shutil.copy(FIX / f"post-{fixture}.html", wiki / rel / "page.html")
+        leaves.append({"item": item, "dir": rel, "title": "Open Thread", "published": published, "audience": "everyone", "on_disk": False})
+    (cap / "leaves.json").write_text(json.dumps({
+        "v": 1, "ticket": "0123456789ab", "slug": job.slug, "newsletter": "second-newsletter.invalid",
+        "capture_dir": str(cap.relative_to(wiki)), "leaves": leaves, "summary": {"truncated": False}}), encoding="utf-8")
+
+    done = _script("capture_posts.py", "--capture-dir", str(cap))
+    assert done.returncode == 0 and json.loads(done.stdout)["states"] == {"captured": 2}, done.stderr
+    reports = []
+    for _ in range(2):  # a respawned worker reports again: same names
+        wrote = _script("write_report.py", "--capture-dir", str(cap))
+        assert wrote.returncode == 0, wrote.stderr
+        reports.append(json.loads((cap / "report.json").read_text(encoding="utf-8")))
+    report = reports[-1]
+    assert report["outcome"] == "ok"
+
+    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    assert len({page.resolve() for page in pages}) == 2 and all(page.is_relative_to(wiki / job.dest) for page in pages)
+    assert [page.name for page in pages] == ["Open Thread.md", "Open Thread (2026-08-13).md"]
+    assert [[c["title"] for c in r["captured"]] for r in reports] == [["Open Thread", "Open Thread (2026-08-13)"]] * 2
+    newest, older = (page.read_text(encoding="utf-8") for page in pages)
+    assert f"resource: {host}/p/open-thread-2" in newest and "lighthouses" in newest  # still the FIRST post's page
+    assert f"resource: {host}/p/open-thread\n" in older and "tide tables" in older

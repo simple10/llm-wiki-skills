@@ -190,6 +190,23 @@ and `failed` when nothing landed that should have (`auth_expired:<domain>`
 when every refusal was auth). `--outcome gone` is a refresh ticket whose post
 answers 404 or 410.
 
+**It settles the titles first.** The extractor files a page under its TITLE
+(`<dest>/<title>.md`, the title stripped of outer whitespace and nothing
+else) and overwrites whatever is there, so two posts of one run called "Open
+Thread" would be ONE page, both tickets `ok`. In plan order (newest first)
+the first post to make a filename keeps its title untouched; a later one is
+retitled in its own `capture.json` — `Open Thread (<published date>)`, or the
+8-hex hash of its URL where it has no date or shares the namesake's — and
+`captured[].title` says the same (`results.json` keeps the post's own title).
+Titles differing only in case count as one (a Mac's
+filesystem folds them). A planned post that did not land still holds its
+archive title, and a second report, or an `--only` re-render, ends on the
+same name. **Across runs this cannot be known**: `known[]` carries `resource`
+and `harvested_at`, never a title, so a post captured by a LATER ticket can
+still overwrite a namesake an earlier one landed. The real fix is the host's
+(a collision-safe page name); say so in the run report when a newsletter
+re-uses titles.
+
 Say the newsletter, the outcome, how many posts landed and what is in
 `missing[]`, and stop. Moving the ticket, extraction and adoption are the
 foreman's, outside your jail.
@@ -325,3 +342,8 @@ is the plugin's own reader of the same ladder, for a second opinion.
   `capture.json` at harvest (the process stage never reaches a unit);
   `write_report.py` lists every leaf in `captured[]`. Resume is `known[]`,
   not `--max-date`.
+- 2026-09-19: two posts of one run sharing a title landed as ONE page — the
+  extractor names the file from the title and overwrites. `write_report.py`
+  now settles titles within the run (the first keeps its own; later namesakes
+  get `(<published date>)`, else `(<hash8>)`). Not fixed across runs:
+  `known[]` carries no titles; that one is the host's.

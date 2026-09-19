@@ -137,6 +137,24 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
 - **It writes `report.json` last, on EVERY pass** — `captured[]` one entry per
   landed leaf (`item` the view URL, `dir` the leaf's dir, `title`), `missing[]`
   one per leaf that failed (`why` is `timeout` or `error`), `discovered: []`.
+- **It settles the titles before each report.** The extractor files a page
+  under its TITLE (`<dest>/<title>.md`, the title stripped of outer whitespace
+  and nothing else) and overwrites whatever is there, so `Brief.pdf` in two
+  folders would be ONE page, both tickets `ok`. In manifest order the first
+  leaf to make a filename keeps its title untouched; a later one is retitled
+  in its own `capture.json` — `Brief.pdf (<folder breadcrumb>)`, the folders
+  below the shared top one joined with ` - ` (a title cannot carry a `/`), or
+  the 8-hex hash of its view URL where the folder is the namesake's too — and
+  `captured[].title` says the same. Titles differing only in case count
+  as one (a Mac's filesystem folds them); a later pass renames
+  nothing twice. A leaf retried AFTER its namesake landed takes the plain
+  title back and the namesake is qualified — titles are final at the last
+  pass, which is the one `apply` reads. **Across runs this cannot be known**:
+  `known[]` carries `resource` and `harvested_at`, never a title, so a leaf
+  captured by a LATER ticket (a share resumed after `partial`) can still
+  overwrite a namesake an earlier one landed. The real fix is the host's (a
+  collision-safe page name); say so in the run report when a resumed share
+  repeats file names.
 - **It is bounded, and you re-run it.** A slice is killed at thirty minutes.
   One pass stops starting leaves after `--budget-seconds` (default 480, one
   tool call's worth) and no pass starts one later than `--slice-seconds`
@@ -291,3 +309,8 @@ and the breadcrumb line is simply absent — not wrong.
   per-leaf job and no note written under `dest`. Not yet run against a live
   share under the new contract: the flow is unverified end to end beyond the
   fixture tests.
+- 2026-09-19 — two assets of one share with one name landed as ONE page: the
+  extractor names the file from the title and overwrites. `harvest_share.py`
+  now settles titles within the run before every report (the first keeps its
+  own; later namesakes get `(<folder breadcrumb>)`, else `(<hash8>)`). Not
+  fixed across runs — `known[]` carries no titles; that one is the host's.
