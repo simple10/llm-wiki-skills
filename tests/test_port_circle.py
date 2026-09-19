@@ -1001,6 +1001,7 @@ def test_the_report_says_a_min_date_was_not_applied(wiki_root):
     assert report["outcome"] == "ok" and "min_date 2026-01-01 NOT applied" in report["reason"]
 
 
+def test_the_planners_help_is_its_own_docstring():
     assert mod.__doc__ in subprocess.run([sys.executable, str(PLAN), "-h"], capture_output=True, text=True).stdout
 
 
