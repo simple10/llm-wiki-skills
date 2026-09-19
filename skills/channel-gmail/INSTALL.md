@@ -10,8 +10,10 @@ Customize the wiki's copy now, while the operator is present:
 
 1. Ask the lookback window for the FIRST pull (default 7d) and any
    mechanical filters — Gmail labels and senders to exclude beyond the
-   defaults. They go into the installed SKILL.md's `## Stages` section, and
-   they are the WIKI's, applying to every mailbox this unit pulls.
+   defaults. They go into the installed SKILL.md's `### harvest` section, and
+   they are the WIKI's, applying to every mailbox this unit pulls. Ask what
+   the mailbox's junk is, too: the junk rules and the line each message gets
+   are the `### process` section's, and equally the wiki's to write.
 2. Ask the pull cadence (default daily) — that becomes `every` on the
    watch; the manifest pre-answers `1d`.
 3. Customized is the point: writing the operator's filters into `## Stages`
@@ -37,17 +39,17 @@ Customize the wiki's copy now, while the operator is present:
    construction, so there is nothing else to seed.
    **A job declared before this unit's 2.3.0 MUST be re-pointed before its
    next pull — this is not optional.** Such a job keeps its staged literal,
-   `sources/email/<slug>/`, and the rebuilt extractor decides the route from `dest`
-   alone (`pipeline/extract.py::_route`): a dest that is not
-   `research/channels/<slug>` sends the day directory down the one-page-per-
-   capture route, which wants a `capture.json` a day directory never has.
-   What that looks like: harvest says `ok`, and EVERY process ticket then
-   fails — `no_capture`, "`_raw/<slug>/<day>` carries no capture.json" — with
-   no ledger written. The unit cannot detect it: a download ticket's `dest`
-   is null. Check each job with `llm-wiki-ops pipeline show <slug>` (it names
-   `dest` and the target), and re-point any that is not under
-   `research/channels/`. `pipeline edit` refuses `dest`, but re-running `add`
-   with the same target and slug moves it and keeps every other key:
+   `sources/email/<slug>/`, and `dest` is the whole of the route: the process
+   step writes the day's page wherever the ticket's `dest` points, and the
+   readers of ledgers — the daily report, the synthesize stage — look under
+   `research/channels/` and nowhere else. What that looks like: every step
+   says `ok`, and the days pile up as pages in the staged tree that nothing
+   reads and curate is left to judge. The unit cannot detect it: `dest` is
+   the job's answer, and a harvest ticket does not carry one at all. Check
+   each job with `llm-wiki-ops pipeline show <slug>` (it names `dest` and the
+   target), and re-point any that is not under `research/channels/`.
+   `pipeline edit` refuses `dest`, but re-running `add` with the same target
+   and slug moves it and keeps every other key:
    `llm-wiki-ops pipeline add <its target> slug=<slug> dest=research/channels/<slug>`.
 5. **Bind the job on each pulling machine**, per watch — this is a SWITCH,
    not a secret. The unit declares `requires.credential: true` and never
@@ -71,16 +73,18 @@ Customize the wiki's copy now, while the operator is present:
 6. Enable the unit on every OTHER machine that pulls
    (`llm-wiki-ops skills enable channel-gmail`) — installed is not loaded,
    and enablement never travels with a `git pull`.
-7. **Where this unit is expected to work: only where `llm-wiki-ops whereami`
-   reports `spawn: none`** — the foreman runs the worker in its own session,
-   which holds the connector — until the plugin grants a slice a connector.
-   Read off the plugin's source, unconfirmed by a run: a spawned slice is
-   deny-read on `~/.claude.json` and its two other homes (the MCP server
-   configuration) and on `~/.claude/.credentials.json`
+7. **Where this unit's HARVEST is expected to work: only where
+   `llm-wiki-ops whereami` reports `spawn: none`** — the foreman runs the
+   worker in its own session, which holds the connector — until the plugin
+   grants a slice a connector. Read off the plugin's source, unconfirmed by a
+   run: a spawned slice is deny-read on `~/.claude.json` and its two other
+   homes (the MCP server configuration) and on `~/.claude/.credentials.json`
    (`schedule/runner/floor.py`), and its egress is this unit's
    `requires.network` alone — `mail.google.com`, which no step fetches and
    which is not a connector's endpoint. No host was invented to cover that.
    Under a spawning runner the worker reports `failed`, "no gmail connector
    in this session", with `missing: [{"host": "connector", "url":
    "mcp:gmail", "why": "denied"}]` — tell the operator now, so a scheduled
-   run that fails this way is recognised and not retried into the ground.
+   run that fails this way is recognized and not retried into the ground.
+   The process step has no such limit: it reads the day's files and runs the
+   front door, and needs neither connector nor credential.
