@@ -50,6 +50,8 @@ import argparse
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -60,21 +62,35 @@ from urllib.parse import urlsplit
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. The re-entry guard is still set in here — this script is the front
-# door's grandchild — and a call carrying it is refused (127) as a loop, which
-# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
-# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 
 def _ops(root, *args):
     """One front-door command, bound to the wiki by running from its root,
     answered as JSON — the CLI's plain answer is prose for a person. An
-    `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
+    front door that is not reachable raises `FileNotFoundError` — an
     `OSError`, which the caller reports as an unreachable store."""
     env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
-    return subprocess.run([OPS, "--json", *args], cwd=str(root), env=env, capture_output=True, text=True)
+    return subprocess.run([*(front_door() or [OPS]), "--json", *args], cwd=str(root), env=env, capture_output=True, text=True)
 
 
 def profile_dir(root, domain):

@@ -135,6 +135,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -160,11 +161,27 @@ RAW = "_raw"
 
 # The front door, by the bare name every SKILL.md runs this script under.
 OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
-# script: the machine-global dispatcher's re-entry guard (a call carrying it
-# is refused, 127, as a loop — and this is not one) and the variable it binds
-# a wiki from AHEAD of the cwd.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 # Addresses `run` serves out of the plugin, not paths in this wiki.
 ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
 
@@ -840,15 +857,15 @@ def _line_of(path: Path) -> str | None:
     return next((line.strip() for line in text.splitlines() if line.strip()), None)
 
 
-def _front_door(root: Path, *args, timeout: float | None = None) -> int:
+def _spawn(root: Path, *args, timeout: float | None = None) -> int:
     """One front-door command by ARGV — no shell ever reads these words — bound
     to the wiki by running from its root. Its stdout goes to our stderr, so
     this script's own stdout stays the one JSON answer. -1 = ended at the hard stop."""
     env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
     try:
-        return subprocess.run([OPS, *args], cwd=str(root), env=env, stdout=sys.stderr, timeout=timeout, check=False).returncode
+        return subprocess.run([*(front_door() or [OPS]), *args], cwd=str(root), env=env, stdout=sys.stderr, timeout=timeout, check=False).returncode
     except FileNotFoundError:
-        raise Problem(f"`{OPS}` is not on PATH — this command runs the plugin's assets.py through the front door") from None
+        raise Problem(f"`{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — this command runs the plugin's assets.py through the front door") from None
     except subprocess.TimeoutExpired:
         return -1
 
@@ -880,7 +897,7 @@ def cmd_assets(args) -> int:
     if (directory / "net.json").is_file():
         detect += ["--network-log", f"{leaf['dir']}/net.json"]
     answer = {"n": args.leaf, "dir": leaf["dir"], "mode": job["assets"], "video": "none"}
-    answer["detect"] = _front_door(root, *detect)
+    answer["detect"] = _spawn(root, *detect)
     if answer["detect"] != 0:
         raise Problem(f"assets.py detect exited {answer['detect']} on {leaf['dir']}")
     patched = subprocess.run([sys.executable, str(CAPTURER), "patch-assets", str(directory / "assets.json"), "--meta", str(directory / "meta.json")],
@@ -889,7 +906,7 @@ def cmd_assets(args) -> int:
         raise Problem(f"patch-assets exited {patched.returncode} on {leaf['dir']}")
     hard_stop = plan.get("hard_stop_epoch")
     left = max(hard_stop - time.time(), 1) if isinstance(hard_stop, (int, float)) else None
-    answer["download"] = _front_door(root, *download, timeout=left)
+    answer["download"] = _spawn(root, *download, timeout=left)
     meta = clean_meta(_read_json(directory / "meta.json") or {})
     for asset in _read_json(directory / "assets.json") or []:
         if isinstance(asset, dict) and meta["stream_url"] and asset.get("src_url") == meta["stream_url"]:

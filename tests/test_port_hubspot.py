@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, at, declared_job, run, ticket_in
+from conftest import ROOT, declared_job, rooted, run, ticket_in
 
 UNIT = "channel-hubspot-video"
 SCRIPTS = ROOT / "skills" / UNIT / "scripts"
@@ -792,7 +792,7 @@ def _stub_front_door(tmp_path: Path) -> tuple[dict, Path]:
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "from pathlib import Path\n"
-        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'guard': 'LLM_WIKI_OPS_DISPATCHED' in os.environ}}) + '\\n')\n"
+        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd()}}) + '\\n')\n"
         "argv = sys.argv[1:]\n"
         "if argv[2] == 'detect':\n"
         "    Path(argv[argv.index('--out') + 1]).write_text('[]')\n"
@@ -806,7 +806,7 @@ def _stub_front_door(tmp_path: Path) -> tuple[dict, Path]:
         encoding="utf-8",
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS_DISPATCHED": "1"}
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": str(stub)}
     return env, seen
 
 
@@ -825,7 +825,7 @@ def test_the_asset_steps_carry_the_pages_url_as_argv_and_never_through_a_shell(t
     assert detect["argv"] == ["run", script, "detect", f"{leaf['dir']}/page.html", "--base-url", LESSON, "--out", f"{leaf['dir']}/assets.json",
                               "--network-log", f"{leaf['dir']}/net.json"]
     assert download["argv"] == ["run", script, "download", f"{leaf['dir']}/assets.json", "--dest", "_raw/site-learn/assets", "--referer", LESSON]
-    assert Path(detect["cwd"]) == root.resolve() and not detect["guard"]  # bound by cwd; the re-entry guard is not inherited
+    assert Path(detect["cwd"]) == root.resolve()  # the nested call is bound by cwd
     # …and `record` then finds the file with no flag at all.
     done = _documented(root, "record", rel, "--leaf", "0")
     assert done.returncode == 0 and json.loads(done.stdout)["captured"]["media"] == "media.mp4"
@@ -919,10 +919,10 @@ def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki
     job = declared_job(ops, env, wiki, UNIT, "https://www.example-hubspot.invalid/continue", slug="port-channel-hubspot-continue")
     assert job.record["every"] == "once"
     for cadence in ("1h", "once"):
-        done = run(ops, env, "--json", "pipeline", "edit", job.slug, f"every={cadence}", at(wiki))
+        done = run(ops, rooted(env, wiki), "--json", "pipeline", "edit", job.slug, f"every={cadence}")
         assert done.returncode == 0, done.stdout + done.stderr
-        assert run(ops, env, "--json", "pipeline", "show", job.slug, at(wiki)).data["job"]["every"] == cadence
-    refused = run(ops, env, "--json", "pipeline", "queue", "retry", "0123456789ab", at(wiki))
+        assert run(ops, rooted(env, wiki), "--json", "pipeline", "show", job.slug).data["job"]["every"] == cadence
+    refused = run(ops, rooted(env, wiki), "--json", "pipeline", "queue", "retry", "0123456789ab")
     assert refused.returncode != 0 and "no finished item" in refused.stdout + refused.stderr  # the verb exists; this ticket never ran
 
 
@@ -950,8 +950,8 @@ def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env,
             "printf '%s' 'body' | "
             + shlex.join([*ops, "--json", "page", "create"])
             + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
-            + f" 'extracted=true' 'type=video' --stdin 'wiki={wiki}'"
+            + f" 'extracted=true' 'type=video' --stdin"
         )
-        done = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, check=False)
+        done = subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), capture_output=True, text=True, check=False)
         assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
         assert (wiki / json.loads(done.stdout)["path"]).is_file()

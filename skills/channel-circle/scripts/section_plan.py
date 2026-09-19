@@ -124,6 +124,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -937,11 +939,29 @@ def _plan_and_leaf(args):
 
 
 # The front door, by bare name, for the one plugin script that needs a lesson's
-# url as an argument. Same rule as `capture_lesson.py`'s `_ops`: the re-entry
-# guard and the project binding of the call that ran THIS script are not the
-# nested call's.
+# url as an argument. Same rule as `capture_lesson.py`'s `_ops`.
 OPS = "llm-wiki-ops"
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
 
 
@@ -962,7 +982,7 @@ def cmd_detect(args) -> int:
     directory = leaf_path(capture_dir, leaf)
     env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
     return _started(
-        [OPS, "run", ASSETS_SCRIPT, "detect", str(directory / "page.html"), "--base-url", leaf["url"],
+        [*(front_door() or [OPS]), "run", ASSETS_SCRIPT, "detect", str(directory / "page.html"), "--base-url", leaf["url"],
          "--network-log", str(directory / "net.json"), "--out", str(directory / ASSETS_NAME)],
         env=env,
     )  # fmt: skip

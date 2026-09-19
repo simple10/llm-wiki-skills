@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import declared_job, ticket_in
+from conftest import declared_job, rooted, ticket_in
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "channel-circle" / "scripts"
@@ -340,8 +340,8 @@ def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "
     where = [f"title={record['title']}", f"dest={dest}"] if verb == "create" else [f"{dest}/{record['title']}.md"]
     return subprocess.run(
         [*ops, "--json", "page", verb, *where, f"resource={record['item']}", "type=lesson", "extracted=true",
-         "--stdin", f"wiki={wiki}"],
-        env=env, input=body, capture_output=True, text=True, check=False)
+         "--stdin"],
+        env=rooted(env, wiki), input=body, capture_output=True, text=True, check=False)
 
 
 def written(ops, env, wiki, capture_dir: Path, dest: str, body: str) -> Path:
@@ -681,11 +681,11 @@ def stub_front_door(tmp_path: Path, answer: dict, rc: int = 0) -> tuple[dict, Pa
     stub.write_text(
         f"#!{sys.executable}\nimport json, os, sys\n"
         f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'inherited': sorted(k for k in "
-        f"('LLM_WIKI_OPS_DISPATCHED', 'CLAUDE_PROJECT_DIR') if k in os.environ)}}, open({str(seen)!r}, 'w'))\n"
+        f"('CLAUDE_PROJECT_DIR',) if k in os.environ)}}, open({str(seen)!r}, 'w'))\n"
         f"sys.stdout.write({json.dumps(answer)!r})\nsys.exit({rc})\n")
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-           "LLM_WIKI_OPS_DISPATCHED": "1", "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")}
+           "LLM_WIKI_OPS": str(stub), "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")}
     return env, seen
 
 
@@ -698,7 +698,7 @@ def test_detect_hands_the_plugins_asset_script_the_planned_url_as_an_argument_li
     got = json.loads(seen.read_text(encoding="utf-8"))
     assert got["argv"] == ["run", "skills/harvest/scripts/assets.py", "detect", f"{leaf['dir']}/page.html", "--base-url", L2,
                            "--network-log", f"{leaf['dir']}/net.json", "--out", f"{leaf['dir']}/assets.json"]
-    assert got["inherited"] == [] and Path(got["cwd"]) == root.resolve()  # a nested call is not a loop, and binds by cwd
+    assert got["inherited"] == [] and Path(got["cwd"]) == root.resolve()  # the harness's project dir is dropped; the call binds by cwd
     assert cli(PLAN, "detect", rel, "--leaf", 9, cwd=root, env=env).returncode == 1  # not a leaf of this plan
     # A plan.json somebody tampered with is still not a way to a shell word.
     plan["leaves"][0]["url"] = HOSTILE_HREF
@@ -1028,9 +1028,9 @@ def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env,
             "printf '%s' 'body' | "
             + shlex.join([*ops, "--json", "page", "create"])
             + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
-            + f" 'extracted=true' 'type=lesson' --stdin 'wiki={wiki}'"
+            + f" 'extracted=true' 'type=lesson' --stdin"
         )
-        done = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, check=False)
+        done = subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), capture_output=True, text=True, check=False)
         assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
         assert (wiki / json.loads(done.stdout)["path"]).is_file()
 

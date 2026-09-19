@@ -127,7 +127,6 @@ def _stub_front_door(tmp_path, body=None):
         "argv = sys.argv[1:]\n"
         "stdin = '' if sys.stdin.isatty() else sys.stdin.read()\n"
         f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': argv, 'cwd': os.getcwd(), 'stdin': stdin,\n"
-        "    'guard': os.environ.get('LLM_WIKI_OPS_DISPATCHED'),\n"
         "    'project_dir': os.environ.get('CLAUDE_PROJECT_DIR')}) + '\\n')\n"
         f"{body or 'pass'}\n"
         "verb = [a for a in argv if not a.startswith('--')]\n"
@@ -144,7 +143,7 @@ def _stub_front_door(tmp_path, body=None):
         "    sys.exit(0)\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, seen
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": str(stub)}, seen
 
 
 def _calls(seen):
@@ -225,19 +224,16 @@ def test_a_title_dest_already_holds_is_edited_not_created_twice(tmp_path):
     assert res["written"] == [PAGE]
 
 
-def test_the_page_verbs_are_reached_without_the_re_entry_guard(tmp_path):
-    """This script is the front door's grandchild, so it inherits the guard the
-    dispatcher exports and refuses (127) any call arriving with it. Measured
-    against the plugin's own dispatcher: without dropping it every page write
-    dies. `CLAUDE_PROJECT_DIR` goes for the neighboring reason — the dispatcher
-    seeds its walk from it, ahead of the cwd that binds this call to this wiki."""
+def test_the_page_verbs_are_reached_without_the_harness_project_dir(tmp_path):
+    """The cwd binds this call to this wiki, and `CLAUDE_PROJECT_DIR` is the
+    harness's directory, not a wiki root — so it does not travel with a nested
+    front-door call."""
     cap = _capture(tmp_path)
     path, seen = _stub_front_door(tmp_path)
-    _run(tmp_path, cap, extra_env={**path, "LLM_WIKI_OPS_DISPATCHED": "1",
-                                   "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")})
+    _run(tmp_path, cap, extra_env={**path, "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")})
     assert _page_calls(seen), "no page call was made"
     for call in _page_calls(seen):
-        assert call["guard"] is None and call["project_dir"] is None, call
+        assert call["project_dir"] is None, call
         assert Path(call["cwd"]) == tmp_path.resolve(), call
 
 
@@ -333,12 +329,11 @@ def test_the_formatter_is_reached_by_the_bare_front_door_from_the_wiki_root(tmp_
     cap = _capture(tmp_path)
     path, seen = _stub_front_door(
         tmp_path, "\nif argv[:1] == ['run']:\n    print('#### [00:00]\\n\\nstubbed transcript')\n    sys.exit(0)\n")
-    res = _run(tmp_path, cap, formatter=None, extra_env={**path, "LLM_WIKI_OPS_DISPATCHED": "1"})
+    res = _run(tmp_path, cap, formatter=None, extra_env=path)
     run_call = next(c for c in _calls(seen) if c["argv"][:1] == ["run"])
     assert run_call["argv"][:2] == ["run", FORMATTER_REL], run_call
     assert run_call["argv"][2] == str(next((cap / "captions").glob("abc123.en.vtt"))), run_call
     assert Path(run_call["cwd"]) == tmp_path.resolve(), run_call
-    assert run_call["guard"] is None, run_call
     assert "stubbed transcript" in (tmp_path / res["page"]).read_text()
 
 
@@ -366,18 +361,32 @@ def test_a_refused_page_write_is_a_failure_not_a_silent_success(tmp_path):
 
 
 def test_a_machine_without_the_front_door_is_told_so(tmp_path, monkeypatch):
-    """No `llm-wiki-ops` on PATH: the failure names what is missing instead
-    of a traceback out of a subprocess call. In-process, because a PATH with
-    nothing on it cannot also start the `uv` the other cases run through."""
+    """Nothing on PATH and nothing named: the failure says what is missing
+    instead of a traceback out of a subprocess call. In-process, because a PATH
+    with nothing on it cannot also start the `uv` the other cases run through."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("youtube_note", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     monkeypatch.setenv("PATH", str(tmp_path / "nothing-here"))
+    monkeypatch.delenv("LLM_WIKI_OPS", raising=False)
     with pytest.raises(SystemExit) as exc:
         mod.format_transcript(tmp_path / "a.vtt", None, tmp_path, None)
     assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
     with pytest.raises(SystemExit) as exc:
         mod.write_page(tmp_path, DEST, "T", {}, "body")
     assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
+
+
+def test_the_front_door_a_hosted_run_names_wins_over_the_bare_name(tmp_path):
+    """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was reached
+    by — a jail is not promised the `~/.local/bin` entry the bare name is."""
+    cap = _capture(tmp_path)
+    path, seen = _stub_front_door(tmp_path)
+    broken = tmp_path / "wrong-bin"
+    broken.mkdir()
+    (broken / "llm-wiki-ops").write_text("#!/bin/sh\nexit 127\n")
+    (broken / "llm-wiki-ops").chmod(0o755)
+    _run(tmp_path, cap, extra_env={**path, "PATH": f"{broken}{os.pathsep}{os.environ['PATH']}"})
+    assert _page_calls(seen), "the named front door was not the one reached"

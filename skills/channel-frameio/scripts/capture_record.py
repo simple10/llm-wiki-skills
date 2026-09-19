@@ -48,6 +48,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 from datetime import datetime, timezone
@@ -63,16 +65,26 @@ META_NAME = "meta.json"
 # scripts under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
-# What a nested front-door call must NOT inherit from the one that ran the
-# script. Both names belong to the MACHINE-GLOBAL bash dispatcher that is the
-# bare `llm-wiki-ops` on PATH, not to the versioned CLI package. That
-# dispatcher exports `LLM_WIKI_OPS_DISPATCHED=1` before it execs the wiki's
-# shim and refuses (exit 127) any call arriving with it set, as a loop — and a
-# script `run` started is the dispatcher's grandchild, so the guard is still
-# set in here while this call is no loop. It also seeds its walk for the wiki
-# root from `$CLAUDE_PROJECT_DIR` when that names a wiki, AHEAD of the cwd, so
-# without dropping it `cwd=<root>` would not be what picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 
 def front_door_env() -> dict:

@@ -121,6 +121,7 @@ from capture_record import (
     REPORT_NAME,
     TICKET_NAME,
     asset_facts,
+    front_door,
     front_door_env,
     is_media,
     name_stem,
@@ -252,15 +253,16 @@ def write_page(wiki: Path, dest: str, title: str, keys, body: str) -> str:
     every value on them is venue text — a title, a filename, a folder name —
     and a venue that can type onto a Bash line can run a command.
     """
-    ops = shutil.which(OPS)
-    if ops is None:
+    door = front_door()
+    if not door:
         sys.exit(
-            f"frameio_doc_note: `{OPS}` is not on PATH — the front door is how "
-            "this unit writes a page; install the ops plugin on this machine"
+            f"frameio_doc_note: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names "
+            "nothing — the front door is how this unit writes a page; install "
+            "the ops plugin on this machine"
         )
     where = {"cwd": str(wiki), "env": front_door_env()}
     created = subprocess.run(
-        [ops, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "--stdin"],
+        [*door, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     rel = f"{str(dest).rstrip('/')}/{title}.md"
@@ -274,7 +276,7 @@ def write_page(wiki: Path, dest: str, title: str, keys, body: str) -> str:
     # The one refusal that is not a failure: this job landed the page before,
     # and the one under `dest` is the one to replace.
     edited = subprocess.run(
-        [ops, "--json", "page", "edit", rel, *keys, "--stdin"],
+        [*door, "--json", "page", "edit", rel, *keys, "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     if edited.returncode != 0:
