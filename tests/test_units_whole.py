@@ -109,15 +109,27 @@ def test_every_script_a_unit_ships_is_one_something_runs(name):
         return
     skill = (unit / "SKILL.md").read_text(encoding="utf-8")
     run_lines = "\n".join(line for line in skill.splitlines() if "llm-wiki-ops run" in line or "run ops/skills/" in line)
-    siblings = "\n".join(p.read_text(encoding="utf-8") for p in scripts)
     dead = []
     for script in scripts:
-        named = script.name in run_lines
-        # A sibling reaches it by import (`import leaves`) or by running it.
-        reached = re.search(rf"(?<![\w.-]){re.escape(script.stem)}(?![\w-])", siblings.replace(script.read_text(encoding="utf-8"), "")) is not None
-        if not named and not reached:
+        if script.name in run_lines:
+            continue
+        # A CALL, not a mention: a sibling imports the module, or puts the
+        # file name on an argv. A name in a comment or a docstring reaches
+        # nothing, and that is exactly how dead code reads as alive.
+        call = re.compile(
+            rf"^\s*(?:import|from)\s+{re.escape(script.stem)}(?![\w-])|[\"']{re.escape(script.name)}[\"']",
+            re.M,
+        )
+        if not any(call.search(_code(other)) for other in scripts if other != script):
             dead.append(str(script.relative_to(ROOT)))
-    assert not dead, "no `run` line names these and no sibling reaches them: " + ", ".join(dead)
+    assert not dead, "no `run` line names these and no sibling calls them: " + ", ".join(dead)
+
+
+def _code(path) -> str:
+    """One script with its module docstring and its comments removed: what a
+    name has to survive in to count as a call."""
+    text = re.sub(r'^\s*"""[\s\S]*?"""', "", path.read_text(encoding="utf-8"), count=1)
+    return "\n".join(re.sub(r"(?<!:)#.*$", "", line) for line in text.splitlines())
 
 
 def _function(path, name: str) -> str:
@@ -158,6 +170,11 @@ def test_the_shared_title_rule_holds_what_the_host_refuses():
         got = safe(title)
         assert got and not got.startswith(".") and not set(got) & set('/\\:*?"<>|'), (title, got)
     assert safe("Line one\n---\n# Forged") == "Line one --- # Forged"
+    # An ASCII apostrophe cannot survive: three units hand the title to a shell
+    # line, where a value carrying one cannot be quoted and the page is lost.
+    for title in ("Don't Panic", 'He said "no"', "Rock \u2019n\u2019 roll"):
+        assert "'" not in safe(title), (title, safe(title))
+    assert safe("Don't Panic") == "Don\u2019t Panic" and safe('He said "no"') == "He said \u2019no\u2019"
     assert len((safe("語" * 100) + ".md").encode("utf-8")) <= 255
     assert safe("index") != "index" and safe("Index").casefold() != "index"
     assert safe("") == "Untitled" and safe("   ", fallback="x") == "x" and safe(None) == "Untitled"

@@ -130,33 +130,30 @@ directory you write. No network, no credential. Apply `process.exclude_rules`,
 `options` and `min_date` first; a capture that earns no page stops at
 `write_report.py --capture-dir <capture_dir> --outcome skipped --reason "<why>"`.
 
-Convert the post, scoped to the content root:
+Convert the post scoped to the content root and pipe it in as the page's body,
+then mark it done:
 
 ```
 llm-wiki-ops run ops/skills/channel-substack/scripts/to_markdown.py <capture_dir>/page.html \
-    --out - --selector .available-content --base-url <item>
-```
-
-Write that markdown as the page's body, then mark it done:
-
-```
-llm-wiki-ops page create 'title=<capture.json title>' 'dest=<dest>' 'resource=<item>' 'type=article' \
+    --out - --selector .available-content --base-url '<item>' \
+  | llm-wiki-ops page create 'title=<capture.json title>' 'dest=<dest>' 'resource=<item>' 'type=article' \
     'published=<leaf.json published>' 'audience=<leaf.json audience>' --stdin
 llm-wiki-ops page edit '<dest>/<title>.md' extracted=true
 ```
 
 **Every `<…>` on those lines is venue text: paste it VERBATIM inside single
-quotes, never retyped or "cleaned", and refuse a value that itself carries a
-single quote rather than running the line.** The title is `capture.json`'s,
-already a name the host's filename rule holds, and the page file IS
+quotes, never retyped or "cleaned", and refuse a value still carrying a single
+quote rather than running the line** (`safe_title` maps `'` and `"` to `’`, so
+a title never does). The title is `capture.json`'s, and the page file IS
 `<dest>/<title>.md`. `page create` refuses a title already filed (exit 2,
 `already exists`): run `page edit '<dest>/<title>.md' … --stdin` over that path
 instead, which is also how a re-run rewrites its own page.
 
-Read the page against Content extraction below before reporting: the clickbait
-meta title versus the on-page headline, a subscribe-CTA sentence left in the
-body, the per-post illustration beside it (keep it). `--drop-selector <css>`
-removes chrome before conversion.
+Read the page against Content extraction below BEFORE reporting. Chrome left in
+the body — a subscribe CTA, a footer — means re-converting with
+`--drop-selector '<css>'` added and piping that into
+`page edit '<dest>/<title>.md' --stdin`, before the report. The per-post
+illustration stays.
 
 ```
 llm-wiki-ops run ops/skills/channel-substack/scripts/write_report.py --capture-dir <capture_dir> --written <page path>

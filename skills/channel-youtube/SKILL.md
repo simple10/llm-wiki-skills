@@ -86,8 +86,8 @@ NO `report.json` — read its line, fix the call, and run it again.
 ### process
 
 Off `ticket.json`: `capture_dir` (the ONE directory you read), `dest` (the ONE
-directory you write), `known[]`, `options`, `process` (`exclude_rules` and the
-rest), `harvest` and `min_date`. No network, no credential.
+directory you write), `known[]`, `options`, `process` (`embeds` and
+`exclude_rules`), `harvest` and `min_date`. No network, no credential.
 
 **1.** `rm -f report.json` — same directory on every pull.
 

@@ -87,7 +87,7 @@ Two ways to give a confined harvest the API; both are the operator's call:
 2. **Declare the credential.** Set `requires.credential: true` in this wiki's
    copy of the manifest and bind it per job: `llm-wiki-ops credential bind <slug> spotify`.
    The host then grants the slice that payload and puts its name on the
-   ticket, which the script honours. The cost: a machine with no binding is
+   ticket, which the script honors. The cost: a machine with no binding is
    INCAPABLE of the stage — skipped at the claim gate with a `bindings`
    doctor row, never run — so the keyless fallback stops being reachable
    from a ticket on that machine.

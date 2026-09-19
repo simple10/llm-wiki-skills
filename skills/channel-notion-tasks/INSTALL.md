@@ -69,5 +69,5 @@ Customize the wiki's copy now, while the operator is present:
    to cover that. Under a spawning runner the harvest worker reports
    `failed`, "no notion connector in this session", with `missing: [{"host": "connector",
    "url": "mcp:notion", "why": "denied"}]` — tell the operator now, so a
-   scheduled run that fails this way is recognised and not retried into the
+   scheduled run that fails this way is recognized and not retried into the
    ground.

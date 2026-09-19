@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import stat
+import shlex
 import subprocess
 import sys
 import time
@@ -524,7 +525,7 @@ def test_a_media_file_the_transcriber_could_not_read_is_refused(tmp_path, bad):
 
 def test_safe_title_is_a_title_the_hosts_filename_rule_holds():
     """`page/note.py::filename_for` refuses ILLEGAL, a control character and a leading dot, and checks no length."""
-    assert leaves.safe_title('Lesson 3: What is "A/B" pricing?') == "Lesson 3 - What is 'A-B' pricing"
+    assert leaves.safe_title('Lesson 3: What is "A/B" pricing?') == "Lesson 3 - What is ’A-B’ pricing"
     assert leaves.safe_title(".hidden <draft> | v2*") == "hidden (draft) - v2"
     assert leaves.safe_title("a\x00b\nc\td") == "a b c d"
     assert leaves.safe_title("") == leaves.safe_title(None) == leaves.safe_title(" .. ") == "Untitled"
@@ -935,3 +936,22 @@ def test_a_sitemap_index_offers_only_children_that_are_safe_and_on_the_targets_h
     done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml")
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["sitemaps"] == ["https://www.example-hubspot.invalid/sitemap-1.xml"]
+
+
+def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):
+    """The process step is a shell line a worker TYPES, single-quoting the title
+    off `capture.json`. `safe_title` maps BOTH quote forms to U+2019, so no
+    title it can produce breaks out of those quotes and loses its page."""
+    dest = "sources/courses/port-hubspot-apostrophe"
+    for venue in ("Don't Panic", 'He said "no" twice'):
+        title = leaves.safe_title(venue)
+        assert "'" not in title, title
+        line = (
+            "printf '%s' 'body' | "
+            + shlex.join([*ops, "--json", "page", "create"])
+            + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
+            + f" 'extracted=true' 'type=video' --stdin 'wiki={wiki}'"
+        )
+        done = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, check=False)
+        assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
+        assert (wiki / json.loads(done.stdout)["path"]).is_file()

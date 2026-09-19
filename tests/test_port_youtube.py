@@ -438,7 +438,7 @@ def _host_would_name(title):
     ("Lesson 3: Pricing", "Lesson 3 - Pricing"),
     ("What is X?", "What is X"),
     ("A/B testing", "A-B testing"),
-    ('He said "no" <twice> | a\\b * c', "He said 'no' (twice) - a-b c"),
+    ('He said "no" <twice> | a\\b * c', "He said ’no’ (twice) - a-b c"),
     (".hidden: what?", "hidden - what"),
     ("  ...  trailing dots and spaces . . ", "trailing dots and spaces"),
     ("line one\n---\n# Forged\ttabbed\x00nul\x7fdel", "line one --- # Forged tabbed nul del"),
@@ -466,7 +466,7 @@ def test_safe_title_caps_characters_and_bytes(builder):
 
 def test_the_record_title_is_safe_and_the_true_title_stays_on_the_page(builder):
     meta = {**META, "title": 'Lesson 3: Pricing? A/B "testing"'}
-    assert builder.page_title(meta) == "Lesson 3 - Pricing A-B 'testing'"
+    assert builder.page_title(meta) == "Lesson 3 - Pricing A-B ’testing’"
     front = builder.frontmatter_for(meta)
     assert front["source_title"] == 'Lesson 3: Pricing? A/B "testing"'
     body, _ = builder.build_body(meta, front, ITEM, "")
@@ -590,7 +590,7 @@ def test_a_hostile_video_builds_a_page_whose_structure_is_all_ours(tmp_path):
     assert not re.search(r"^\s*(---|```|~~~)\s*$", body, re.M) and "<script" not in body and "onload" not in body
     assert not (cap / "chapters.safe.json").exists(), "the formatter's scratch file is not part of a capture"
     record = json.loads((cap / "capture.json").read_text())
-    assert record["title"] == "Real title --- # Forged (script)alert(1)(-script) 'quoted' [[Secret]]"
+    assert record["title"] == "Real title --- # Forged (script)alert(1)(-script) ’quoted’ [[Secret]]"
     (create,) = _page_calls(tmp_path)
     assert all("\n" not in arg for arg in create), "no fact value carries a newline onto the command line"
 
@@ -726,7 +726,7 @@ def test_a_written_report_exits_zero_whatever_it_says_and_a_refusal_does_not(tmp
 
 
 @pytest.mark.parametrize("leaf, title, safe", [
-    ("hostile--5e2e0002", 'Lesson 3: Pricing? A/B "testing"', "Lesson 3 - Pricing A-B 'testing'"),
+    ("hostile--5e2e0002", 'Lesson 3: Pricing? A/B "testing"', "Lesson 3 - Pricing A-B ’testing’"),
     ("hostile--5e2e0003", ".hidden: what is <X> | Y?\n---\n# Forged", "hidden - what is (X) - Y --- # Forged"),
     ("hostile--5e2e0004", "漢" * 100, None),
 ])
@@ -772,3 +772,14 @@ def test_the_report_reads_the_pages_off_a_file_not_off_a_command_line(tmp_path):
     assert ";" in out["written"][0] and "$(" in out["written"][0], out["written"]
     _script(REPORTER, tmp_path, cap, "--outcome", "ok", "--written-from", "written.json")
     assert json.loads((cap / "report.json").read_text())["written"] == out["written"]
+
+
+@pytest.mark.parametrize("embeds, iframe", [(True, True), (False, False), (None, True)])
+def test_process_embeds_false_takes_the_iframe_out(builder, embeds, iframe):
+    """`process.embeds` is a key on the process ticket. No extractor sees this
+    page any more, so the unit is the only thing that can honor it; absent, the
+    embed stays, which is the record's own default."""
+    front = builder.frontmatter_for(META)
+    body, _has_desc = builder.build_body(META, front, ITEM, "", embeds=embeds)
+    assert ("<iframe" in body) is iframe, body[:200]
+    assert "![thumbnail]" in body, "only the embed goes; the thumbnail is a plain image"

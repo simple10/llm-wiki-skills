@@ -82,7 +82,7 @@ job's own onto the page.
 
 ## `page.md`
 
-Body only. **Never a `---` block**: the extractor prepends its own, and a
+Body only. **Never a `---` block**: `page create` writes the page's own, and a
 second one corrupts the page. The body opens with the H1 and the description
 is a blockquote, so no line of the page is a bare `---` even when a creator's
 description opens with one.
@@ -128,12 +128,13 @@ folded the same way before the plugin formatter prints them as headings.
 ...
 ```
 
-A facts line whose value is unknown is left out, the same rule as the
-`frontmatter` object. The transcript's heading level is the plugin
-formatter's, not this unit's. There is no `[!summary]` callout: that was a
-placeholder for a process worker of this unit, and no process ticket reaches a
-unit — a summary is the host's process side's to write. A job with
-`process.embeds: false` has the iframe taken out by the extractor.
+A facts line whose value is unknown is left out, the same rule as the page's
+frontmatter. The transcript's heading level is the plugin formatter's, not this
+unit's. There is no `[!summary]` callout: under the two-step convention this
+unit writes the page itself and leaves no placeholder for anything else to
+fill, and a summary over a transcript this long is a judgment nothing in the
+slice has the reading for. A job with `process.embeds: false` gets the same
+page without the `<iframe>`; the builder reads the key off the ticket.
 
 ## Why deterministic
 

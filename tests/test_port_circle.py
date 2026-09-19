@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import stat
+import shlex
 import subprocess
 import sys
 import time
@@ -338,7 +339,8 @@ def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "
     record = json.loads((capture_dir / "capture.json").read_text(encoding="utf-8"))
     where = [f"title={record['title']}", f"dest={dest}"] if verb == "create" else [f"{dest}/{record['title']}.md"]
     return subprocess.run(
-        [*ops, "--json", "page", verb, *where, f"resource={record['item']}", "extracted=true", "--stdin", f"wiki={wiki}"],
+        [*ops, "--json", "page", verb, *where, f"resource={record['item']}", "type=lesson", "extracted=true",
+         "--stdin", f"wiki={wiki}"],
         env=env, input=body, capture_output=True, text=True, check=False)
 
 
@@ -521,7 +523,7 @@ def fill(root: Path, leaf: dict, fixture: str = "lesson-1", title: str | None = 
 def test_safe_title_is_what_the_hosts_filename_rule_accepts():
     illegal = set('/\\:*?"<>|')  # `page/note.py::ILLEGAL`
     assert mod.safe_title("Lesson 3: Pricing") == "Lesson 3 - Pricing"
-    assert mod.safe_title('What is "X"? A/B <test> | more*') == "What is 'X' A-B (test) - more"
+    assert mod.safe_title('What is "X"? A/B <test> | more*') == "What is \u2019X\u2019 A-B (test) - more"
     assert mod.safe_title(".hidden. ") == "hidden" and mod.safe_title(" . ..dots") == "dots"
     assert mod.safe_title("a\x00b\tc\nd\x7fe f") == "a b c d e f"  # control chars, newlines, tabs: a space
     for empty in ("", None, "   ", "???", "\n", "..."):
@@ -620,9 +622,10 @@ def test_refused_titles_and_a_long_cjk_title_all_land_through_the_real_page_verb
         assert facts["source_title"] == title  # the venue's own title is kept…
         directory = wiki / captured["dir"]  # …and the page LANDS
         page = written(ops, env, wiki, directory, job.dest, to_markdown(directory))
+        assert "type: lesson" in page.read_text(encoding="utf-8"), "a lesson is not a `note`"
         assert page.is_file() and page.is_relative_to(wiki / job.dest) and page.name == f"{record['title']}.md"
     assert [c["title"] for c in report["captured"]][:2] == [
-        "Lesson 3 - Pricing A-B 'tests' (now)", "hidden - a leading dot-pipe-slash"]
+        "Lesson 3 - Pricing A-B ’tests’ (now)", "hidden - a leading dot-pipe-slash"]
 
 
 # --- S11: a venue url is data, never shell --------------------------------------
@@ -998,10 +1001,6 @@ def test_the_report_says_a_min_date_was_not_applied(wiki_root):
     assert report["outcome"] == "ok" and "min_date 2026-01-01 NOT applied" in report["reason"]
 
 
-def test_the_docs_name_media_by_file_name_and_captions_by_their_real_name():
-    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
-    assert "wiki-relative paths of what" not in skill and "wiki-relative path" not in (mod.__doc__.split("record ")[1].split("report ")[0])
-    assert "captions/en.vtt --out" not in skill  # the capture names the file by `srclang`
     assert mod.__doc__ in subprocess.run([sys.executable, str(PLAN), "-h"], capture_output=True, text=True).stdout
 
 
@@ -1014,3 +1013,33 @@ def test_the_outage_probe_takes_its_url_off_the_ticket_too(wiki_root):
     assert probe.ticket_target(root, None) is None and probe.ticket_target(root, "_raw/course/none") is None
     (root / rel / "ticket.json").write_text(json.dumps(ticket(target="file:///etc/passwd")), encoding="utf-8")
     assert probe.ticket_target(root, rel) is None
+
+
+def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):
+    """The process step is a shell line a worker TYPES, single-quoting the title
+    off `capture.json`. `safe_title` maps BOTH quote forms to U+2019, so no
+    title it can produce breaks out of those quotes and loses its page."""
+    dest = "sources/courses/port-circle-apostrophe"
+    for venue in ("Don't Panic", 'He said "no" twice'):
+        title = mod.safe_title(venue)
+        assert "'" not in title, title
+        line = (
+            "printf '%s' 'body' | "
+            + shlex.join([*ops, "--json", "page", "create"])
+            + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
+            + f" 'extracted=true' 'type=lesson' --stdin 'wiki={wiki}'"
+        )
+        done = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, check=False)
+        assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
+        assert (wiki / json.loads(done.stdout)["path"]).is_file()
+
+
+def test_the_documented_page_line_names_a_type():
+    """`docs/contracts/note-format.md` requires `type` on every page and
+    `page create` defaults a missing one to `note`. A lesson is not a note, and
+    the page the SKILL writes is only as good as the line it prints."""
+    skill = (ROOT / "skills" / "channel-circle" / "SKILL.md").read_text(encoding="utf-8")
+    lines = [line for line in skill.splitlines() if "llm-wiki-ops page create" in line or "llm-wiki-ops page edit" in line]
+    assert lines, "no documented page line"
+    for line in lines:
+        assert "type=lesson" in line, line

@@ -131,7 +131,7 @@ class NotFound(Exception):
 # The page's FILE is named from this title, and the host refuses a title its filename rule
 # cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
 # leading dot) — failing the process ticket after harvest said ok. keep-in-sync: every unit's safe_title.
-_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "'", "<": "(", ">": ")"}
+_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "\u2019", "'": "\u2019", "<": "(", ">": ")"}
 TITLE_MAX = 120  # characters
 # UTF-8 bytes: the host checks no length, and a filename is capped in BYTES (255 on ext4/APFS) with `.md`
 # appended — 100 CJK characters is 300 bytes and the write dies `OSError: [Errno 36] File name too

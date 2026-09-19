@@ -82,9 +82,9 @@ One capture directory in, the wiki's pages out — no network, no credential.
 `dest` (the only one you write), `process.embeds`, `process.exclude_rules`,
 `min_date` and `known[]`. **Every `<…>` below is the venue's own text**: paste
 it VERBATIM and SINGLE-QUOTED off `capture.json`, `ticket.json` or what
-`record` printed, never retyped and never "cleaned"; a value carrying a single
-quote cannot be quoted that way, so report
-`--failed --reason unquotable_title` instead.
+`record` printed, never retyped and never "cleaned"; one still carrying a
+single quote cannot be quoted that way, so report `--failed --reason
+unquotable_title` (`safe_title` maps `'` and `"` to `’`, so a title never does).
 
 ```sh
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/to_markdown.py <capture_dir>/page.html --selector '<content_selector>' --drop-selector '<drop selector>' --title-selector '<title_selector>' --base-url '<item>'
@@ -98,7 +98,7 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capt
    `min_date` excludes earns no page: `report --skipped --reason <why>`, stop.
 2. **Convert**, the site's rules off `references/sites.json` with one
    `--drop-selector` each; it writes `<capture_dir>/page.md`.
-3. **Head that file** with the Write tool: the venue's true title as the one
+3. **Head that file**, editing it in place: the venue's true title as the one
    `# H1`, then the video where `<!-- media:embed:1 -->` stands (on top if it
    does not) — the live `embed_url` in an HTML-escaped `<iframe>`, a plain
    `[Video: <stream_url>](<stream_url>)` under it. With `process.embeds:
@@ -155,7 +155,7 @@ go in `references/sites.json`.
 
 A page with **no player at all** is a real shape, not a failure: a pointer
 page whose payload is an external link. Write that link alone on one line to
-`<dir>/external_url.txt` with the Write tool and carry it as the page's
+`<dir>/external_url.txt` and carry it as the page's
 `external_url`; its `type` is `page`.
 
 ## Content extraction

@@ -64,10 +64,10 @@ Assets next, **before** the report — a slice that ends has no second chance:
 
 ```
 llm-wiki-ops run skills/harvest/scripts/assets.py download <capture_dir>/assets.json \
-    --dest _raw/<slug>/assets --referer <url> <assets_args…>
+    --dest _raw/<slug>/assets --referer '<item>' <assets_args…>
 ```
 
-`<assets_args…>` is what the capture summary printed for the job's
+`<item>` is `capture.json`'s, VERBATIM and SINGLE-QUOTED, never retyped. `<assets_args…>` is what the capture summary printed for the job's
 `harvest.assets`: nothing for `download`, `--skip-types image` for
 `download-audio`, `--mode reference` for `reference`. DRM items are in no
 `assets.json` under any policy. Downloaded episodes are transcribed by nothing

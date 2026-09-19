@@ -51,7 +51,7 @@ def _load(unit: str, script: str, *stubbed: str):
 def front_door(tmp_path, monkeypatch):
     """`answer(rc, json_answer, prose)` puts a recording `llm-wiki-ops` first
     on PATH. It answers `json_answer` when asked `--json` and `prose`
-    otherwise — the real CLI's two voices; `honours_json=False` is a CLI that
+    otherwise — the real CLI's two voices; `honors_json=False` is a CLI that
     only has the one — and records what it was handed at `answer.seen`. The
     ambient env carries what a hosted script really inherits."""
     bin_dir, seen = tmp_path / "stub-bin", tmp_path / "seen.json"
@@ -60,7 +60,7 @@ def front_door(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_WIKI_OPS_DISPATCHED", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "some-other-wiki"))
 
-    def answer(rc: int, json_answer: dict, prose: str = "prose for a person\n", honours_json: bool = True):
+    def answer(rc: int, json_answer: dict, prose: str = "prose for a person\n", honors_json: bool = True):
         stub = bin_dir / "llm-wiki-ops"
         stub.write_text(
             f"#!{sys.executable}\n"
@@ -68,7 +68,7 @@ def front_door(tmp_path, monkeypatch):
             f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'stdin': sys.stdin.read() if not sys.stdin.isatty() else '',\n"
             f"           'inherited': sorted(k for k in ('LLM_WIKI_OPS_DISPATCHED', 'CLAUDE_PROJECT_DIR') if k in os.environ)}},\n"
             f"          open({str(seen)!r}, 'w'))\n"
-            f"sys.stdout.write({json.dumps(json_answer)!r} if {honours_json!r} and '--json' in sys.argv else {prose!r})\n"
+            f"sys.stdout.write({json.dumps(json_answer)!r} if {honors_json!r} and '--json' in sys.argv else {prose!r})\n"
             f"sys.exit({rc})\n"
         )
         stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
@@ -119,7 +119,7 @@ def test_a_cli_that_could_not_answer_is_unreachable_not_absent(circle, front_doo
 def test_prose_on_stdout_is_never_taken_for_a_path(circle, front_door, tmp_path):
     """A CLI that answers prose even to `--json` — an older one — is an
     unreachable store, never `Path("domain: …\\npath: …")`."""
-    front_door(0, {}, PROFILE_PROSE, honours_json=False)
+    front_door(0, {}, PROFILE_PROSE, honors_json=False)
     path, refused = circle.profile_dir(tmp_path, "community.example")
     assert path is None and refused[0] == "unreachable", (path, refused)
 

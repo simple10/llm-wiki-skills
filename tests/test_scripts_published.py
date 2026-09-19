@@ -97,7 +97,7 @@ def test_spotify_published_day_accepts_a_full_date(spotify):
 
 @pytest.mark.parametrize("value", [None, "", "2019", "2019-03", "whenever"])
 def test_spotify_published_day_yields_nothing_below_day_precision(spotify, value):
-    """Spotify honours `release_date_precision`, so an album legitimately
+    """Spotify honors `release_date_precision`, so an album legitimately
     returns a bare year — which names no publication DAY."""
     assert spotify._published_day(value) == ""
 

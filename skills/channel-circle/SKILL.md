@@ -75,7 +75,7 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <captu
    die with the browser session. **Signed assets first** — the HLS manifest in
    `net.json` is dead within hours. Prune `assets.json` to the real assets
    before downloading (Media: one master per player, the Resources files, no
-   chrome images) with your file tools, not a shell one-liner quoting its urls;
+   chrome images) by editing the file, not a shell one-liner quoting its urls;
    `harvest.assets` decides the fetch (`download-audio` adds `--audio-only`,
    `reference` adds `--mode reference`, which here means the video is not kept
    at all). `record` writes the leaf's flat `capture.json` (`body:
@@ -124,28 +124,28 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/to_markdown.py <capture_dir>/
 llm-wiki-ops run skills/process/scripts/format_transcript.py <capture_dir>/captions/<srclang>.vtt --out <capture_dir>/transcript.md
 ```
 
-2. With your file tools — never a shell one-liner — finish `page.md`: its own
-   `# H1` (the venue's true title, `facts.json`'s `source_title`), a compact
-   facts block, then `transcript.md` under `## Transcript`. The block is Type,
+2. Edit `page.md` in place — never a shell one-liner — into its own `# H1`
+   (the venue's true title, `facts.json`'s `source_title`), a compact facts
+   block, then `transcript.md` under `## Transcript`. The block is Type,
    Course, Space, Position ("Topic N of M", off the body), Duration, Author,
    Captions, Media, Source — from `facts.json`, `meta.json` and the body, every
-   value folded to ONE line so no venue text can open a heading, a rule or a
-   fence, and any caption line that would read as one escaped. Media is the
-   bare FILE NAMES `assets.json` says were downloaded, never a path into
-   machine-local `_raw/` and never a signed url.
+   value folded to ONE line. A transcript line that would read as markup gets a
+   backslash before what makes it so — `# Intro` becomes `\# Intro`, `--- next`
+   becomes `\--- next`. Media is the bare FILE NAMES `assets.json` says were
+   downloaded, never a path into machine-local `_raw/` and never a signed url.
 
 3. Write the page. Its name is `capture.json`'s `title` — already a legal
    filename, already settled against the run, and not yours to pick:
 
 ```
-cat <capture_dir>/page.md | llm-wiki-ops page create title='<title>' dest=<dest> resource='<item>' extracted=true --stdin
-cat <capture_dir>/page.md | llm-wiki-ops page edit '<dest>/<title>.md' resource='<item>' extracted=true --stdin
+cat <capture_dir>/page.md | llm-wiki-ops page create title='<title>' dest=<dest> resource='<item>' type=lesson extracted=true --stdin
+cat <capture_dir>/page.md | llm-wiki-ops page edit '<dest>/<title>.md' resource='<item>' type=lesson extracted=true --stdin
 llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <capture_dir> --stage process --written '<dest>/<title>.md'
 ```
 
    Every venue value on those lines — `<title>`, `<item>` — is copied VERBATIM
-   from `capture.json` and SINGLE-QUOTED, never retyped or cleaned; a value
-   that itself carries a single quote is refused, not run. `create` is the
+   from `capture.json` and SINGLE-QUOTED, never retyped or cleaned; one still
+   carrying a single quote is refused, not run (`safe_title` maps `'` and `"` to `’`, so a title never does). `create` is the
    first pull; it exits 2 with `<path> already exists — the filename is the
    title` on a second, and then `edit` writes that same page. Report LAST.
 

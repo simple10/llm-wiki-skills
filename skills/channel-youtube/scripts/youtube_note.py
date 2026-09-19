@@ -131,7 +131,7 @@ HASHTAGS = re.compile(r"(?:(?:^|\s)#[\w]+){2,}\s*$")
 # The page's FILE is named from this title, and the host refuses a title its filename rule
 # cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
 # leading dot) — failing the process ticket after harvest said ok. keep-in-sync: every unit's safe_title.
-_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "'", "<": "(", ">": ")"}
+_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "\u2019", "'": "\u2019", "<": "(", ">": ")"}
 TITLE_MAX = 120   # characters
 # …and a filename is capped in BYTES by the filesystem (255 on ext4/APFS), with `.md` appended:
 # 120 characters of CJK is 360 bytes, which `filename_for` lets through and the write then fails on.
@@ -475,6 +475,12 @@ CAPTION_GLOBS = (
 )
 
 
+def embeds_of(ticket):
+    """The ticket's `process.embeds`, or True where it says nothing."""
+    process = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
+    return process.get("embeds") is not False
+
+
 def read_ticket(cap_dir):
     """`ticket.json` as the spawner wrote it, or `{}` — a hand run has none."""
     try:
@@ -572,18 +578,22 @@ def facts_block(front, item):
     return "\n".join(lines)
 
 
-def build_body(meta, front, item, transcript_md):
+def build_body(meta, front, item, transcript_md, embeds=True):
     """`page.md`: body only. It opens with the `# H1` — the video's TRUE title,
     which the filename rule may have kept out of `capture.json`'s — and every
     block after it opens with markup of its own, so the body can never open
     with a `---` line. `front` is where the validated id and urls come from:
-    nothing is interpolated into the embed or a link straight off `meta`."""
+    nothing is interpolated into the embed or a link straight off `meta`.
+
+    `embeds` is the ticket's `process.embeds`. False takes the iframe out and
+    leaves everything else: no extractor sees this page, so this is the only
+    thing that can honor the key. Absent reads as the record's default, true."""
     title = true_title(meta) or page_title(meta)
     vid = front.get("video_id")
     parts = [f"# {plain(title)}\n"]
     if front.get("thumbnail"):
         parts.append(f"![thumbnail]({front['thumbnail']})\n")
-    if vid:
+    if vid and embeds is not False:
         parts.append(
             f'<iframe width="560" height="315" '
             f'src="https://www.youtube.com/embed/{vid}" '
@@ -703,7 +713,7 @@ def main():
         finally:
             chapters_path.unlink(missing_ok=True)
 
-    body, has_desc = build_body(meta, front, item, transcript_md)
+    body, has_desc = build_body(meta, front, item, transcript_md, embeds=embeds_of(ticket))
     # Kept beside the capture as well as written to the page: a process ticket
     # can be retried over the same bytes, and this is what the run produced.
     (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")

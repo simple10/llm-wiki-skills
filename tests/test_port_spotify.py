@@ -291,7 +291,7 @@ ILLEGAL = '/\\:*?"<>|'  # llm_wiki_ops/commands/page/note.py::ILLEGAL
         ("Lesson 3: Pricing", "Lesson 3 - Pricing"),
         ("What is X?", "What is X"),
         ("A/B testing", "A-B testing"),
-        ('.hidden "quoted" <tag> a|b c\\d *', "hidden 'quoted' (tag) a-b c-d"),
+        ('.hidden "quoted" <tag> a|b c\\d *', "hidden ’quoted’ (tag) a-b c-d"),
         ("  ...dots and space. . ", "dots and space"),
         ("tab\there\nnewline\x00nul\x7fdel", "tab here newline nul del"),
         ("", "Untitled"),
@@ -326,7 +326,7 @@ def test_the_true_name_stays_visible_when_the_title_had_to_change(spotify, tmp_p
     ent = {**entity("episode"), "name": '.Lesson 3: "Pricing"? A/B'}
     meta, assets = spotify.plan_capture(ent, no_audio=True)
     record = spotify.write_capture_dir(tmp_path / "cap", meta, assets, slug="s", item=EPISODE_URL)
-    assert record["title"] == "Lesson 3 - 'Pricing' A-B"
+    assert record["title"] == "Lesson 3 - ’Pricing’ A-B"
     assert spotify.page_frontmatter(meta)["source_title"] == '.Lesson 3: "Pricing"? A/B'
     assert spotify.render_page_md(meta).startswith('# .Lesson 3: "Pricing"? A/B\n')
     assert spotify.build_report(tmp_path / "cap", ticket(tmp_path / "cap"))["captured"][0]["title"] == record["title"]
@@ -700,7 +700,7 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, spot
     monkeypatch.chdir(wiki)
     process(spotify, f"_raw/{job.slug}/{cap.name}")
 
-    page = wiki / job.dest / "Lesson 3 - 'Pricing' A-B (live) - part1-2.md"
+    page = wiki / job.dest / "Lesson 3 - ’Pricing’ A-B (live) - part1-2.md"
     text = page.read_text(encoding="utf-8")
     assert f"\n# {name}\n" in text  # the venue's own name, as the body's H1
     assert [line.strip() for line in text.splitlines()].count("---") == 2 and fences(text) == []

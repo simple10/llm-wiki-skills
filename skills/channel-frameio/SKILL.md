@@ -198,7 +198,7 @@ the spawner wrote its own `ticket.json`. The fields this step reads:
 | `dest` | the one directory you write. Hand it to the builder verbatim; never compose a path under it |
 | `known[]` | `{resource, harvested_at}` per page `dest` already holds |
 | `options` | the job's answers to this unit's `watch.inputs` — this unit declares none |
-| `process` | `embeds`, `bundle_media`, `on_change`, `exclude_rules` |
+| `process` | `embeds`, `on_change`, `exclude_rules`; `bundle_media` true copies a video beside its page under `<dest>/assets/` |
 | `harvest`, `min_date` | carried along. `min_date` never applies: a Frame.io listing carries no date |
 
 No network, no credential, no browser.

@@ -29,7 +29,7 @@ filename, a folder name — and a venue that can type onto a Bash line can run a
 command:
 
     llm-wiki-ops page create "title=<safe title>" "dest=<dest>" \
-        "resource=<view url>" "extracted=true" --stdin
+        "resource=<view url>" "type=doc" "extracted=true" --stdin
 
 with the body on stdin. On the one refusal that means this job already landed
 the page (`<path> already exists — the filename is the title`, exit 2) it runs
@@ -46,15 +46,15 @@ venue's own spelling off `meta.json`.
 It names the original file (the `File:` fact) and carries its text; it links
 nothing under `_raw/`, because a committed page never links into `_raw/` — that
 tree is machine-local and prunable, so the link is dead on every other clone
-and on this one after a prune. The regression against the old builder is real
-and is stated here plainly: the PDF/PPTX ITSELF stays in `_raw/<slug>/<leaf>/`
-on the capturing machine, and only its extracted text reaches the page. The
-host's `bundle_media` copies media files only, not documents; until it does,
-that is the whole of what travels.
+and on this one after a prune. The PDF/PPTX ITSELF stays in
+`_raw/<slug>/<leaf>/` on the capturing machine, and only its extracted text
+reaches the page: `bundle_media` is a MEDIA key, and a document is not media.
 
 **A video leaf gets the transcribe stage's stub**, not a page about the video:
-an EMPTY body, `extracted=queued` and `media=<capture_dir>/video.mp4`
-wiki-relative. MEASURED against ops 1.88.3 that `page create` takes both as
+an EMPTY body, `extracted=queued` and `media=` wiki-relative — pointing under
+`<dest>/assets/` when the ticket's `process.bundle_media` is true (this step
+makes that copy; the host's own no longer sees these pages) and at
+`<capture_dir>/video.mp4` when it is false. MEASURED against ops 1.88.3 that `page create` takes both as
 ordinary `key=value`, and that `pipeline/media.py::queued_under` then finds the
 page — so the stub is the unit's to mint, and no page about a video is written
 that the recording would never be transcribed behind. The only link to give
@@ -145,6 +145,16 @@ MEDIA = "media"
 #: `page create`'s one refusal that means "edit it instead". Matched on the
 #: tail, which is fixed prose; the head is the path.
 EXISTS = "already exists"
+
+# The note format requires a `type` on every page, and `page create` defaults a
+# missing one to `note`. A share holds documents and videos, and nothing else.
+TYPE_DOC = "doc"
+TYPE_VIDEO = "video"
+
+# Where `process.bundle_media: true` puts the media, relative to `dest`. The
+# process slice is granted rw on `dest`, so the copy is this step's to make;
+# `pipeline extract` used to make it and no longer sees these pages.
+ASSETS = "assets"
 
 #: Cap on inlined text. A page is read by people and by search; a 300-page
 #: deck's every word is neither, and the file itself is still in the capture.
@@ -345,15 +355,28 @@ def main() -> int:
     if not title:
         sys.exit(f"{cap_dir / CAPTURE_NAME} carries no title — it is what the page's FILE is named from")
 
+    ticket = read_json(cap_dir / TICKET_NAME) or {}
+    process = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
+    bundle = process.get("bundle_media") is True
+
     if is_media(record.get("content_type")):
         # A video's page is the stub the transcribe stage reads: empty body,
         # `extracted=queued` and the media it waits on, wiki-relative
         # (`pipeline/media.py::queued_under` asks for exactly those two). The
         # title is the leaf's own, settled at harvest — one leaf, one page, so
         # nothing here has to be told apart from a page beside it.
+        media_rel = f"{capture_rel}/{body_name}"
+        if bundle:
+            # Beside the page, under `dest`: a peer that pulls the corpus gets
+            # the media, where `_raw/` is machine-local and never committed.
+            beside = args.wiki / args.dest.strip("/") / ASSETS
+            beside.mkdir(parents=True, exist_ok=True)
+            copy = beside / f"{title}.{ext}" if ext else beside / title
+            shutil.copyfile(src_path, copy)
+            media_rel = f"{args.dest.strip('/')}/{ASSETS}/{copy.name}"
         written = write_page(
             args.wiki, args.dest, title,
-            [f"resource={item}", f"{FLAG}={QUEUED}", f"{MEDIA}={capture_rel}/{body_name}"], "",
+            [f"resource={item}", f"type={TYPE_VIDEO}", f"{FLAG}={QUEUED}", f"{MEDIA}={media_rel}"], "",
         )
         write_report(cap_dir, capture_rel, outcome="ok", written=[written])
         print(json.dumps({"dir": capture_rel, "written": [written], "title": title, "ext": ext, "queued": f"{capture_rel}/{body_name}"}))
@@ -395,7 +418,7 @@ def main() -> int:
     # Kept beside the capture as well as written to the page: a process ticket
     # can be retried over the same bytes, and this is what the run produced.
     (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")
-    written = write_page(args.wiki, args.dest, title, [f"resource={item}", f"{FLAG}={EXTRACTED}"], body)
+    written = write_page(args.wiki, args.dest, title, [f"resource={item}", f"type={TYPE_DOC}", f"{FLAG}={EXTRACTED}"], body)
     # LAST: a report naming a page is the claim that the page is there.
     write_report(cap_dir, capture_rel, outcome="ok", written=[written])
     print(
