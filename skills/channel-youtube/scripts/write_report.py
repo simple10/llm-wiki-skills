@@ -178,7 +178,7 @@ def main():
     # as a wiki-relative path of the shape `_raw/<slug>/<leaf>`.
     capture_rel = spawned.get("capture_dir") if isinstance(spawned.get("capture_dir"), str) else None
     capture_rel = capture_rel or args.capture_dir.strip("/")
-    # Whatever is here is an earlier run's, or the extractor's own: gone before
+    # Whatever is here is an earlier run's: gone before
     # this can refuse, so a refusal really does leave NO report behind.
     (cap_dir / REPORT_NAME).unlink(missing_ok=True)
     try:

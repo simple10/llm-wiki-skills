@@ -15,7 +15,7 @@ job's resolved settings — honor them; never re-ask.
 This copy is wiki-owned — body and `scripts/` both. Improve it as you learn
 the venue; `skills ls` reporting it as customized is provenance, not a
 problem. What is NOT yours to fix from here is the PLUGIN's own generic
-machinery (the extractor, the transcript formatter, asset handling): claims
+machinery (the transcript formatter, the page verbs, asset handling): claims
 about those go to the human via the run report, never into this file.
 
 **Dependency**: `yt-dlp` on PATH. Nothing else: the capture commands below ask
@@ -23,15 +23,8 @@ yt-dlp for no conversion, so `ffmpeg` is not needed (see Media).
 
 ## Stages
 
-Both steps are this unit's, and both are invoked
-`/channel-youtube ticket=<id> stage=harvest|process`, in every mode.
-
-**Which step you are in is the `stage=` in `$ARGUMENTS`.** Branch on it, and
-never read the step off `ticket.json` — not off `dest`, not off `hosts`, not
-off which sections the ticket carries. A single-item job's process ticket has
-the SAME capture directory as its download ticket, and `ticket.json` lands
-there under one name, so that file can be the other step's; the prompt cannot
-be. No `stage=` means harvest (see the quirks log).
+`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
+below are those steps.
 
 - **harvest** captures bytes. It writes what yt-dlp returned, `capture.json`,
   and `report.json`. It renders no page and writes no summary.
@@ -350,10 +343,9 @@ read a sibling's SKILL.md and improvise its behavior from what you read.
 - Actual video/audio download (`harvest.assets: download` or
   `download-audio`) not yet exercised — `yt-dlp -f <format>` into the job's own
   `_raw/<slug>/assets/` is the expected route (unverified seed). Whatever
-  lands, harvest's `capture.json` keeps naming `metadata.json` as its body:
-  naming a media file there makes the host's own extractor — the worker a
-  process ticket still gets today — write an empty page queued for
-  transcription, throwing away the captions this unit already has.
+  lands, harvest's `capture.json` keeps naming `metadata.json` as its body: a
+  media file named there is a body a generic reader queues for transcription,
+  which throws away the captions this unit already has.
 
 ### Auth
 
@@ -385,18 +377,17 @@ read a sibling's SKILL.md and improvise its behavior from what you read.
   (`harvest.refresh`, off by default) would hash as changed every time.
   Unverified — no refresh job has run against this unit.
 - 2026-09-19 — the two steps, split: harvest writes `capture.json` and the
-  bytes; process writes the page under `dest` through `page create`/`page
-  edit`. Unverified against a live slice. Today's plugin still sends every
-  process ticket to its own generic extractor, which over a capture with no
-  `page.md` yields a page a foreman would reject; this unit's process step runs
-  once the plugin dispatches a process ticket to the ticket's own unit.
-- 2026-09-19 — today's plugin spawns a worker with NO `stage=` argument, and
-  only ever spawns harvest. So a missing `stage` reads as harvest until the
-  plugin dispatches process.
+  bytes, process writes the page under `dest` through `page create`/`page
+  edit`. Unverified against a live slice.
 - 2026-09-19 — `user-invocable: false` is gone from this unit's frontmatter.
   Measured: with it, the harness answers the spawner's own prompt —
   `/channel-youtube ticket=<id>` — with no model turn at all: exit 0, an empty
   result, no `report.json`, and the ticket fails `no_report`.
+- 2026-09-19 — `page create`'s `<key>=<value>` grammar makes every value a
+  STRING; only `tags` and `areas` are read as lists. So `views` and `likes`
+  land quoted and `source_host` lands comma-joined, where the old capture
+  record carried an int and a list. Measured against 1.88.3. Faithful typing
+  needs a page verb that takes a value's type, and nothing here fakes one.
 - 2026-09-19 — a page THIS unit writes never appears in a later ticket's
   `known[]`. The host derives `known[]` from pages carrying a `harvested` MAP,
   and `page create`/`page edit` take `key=value`, which cannot carry one — so

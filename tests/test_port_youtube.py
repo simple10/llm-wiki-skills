@@ -109,8 +109,7 @@ def test_an_unknown_fact_is_omitted_never_emitted_empty(builder):
 
 
 def test_the_facts_block_repeats_the_frontmatter_in_the_body(builder):
-    """The extractor ignores `frontmatter` today, so the body is where the
-    facts survive."""
+    """A reader of the page sees the facts without opening its frontmatter."""
     block = builder.facts_block(builder.frontmatter_for(META), ITEM)
     assert block.splitlines() == [
         "- **Channel**: [Example Strength](https://www.youtube.com/channel/UCexample000000000000000)",
@@ -127,7 +126,7 @@ def test_the_body_never_opens_with_a_frontmatter_fence_and_has_no_summary_placeh
     """The fixture description OPENS with `---`. The body opens with the H1
     (CHANGED by the review fix: the true title is the body's H1 now), and the
     description is a blockquote, so its `---` is no line of the page's own —
-    the extractor's frontmatter is the page's only fence, and there is no rule."""
+    the page verb's frontmatter is the page's only fence, and there is no rule."""
     bare = {"title": "T", "description": META["description"]}
     body, has_desc = builder.build_body(bare, builder.frontmatter_for(bare), None, "")
     assert has_desc and body.startswith("# T\n\n## Description\n\n> \\---\n> Why adding")
@@ -361,7 +360,7 @@ def test_the_report_names_the_tickets_own_capture_dir_and_a_hand_run_needs_a_tic
     assert json.loads((cap / "report.json").read_text())["ticket"] == "feedfacecafe"
 
 
-# ------------------------------------------------------------------ end to end, through the real extractor
+# ------------------------------------------------------------------ end to end, through the real page verbs
 
 
 def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
@@ -732,9 +731,8 @@ def test_a_written_report_exits_zero_whatever_it_says_and_a_refusal_does_not(tmp
     ("hostile--5e2e0004", "漢" * 100, None),
 ])
 def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_path, leaf, title, safe):
-    """Through the REAL extractor, which names the page's file from the capture's
-    title and refuses the whole process ticket over `:` `?` `/` `"` or a leading
-    dot — after harvest said ok."""
+    """Through the REAL `page create`, which names the page's file from the
+    title and refuses `:` `?` `/` `"` or a leading dot outright."""
     job = declared_job(ops, env, wiki, UNIT, JOB_TARGET)
     item = f"https://www.youtube.com/watch?v={leaf[-8:]}xyz"
     cap = ticket_in(wiki, job, leaf, unit=UNIT, item=item)

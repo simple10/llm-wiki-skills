@@ -441,9 +441,9 @@ CHAPTERS_NAME = "chapters.safe.json"
 # record of the bytes it is standing on.
 STALE = (BODY_NAME, REPORT_NAME, CHAPTERS_NAME)
 
-# Keys a host verb owns on the page. `frontmatter` never carries one: the
-# extractor writes `title`, `status`, `resource` and `harvested` itself, and
-# identity and the `extracted` flag are minted outside any slice.
+# Keys this script never puts on the page verb's command line: `title` is its
+# own argument, `status` is the verb's default, and identity and the harvest
+# stamp are minted outside any slice.
 HOST_OWNED = ("status", "document_id", "document_revision", "harvested", "title")
 
 # What `pipeline/pages.py` reads as "a stage has been here": the string, not a
@@ -545,8 +545,8 @@ def frontmatter_for(meta, tags=(), areas=()):
 
 
 def facts_block(front, item):
-    """The same facts as a compact list for the page body — the extractor
-    ignores `frontmatter` today, so this is what keeps them on the page."""
+    """The same facts as a compact list for the page body — a reader of the
+    page sees them without opening its frontmatter."""
     channel = plain(front.get("channel"), brackets=True)
     if channel and front.get("channel_url"):
         channel = f"[{channel}]({front['channel_url']})"
