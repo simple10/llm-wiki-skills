@@ -42,6 +42,10 @@ _CHAINED = re.compile(r"\s(?:&&|\|\||;|\|)\s")
 _DOTTED_KEY = re.compile(r"^([a-z_]+)\.([A-Za-z_<>-]+)=")
 _BY_PATH = re.compile(r"\S*/bin/llm-wiki-ops\b")  # the wiki's shim, run by path
 _PLUGIN_ADDRESS = re.compile(r"\brun\s+((?:scripts|skills/[\w-]+/scripts)/[\w/.-]+\.py)")
+# The other half of `run`'s namespace: a UNIT's own script, served out of this
+# wiki's enabled copy. A doc naming one that is not in the package is the same
+# break as a moved plugin script, one tree over.
+_UNIT_ADDRESS = re.compile(r"\brun\s+ops/skills/([\w-]+)/scripts/([\w.-]+\.py)")
 
 
 def _spans(text: str):
@@ -198,3 +202,26 @@ def test_every_plugin_script_a_doc_runs_is_in_the_plugin():
         if not (Path(plugin) / rel).is_file()
     )
     assert not missing, "\n  ".join(["a doc runs a plugin script that is not there:", *missing])
+
+
+def test_every_unit_script_a_doc_runs_is_in_the_unit():
+    """`run ops/skills/<unit>/scripts/<x>.py` is the unit's own tree. A doc
+    naming a script the package does not ship fails at the first real run, and
+    `_PLUGIN_ADDRESS` never looked at this half of the namespace."""
+    missing = sorted(
+        f"{doc.relative_to(ROOT)}: run ops/skills/{unit}/scripts/{name}"
+        for doc in DOCS
+        for unit, name in _UNIT_ADDRESS.findall(" ".join(doc.read_text(encoding="utf-8").split()))
+        if not (ROOT / "skills" / unit / "scripts" / name).is_file()
+    )
+    assert not missing, "\n  ".join(["a doc runs a unit script that is not there:", *missing])
+
+
+def test_the_unit_address_scan_finds_the_ones_it_was_written_for():
+    """A scan that matches nothing parametrizes nothing and reports green."""
+    found = {
+        (unit, name)
+        for doc in DOCS
+        for unit, name in _UNIT_ADDRESS.findall(" ".join(doc.read_text(encoding="utf-8").split()))
+    }
+    assert ("channel-youtube", "youtube_note.py") in found and len(found) >= 10, sorted(found)
