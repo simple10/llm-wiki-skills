@@ -38,15 +38,22 @@ The outcome, unless `--outcome` overrides it:
              refused for auth the reason is `auth_expired:<domain>`; when
              `harvest.scope` kept no post, the reason names the scope.
 
+**A PROCESS ticket's report is `--written <wiki-relative path>`** (repeatable),
+one per page `build_page.py` wrote. Given it, `written[]` is those paths and
+`captured[]` is empty — a process ticket captures nothing, so the refusal that
+guards a success claimed over an empty capture directory does not apply to it.
+A capture that earns no page reports `--outcome skipped --reason "<why>"`
+instead, with no `--written`.
+
 `--capture-dir` is REQUIRED and is the ticket's `capture_dir` VERBATIM —
 wiki-relative, because `llm-wiki-ops run` starts a script at the WIKI ROOT. A
 directory holding no `ticket.json` is REFUSED unless `--ticket` names the id:
 a report with a null ticket, written wherever the script happened to stand,
 is a fabricated failure in a place the slice was never granted.
 
-**Titles are settled first.** The extractor files a page under its TITLE and
-overwrites what is there, so two posts of one run sharing a title ("Open
-thread", "Links") would be ONE page. In plan order the first post to make a
+**Titles are settled first.** A page is filed under its TITLE and the second
+write of a name takes the first's file, so two posts of one run sharing a title
+("Open thread", "Links") would be ONE page. In plan order the first post to make a
 filename keeps its title; a later one is retitled `<title> (<published
 date>)` — the 8-hex hash of its URL where there is no date, or the date is the
 namesake's too — in its own `capture.json`, and `captured[].title` says the
@@ -54,15 +61,6 @@ same. See "page names" below for the rule and its limit.
 
 It writes `<capture-dir>/report.json` and prints the same object. Exit 0 for
 `ok`, `partial`, `skipped`, `unchanged` and `gone`; exit 1 for `failed`.
-
-History:
-- 2026-09-19: new with the port to the rebuilt pipeline's worker contract.
-- 2026-09-19: titles are settled before the report is built — two same-titled
-  posts of one run landed as one page, the second overwriting the first.
-- 2026-09-19 (review): `--capture-dir` required and wiki-relative; no
-  `ticket.json` and no `--ticket` is a refusal, not a `failed` report at the
-  wiki root. An all-paywalled plan no longer says `known:`. A refresh ticket
-  whose post is gone reports `gone`.
 """
 
 import unicodedata
@@ -104,15 +102,13 @@ def captured_record(directory):
 
 # --- page names
 #
-# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
-# capture's title and writes it with no existence check (llm-wiki-ops
-# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
-# name_for` -> `page/note.py::filename_for`): the filename is
+# KEEP IN SYNC with the host. A page FILE is named from the capture's title
+# (llm-wiki-ops `commands/page/note.py::filename_for`): the filename is
 # `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
 # one of `ILLEGAL` or a control character is REFUSED, not altered — and a
 # capture with no title is filed under its body's stem (`page`). So two leaves
 # of one run whose titles differ only in outer whitespace are ONE page, the
-# second overwriting the first; on a filesystem that folds case (macOS,
+# second taking the first's file; on a filesystem that folds case (macOS,
 # Windows) so are two that differ only in that. `page_key` folds both: a
 # needless qualifier costs nothing, an overwritten page is lost. NOT folded:
 # Unicode form (NFC/NFD), which the same filesystems also fold — stdlib has it
@@ -170,11 +166,10 @@ def unique_title(title: str, qualifiers, taken: dict) -> str:
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def leaf_qualifiers(leaf, record):
+def leaf_qualifiers(leaf):
     """What tells this post from a namesake: the day it was published — the one
     thing a newsletter re-using a title always changes — then its URL's hash."""
-    front = (record or {}).get("frontmatter")
-    published = (front.get("published") if isinstance(front, dict) else None) or leaf.get("published")
+    published = leaf.get("published")
     day = _DAY.match(published) if isinstance(published, str) else None
     return [day.group(0) if day else None, hashlib.sha1(leaf["item"].encode("utf-8")).hexdigest()[:8]]
 
@@ -196,11 +191,11 @@ def settle_titles(leaves, leaf_root):
         record = captured_record(directory)
         if record is None:
             if isinstance(leaf.get("title"), str) and leaf["title"].strip():
-                unique_title(leaf["title"], leaf_qualifiers(leaf, None), taken)
+                unique_title(leaf["title"], leaf_qualifiers(leaf), taken)
             continue
         title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
         held = title or Path(record["body"]).stem
-        final = unique_title(held, leaf_qualifiers(leaf, record), taken)
+        final = unique_title(held, leaf_qualifiers(leaf), taken)
         if final != held:
             record["title"] = final
             (directory / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -317,6 +312,14 @@ def main(argv=None):
         metavar="URL=WHY",
         help=f"a url you could not get yourself (repeatable); WHY is one of {', '.join(WHYS)}",
     )
+    ap.add_argument(
+        "--written",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="a page this ticket's PROCESS step wrote, wiki-relative (repeatable). Given it, this is the process "
+        "ticket's report: `written[]` is these paths and `captured[]` is empty",
+    )
     ap.add_argument("--outcome", choices=OUTCOMES, default=None, help="override the computed outcome (a refresh's `gone`)")
     ap.add_argument("--reason", default=None, help="override the computed reason")
     args = ap.parse_args(argv)
@@ -340,19 +343,38 @@ def main(argv=None):
             f"{capture_dir} holds no {TICKET_NAME} naming a ticket, and no --ticket was given — "
             f"this is not a ticket's capture directory, and nothing is written in it"
         )
-    plan = _load(capture_dir / PLAN_NAME)
-    if plan is None:
-        # No plan is a walk that never ran. Still a report: a foreman reads
-        # `no_report` as a broken jail, and this is a broken run.
-        plan = {"leaves": [], "summary": {"fetch_failed": f"no {PLAN_NAME}"}}
-    rows = (_load(capture_dir / RESULTS_NAME) or {}).get("rows") or []
-
     extra = []
     for spec in args.missing:
         url, _, why = spec.rpartition("=")
         if not url or why not in WHYS:
             ap.error(f"--missing {spec!r}: want URL=WHY, WHY one of {', '.join(WHYS)}")
         extra.append((url, why))
+
+    if args.written:
+        # The process ticket's report. No plan and no `results.json` stand
+        # behind it: its capture directory is one leaf's, and what it did is
+        # the pages it wrote.
+        report = {
+            "v": REPORT_V,
+            "ticket": ticket["ticket"],
+            "outcome": args.outcome or "ok",
+            "reason": args.reason,
+            "captured": [],
+            "written": args.written,
+            "missing": [{"host": urlsplit(url).netloc, "url": url, "why": why} for url, why in extra],
+            "discovered": [],
+        }
+        text = json.dumps(report, indent=2)
+        (capture_dir / REPORT_NAME).write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return 1 if report["outcome"] == "failed" else 0
+
+    plan = _load(capture_dir / PLAN_NAME)
+    if plan is None:
+        # No plan is a walk that never ran. Still a report: a foreman reads
+        # `no_report` as a broken jail, and this is a broken run.
+        plan = {"leaves": [], "summary": {"fetch_failed": f"no {PLAN_NAME}"}}
+    rows = (_load(capture_dir / RESULTS_NAME) or {}).get("rows") or []
 
     report = build(plan, rows, ticket, capture_dir.parent, extra_missing=extra, outcome=args.outcome, reason=args.reason)
     if args.outcome in ("ok", "partial", "unchanged") and not report["captured"]:

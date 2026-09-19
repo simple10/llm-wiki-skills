@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["beautifulsoup4", "markdownify"]
+# dependencies = []
 # ///
-"""Turn each planned Substack post into a capture the generic extractor reads.
+"""Capture each planned Substack post's BYTES — the page as the venue served it.
 
 platform: substack
 scope: platform-general (no hardcoded domain/slugs)
 
-Reads the plan `enumerate_archive.py` wrote (`leaves.json` in the ticket's
-capture directory) and, for each leaf, newest first:
+Harvest is bytes. Reads the plan `enumerate_archive.py` wrote (`leaves.json`
+in the ticket's capture directory) and, for each leaf, newest first:
 
 1. skips it if its directory already holds a complete capture (`on_disk`);
 2. takes `page.html` from the leaf directory — put there by the worker
@@ -21,36 +21,36 @@ capture directory) and, for each leaf, newest first:
    `paywalled` and the report puts it in `missing[]` as `why: auth`;
 4. REFUSES a page with no `.available-content` at all — a login wall
    (`why: auth`), a soft block ("Just a moment…", a CAPTCHA) or a JS shell
-   (`why: error`). The converter would fall back to the whole body and the
-   block page would land as the article, outcome `ok`. A refused `page.html`
-   (3 or 4) is moved aside to `page.refused.html`, so the next run fetches
-   again instead of re-reading it for ever;
-5. renders the body with this unit's `to_markdown.py` (the sibling file)
-   scoped to `.available-content`, then rewrites the top of `page.md` as the
-   post's title and a compact facts block — never a `---` YAML block: the
-   extractor prepends its own frontmatter and a second one corrupts the page.
-   The title and every fact value are folded to ONE line first: venue text
-   never opens a heading or a rule in the final page;
-6. writes `capture.json` naming `page.md`. Its `title` is `safe_title()` of
-   the post's — the page FILE is named from it and the host refuses `: ? / "`
-   and friends — while the body's H1 keeps the true title, which also rides
-   `frontmatter.source_title` when the two differ. The same facts go in the
-   `frontmatter` object (`type`, `published`, `author`, `newsletter`,
-   `audience`, `paywalled`, and `audio` on a podcast post).
+   (`why: error`). The converter would fall back to the whole body, so a block
+   page would become the article. A refused `page.html` (3 or 4) is moved
+   aside to `page.refused.html`, so the next run fetches again instead of
+   re-reading it for ever;
+5. writes `leaf.json` — what the archive row said about this post: its title,
+   the day it was published, its audience, the newsletter it is on — beside
+   the bytes, because the archive is the only place those are stated and a
+   process ticket only ever sees this one directory;
+6. writes `capture.json`, naming `page.html` as the body. It is FLAT —
+   `slug`, `item`, `title`, `body`, `content_type`, `fetched_at` — and its
+   `title` is `safe_title()` of the post's, because the page FILE is named
+   from it and the host refuses `: ? / "` and friends.
+
+The post HTML becomes a page in the PROCESS step, one process ticket per
+captured leaf. Nothing here renders markdown, writes a summary or a `page.md`,
+or puts a `frontmatter` object on `capture.json`: a page's keys belong to the
+step that writes the page.
 
 **It stops fetching a host that said no.** An auth answer (401/403/407, or a
 login wall) fails every remaining unfetched leaf on that host as
 `auth_expired:<host>` without touching it; so does a proxy denial (`denied`,
 raised at once — a denial is not retried) and a 429 that outlasted the
-backoff. Leaves whose `page.html` is already there are still rendered.
+backoff. Leaves whose `page.html` is already there are still captured.
 
 `--capture-dir` is REQUIRED and is the ticket's `capture_dir` VERBATIM —
 wiki-relative, because `llm-wiki-ops run` starts a script at the WIKI ROOT. A
 relative `--plan` is resolved INSIDE it.
 
 Everything is written inside the leaf directories under `_raw/<slug>/`, which
-is the whole of what a harvest slice may write. Nothing here reaches `dest`:
-the page under it is `pipeline extract`'s to write, from these files.
+is the whole of what a harvest slice may write. Nothing here reaches `dest`.
 
 It stops cleanly at `--deadline-minutes` (default 20) — a slice is killed at
 thirty with no report behind it, so an unfinished plan has to END in a report,
@@ -62,30 +62,13 @@ refresh ticket's answer), `error`.
 `write_report.py` turns the plan, these rows and what is actually on disk
 into `report.json`.
 
-Hand-fixing one post — a title the meta got wrong, a CTA to drop:
-
-    capture_posts.py --only <post url> --title "<the on-page headline>" \
-        --drop-selector "<css of the CTA block you saw in page.html>"
-
-`--only` re-renders that one leaf from its `page.html` even if it was already
-captured, and leaves every other row of `results.json` as it was.
-
-History:
-- 2026-09-19: new with the port to the rebuilt pipeline's worker contract.
-  Only harvest reaches a unit now and processing is the generic extractor's,
-  so what this venue knows about a post body — its content root, its paywall
-  block, where its date and author live — is applied here, at harvest.
-- 2026-09-19 (review): `--capture-dir` required and wiki-relative (the cwd
-  under `llm-wiki-ops run` is the wiki root); `capture.json`'s title is a
-  legal filename (`safe_title`) and venue text is folded to one line; a page
-  with no content root is an error row, never the article; the paywall
-  sentence is looked for outside the content root only; fetching stops on a
-  host that answered auth, denied or a persistent 429.
+`--only <post url>` re-captures that one leaf — with `--fetch`, re-fetching it
+— even if it was already captured, and leaves every other row of
+`results.json` as it was.
 """
 
 import argparse
 import html as htmllib
-import importlib.util
 import json
 import random
 import re
@@ -106,7 +89,9 @@ CAPTURE_NAME = "capture.json"
 REPORT_NAME = "report.json"
 HTML_NAME = "page.html"
 REFUSED_NAME = "page.refused.html"
-BODY_NAME = "page.md"
+LEAF_NAME = "leaf.json"
+BODY_NAME = HTML_NAME  # what `capture.json` names as the body: the bytes, as they arrived
+CONTENT_TYPE = "text/html"
 CAPTURE_V = 1
 
 CONTENT_CLASS = "available-content"
@@ -132,17 +117,14 @@ DENIED_MARKERS = ("tunnel connection failed", "not in the allowlist")
 REFUSED_MARKER = "connection refused"
 BACKOFF_CODES = (429, 500, 502, 503, 504)
 
-_TAG = re.compile(r"<(meta|audio)\b[^>]*>", re.I)
+_TAG = re.compile(r"<(meta)\b[^>]*>", re.I)
 _ATTR = re.compile(r"""([a-zA-Z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
-_JSONLD = re.compile(r"<script\b[^>]*application/ld\+json[^>]*>(.*?)</script>", re.I | re.S)
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_HTTP_URL = re.compile(r"https?://[^\s<>\"'()\[\]]+", re.I)
 FACT_MAX = 300
 
 
 def one_line(text):
     """Venue text as ONE line: control characters, newlines and tabs become a
-    space. `page.md` is the final page body, taken verbatim — a title carrying
+    space. The page body is taken verbatim from these — a title carrying
     `\\n# Forged` or `\\n---\\n` must not open a heading or a rule in it."""
     return " ".join("".join(ch if ch.isprintable() else " " for ch in str(text or "")).split())
 
@@ -199,56 +181,6 @@ def meta(html, *names):
     for attrs in _tags(html, "meta"):
         if (attrs.get("property") or attrs.get("name")) in names and attrs.get("content"):
             return attrs["content"].strip()
-    return None
-
-
-def jsonld(html):
-    """Every JSON-LD object on the page, flattened. Hostile input: a block
-    that does not parse is skipped, never raised."""
-    found = []
-    for block in _JSONLD.findall(html):
-        try:
-            doc = json.loads(block)
-        except ValueError:
-            continue
-        for node in doc if isinstance(doc, list) else [doc]:
-            if isinstance(node, dict):
-                found.append(node)
-    return found
-
-
-def published_of(html):
-    """`YYYY-MM-DD` where the page DECLARES one, else None — never a guess."""
-    candidates = [meta(html, "article:published_time")]
-    candidates += [node.get("datePublished") for node in jsonld(html)]
-    for value in candidates:
-        if isinstance(value, str) and _DATE.match(value):
-            return value[:10]
-    return None
-
-
-def author_of(html):
-    named = meta(html, "author")
-    if named:
-        return named
-    for node in jsonld(html):
-        author = node.get("author")
-        for one in author if isinstance(author, list) else [author]:
-            if isinstance(one, dict) and isinstance(one.get("name"), str) and one["name"].strip():
-                return one["name"].strip()
-            if isinstance(one, str) and one.strip():
-                return one.strip()
-    return None
-
-
-def audio_of(html):
-    """A podcast post's audio sits OUTSIDE `.available-content`, so a
-    selector-scoped body never mentions it. Found here, said in the facts —
-    `http(s)` and nothing a link could not hold, or not at all."""
-    for attrs in _tags(html, "audio"):
-        src = (attrs.get("src") or "").strip()
-        if _HTTP_URL.fullmatch(src):
-            return src
     return None
 
 
@@ -350,53 +282,6 @@ class LoginWall(Exception):
     """The fetch was redirected to a sign-in page: the session is dead."""
 
 
-def facts_block(facts):
-    labels = (
-        ("published", "Published"),
-        ("author", "Author"),
-        ("newsletter", "Newsletter"),
-        ("audience", "Audience"),
-        ("audio", "Audio"),
-        ("source", "Source"),
-    )
-    # One `- **Label:** value` line per fact, whatever the venue put in the value.
-    lines = [(label, one_line(facts[key])[:FACT_MAX]) for key, label in labels if facts.get(key)]
-    return "\n".join(f"- **{label}:** {value}" for label, value in lines if value) + "\n"
-
-
-def compose_body(markdown, title, facts):
-    """Title, facts, then the post — with the converter's own leading H1
-    dropped, since it is the `<title>` tag or a duplicate of this one."""
-    body = re.sub(r"\A\s*#\s+[^\n]*\n+", "", markdown)
-    if body.lstrip().startswith("---"):
-        # A leading rule would read as the opening of a YAML block once the
-        # extractor's own frontmatter sits above it.
-        body = re.sub(r"\A\s*---+\s*\n", "", body)
-    return f"# {one_line(title) or 'Untitled'}\n\n{facts_block(facts)}\n{body.strip()}\n"
-
-
-def _converter():
-    path = Path(__file__).resolve().with_name("to_markdown.py")
-    spec = importlib.util.spec_from_file_location("substack_to_markdown", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def render(html_path, out_path, base_url, drop_selectors):
-    """This unit's `to_markdown.py`, run as itself — its argv, its rules."""
-    module = _converter()
-    argv = [str(html_path), "--out", str(out_path), "--selector", CONTENT_SELECTOR, "--base-url", base_url]
-    for selector in drop_selectors:
-        argv += ["--drop-selector", selector]
-    saved = sys.argv
-    sys.argv = ["to_markdown.py", *argv]
-    try:
-        module.main()
-    finally:
-        sys.argv = saved
-
-
 def why_for(exc):
     if isinstance(exc, LoginWall):
         return "auth"
@@ -443,9 +328,8 @@ def fetch_html(url, *, sleep=time.sleep, tries=3):
     raise RuntimeError("unreachable")
 
 
-def capture_leaf(directory, leaf, *, slug, newsletter, overrides=None, drop_selectors=()):
-    """One leaf: `page.html` -> `page.md` + `capture.json`. Returns the row."""
-    overrides = overrides or {}
+def capture_leaf(directory, leaf, *, slug, newsletter):
+    """One leaf: `page.html` -> `leaf.json` + `capture.json`. Returns the row."""
     item = leaf["item"]
     row = {"item": item, "dir": leaf["dir"], "state": "captured", "why": None, "title": None}
     html = (directory / HTML_NAME).read_text(encoding="utf-8", errors="replace")
@@ -457,56 +341,39 @@ def capture_leaf(directory, leaf, *, slug, newsletter, overrides=None, drop_sele
         # Aside, not deleted: it is the evidence, and out of `page.html`'s way
         # the next run fetches again instead of re-reading this for ever.
         (directory / HTML_NAME).replace(directory / REFUSED_NAME)
-        for name in (BODY_NAME, CAPTURE_NAME):
+        for name in (LEAF_NAME, CAPTURE_NAME):
             (directory / name).unlink(missing_ok=True)
         row.update(state=refused[0], why=refused[1])
         if refused[2]:
             row["detail"] = refused[2]
         return row
 
-    body_path = directory / BODY_NAME
-    render(directory / HTML_NAME, body_path, item, drop_selectors)
-    markdown = body_path.read_text(encoding="utf-8")
-
-    first_h1 = re.match(r"\A\s*#\s+([^\n]+)", markdown)
-    candidates = (
-        overrides.get("title"),
-        leaf.get("title"),
-        meta(html, "og:title"),
-        first_h1.group(1) if first_h1 else None,
-    )
     url_slug = urlsplit(item).path.rstrip("/").rsplit("/", 1)[-1]
-    # The post's TRUE title, on one line: the body's H1. The page's FILE is
-    # named from `capture.json`'s, which has to be one the host will take.
+    # The post's TRUE title: the archive's, else the page's own. The page FILE
+    # is named from `capture.json`'s, which has to be one the host will take.
+    candidates = (leaf.get("title"), meta(html, "og:title"))
     venue_title = next((one_line(text) for text in candidates if isinstance(text, str) and one_line(text)), "")
     title = safe_title(venue_title, fallback=safe_title(url_slug))
-    venue_title = venue_title or title
     audience = one_line(leaf.get("audience"))[:FACT_MAX] or None
-    frontmatter = {
-        "type": "article",
-        "published": valid_day(overrides.get("published")) or valid_day(leaf.get("published")) or published_of(html),
-        "author": one_line(overrides.get("author") or author_of(html))[:FACT_MAX] or None,
-        "newsletter": one_line(newsletter)[:FACT_MAX] or None,
+    said = {
+        "v": CAPTURE_V,
+        "item": item,
+        # What the ARCHIVE said, kept because a process ticket sees this one
+        # directory and the archive row is nowhere in it.
+        "title": venue_title or title,
+        "published": valid_day(leaf.get("published")),
         "audience": audience,
-        # A fact about the POST, not about this capture: a preview is refused
-        # above, so a page that lands is complete whichever tier it is.
-        "paywalled": (audience != "everyone") if audience else None,
-        "audio": audio_of(html),
-        "source_title": venue_title if venue_title != title else None,
+        "newsletter": one_line(newsletter)[:FACT_MAX] or None,
     }
-    frontmatter = {key: value for key, value in frontmatter.items() if value is not None}
-
-    source = item if _HTTP_URL.fullmatch(item) else None
-    body_path.write_text(compose_body(markdown, venue_title, {**frontmatter, "source": source}), encoding="utf-8")
+    (directory / LEAF_NAME).write_text(json.dumps(said, indent=2) + "\n", encoding="utf-8")
     record = {
         "v": CAPTURE_V,
         "slug": slug,
         "item": item,
         "title": title,
         "body": BODY_NAME,
-        "content_type": "text/markdown",
+        "content_type": CONTENT_TYPE,
         "fetched_at": now(),
-        "frontmatter": frontmatter,
     }
     (directory / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     row["title"] = title
@@ -574,17 +441,7 @@ def main(argv=None, *, sleep=time.sleep, clock=time.monotonic, fetch=None):
         default=20,
         help="stop starting new leaves after this long (default 20): a slice is killed at 30 with no report behind it",
     )
-    ap.add_argument("--only", default=None, metavar="URL", help="(re)render this one leaf, even if already captured")
-    ap.add_argument("--title", default=None, help="with --only: the post's true title, when the plan's or the meta's is wrong")
-    ap.add_argument("--author", default=None, help="with --only")
-    ap.add_argument("--published", default=None, help="with --only: YYYY-MM-DD")
-    ap.add_argument(
-        "--drop-selector",
-        action="append",
-        default=[],
-        metavar="CSS",
-        help="passed to to_markdown.py (repeatable): CTA chrome to remove before conversion",
-    )
+    ap.add_argument("--only", default=None, metavar="URL", help="(re)capture this one leaf, even if it is already captured")
     args = ap.parse_args(argv)
 
     if not Path(args.capture_dir).is_dir():
@@ -600,11 +457,6 @@ def main(argv=None, *, sleep=time.sleep, clock=time.monotonic, fetch=None):
         return 2
     # Whatever is captured from here on, a report already standing is not its report.
     (capture_dir / REPORT_NAME).unlink(missing_ok=True)
-    if (args.title or args.author or args.published) and not args.only:
-        ap.error("--title/--author/--published describe ONE post: name it with --only")
-    if args.published and not valid_day(args.published):
-        ap.error(f"--published {args.published!r}: want YYYY-MM-DD")
-    overrides = {"title": args.title, "author": args.author, "published": args.published}
 
     results_path = capture_dir / RESULTS_NAME
     previous = _load(results_path) or {}
@@ -661,14 +513,7 @@ def main(argv=None, *, sleep=time.sleep, clock=time.monotonic, fetch=None):
                         continue
                     directory.mkdir(parents=True, exist_ok=True)
                     (directory / HTML_NAME).write_text(html, encoding="utf-8")
-                row = capture_leaf(
-                    directory,
-                    leaf,
-                    slug=plan.get("slug"),
-                    newsletter=plan.get("newsletter"),
-                    overrides=overrides if args.only else None,
-                    drop_selectors=args.drop_selector,
-                )
+                row = capture_leaf(directory, leaf, slug=plan.get("slug"), newsletter=plan.get("newsletter"))
             except Exception as exc:  # noqa: BLE001 — one post's failure is one row, never the batch
                 row.update(state="error", why=why_for(exc), detail=str(exc)[:200])
             if row["state"] == "error" and row["why"] == "auth":

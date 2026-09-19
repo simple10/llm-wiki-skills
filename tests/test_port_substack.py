@@ -1,10 +1,14 @@
-"""`channel-substack` on the rebuilt pipeline's worker contract.
+"""`channel-substack` on the rebuilt pipeline's worker contract, both steps.
 
-One ticket captures a newsletter's archive: `enumerate_archive.py` applies the
-job's own rules and plans the leaf capture directories, `capture_posts.py`
-renders each post to `page.md` + `capture.json` at HARVEST (no unit's process
-stage is ever invoked), and `write_report.py` lists every leaf in
-`captured[]`. The last case runs what they leave through the REAL extractor.
+HARVEST is bytes: `enumerate_archive.py` applies the job's own rules and plans
+the leaf capture directories, `capture_posts.py` writes each post's
+`page.html`, `leaf.json` and a flat `capture.json`, and `write_report.py`
+lists every leaf in `captured[]`.
+
+PROCESS is the unit's own: one ticket per captured leaf, the SKILL's three
+commands — `to_markdown.py`, then `page create --stdin`, then `page edit
+extracted=true` — driven here against the REAL CLI, and `write_report.py
+--written` reporting the page.
 
 No network anywhere: the archive API is a fixture (`fixtures/substack/
 archive.json`) served through a stubbed `fetch_page`, and post pages are
@@ -16,7 +20,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import re
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import declared_job, extracted, ticket_in
+from conftest import declared_job, ticket_in
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills/channel-substack/scripts"
@@ -204,10 +209,8 @@ def test_meta_is_read_whatever_order_its_attributes_come_in():
     mod = _module("capture_posts")
     html = (FIX / "post-the-newest-one.html").read_text(encoding="utf-8")
     assert mod.meta(html, "og:title") == "You Won't Believe The Newest One & More"  # unescaped, `data-rh` first
-    assert mod.published_of(html) == "2026-09-10"
-    assert mod.author_of(html) == "Ada Example"
-    assert mod.published_of("<html><body>no date declared</body></html>") is None  # never a guess
-    assert mod.audio_of((FIX / "post-a-podcast-episode.html").read_text(encoding="utf-8")).startswith("https://api.substack.com/")
+    assert mod.meta(html, "author") == "Ada Example"
+    assert mod.meta("<html><body>nothing declared</body></html>", "og:title") is None
 
 
 def test_a_paywall_preview_is_told_from_a_complete_paid_post():
@@ -218,21 +221,14 @@ def test_a_paywall_preview_is_told_from_a_complete_paid_post():
     assert not mod.is_paywall_preview('<script type="application/ld+json">{"isAccessibleForFree":false}</script><p>all of it</p>')
 
 
-def test_the_body_never_opens_a_second_yaml_block():
-    mod = _module("capture_posts")
-    body = mod.compose_body("# Tab Title - by Someone\n\n---\n\nReal text.\n", "Real Title", {"published": "2026-09-10", "source": "u"})
-    assert body.startswith("# Real Title\n\n- **Published:** 2026-09-10\n- **Source:** u\n\nReal text.")
-    assert "Tab Title" not in body and not any(line.strip() == "---" for line in body.splitlines()[:6])
-
-
 # ---- the report ---------------------------------------------------------
 
 
 def _land(root, leaf, title="T"):
     directory = root / leaf["dir"].rsplit("/", 1)[-1]
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "page.md").write_text("# T\n", encoding="utf-8")
-    (directory / "capture.json").write_text(json.dumps({"item": leaf["item"], "title": title, "body": "page.md"}), encoding="utf-8")
+    (directory / "page.html").write_text("<html><body>T</body></html>\n", encoding="utf-8")
+    (directory / "capture.json").write_text(json.dumps({"item": leaf["item"], "title": title, "body": "page.html"}), encoding="utf-8")
 
 
 def test_captured_is_what_is_on_disk_and_the_outcome_follows(tmp_path):
@@ -253,7 +249,7 @@ def test_captured_is_what_is_on_disk_and_the_outcome_follows(tmp_path):
 
     # A capture record whose body is not there is not a capture.
     (tmp_path / "p-b--22222222").mkdir()
-    (tmp_path / "p-b--22222222/capture.json").write_text(json.dumps({"body": "page.md"}), encoding="utf-8")
+    (tmp_path / "p-b--22222222/capture.json").write_text(json.dumps({"body": "page.html"}), encoding="utf-8")
     assert len(build(plan, [], {}, tmp_path)["captured"]) == 1
 
     _land(tmp_path, leaves[1])
@@ -323,16 +319,49 @@ def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_pat
 # ---- end to end, through the real extractor ------------------------------
 
 
-def _script(name, *argv, cwd=None):
+def _script(name, *argv, cwd=None, env=None):
     """A unit script from THIS working tree (the session wiki installs from
     git HEAD), under `uv run` so its PEP 723 dependencies resolve. `cwd` is
     the wiki root when a case drives the script the documented way."""
-    return subprocess.run(["uv", "run", "-q", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd)
+    return subprocess.run(["uv", "run", "-q", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd, env=env)
+
+
+def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
+    """The process step exactly as SKILL.md prescribes it, against the REAL
+    CLI: convert the captured `page.html`, `page create` with that markdown on
+    stdin, then `page edit … extracted=true`. Returns the page."""
+    record = json.loads((capture_dir / "capture.json").read_text(encoding="utf-8"))
+    said = json.loads((capture_dir / "leaf.json").read_text(encoding="utf-8"))
+    if body is None:
+        converted = _script(
+            "to_markdown.py", str(capture_dir / record["body"]), "--out", "-",
+            "--selector", ".available-content", "--base-url", record["item"], cwd=wiki,
+        )
+        assert converted.returncode == 0, converted.stderr
+        body = converted.stdout
+    page = f"{dest}/{record['title'].strip()}.md"
+    keys = [f"resource={record['item']}", "type=article", *keys]
+    keys += [f"published={said['published']}"] if said.get("published") else []
+    keys += [f"audience={said['audience']}"] if said.get("audience") else []
+    created = subprocess.run(
+        [*ops, "page", "create", f"title={record['title']}", f"dest={dest}", *keys, "--stdin"],
+        input=body, capture_output=True, text=True, cwd=wiki, env=env,
+    )
+    if created.returncode != 0:
+        # The one refusal SKILL.md names: that title is already filed, so edit its page.
+        assert created.returncode == 2 and "already exists" in created.stderr, created.stdout + created.stderr
+        created = subprocess.run([*ops, "page", "edit", page, *keys, "--stdin"],
+                                 input=body, capture_output=True, text=True, cwd=wiki, env=env)
+        assert created.returncode == 0, created.stdout + created.stderr
+    done = subprocess.run([*ops, "page", "edit", page, "extracted=true"],
+                          capture_output=True, text=True, cwd=wiki, env=env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return wiki / page
 
 
 def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monkeypatch, capsys):
     if shutil.which("uv") is None:
-        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+        pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     job = declared_job(ops, env, wiki, UNIT, ARCHIVE)
     assert job.record["harvest"]["scope"] == "domain"  # the manifest's default, which the unit applies itself
     cap = ticket_in(
@@ -355,11 +384,11 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     # script) and `--capture-dir` is the ticket's wiki-relative `capture_dir`.
     rel = json.loads((cap / "ticket.json").read_text(encoding="utf-8"))["capture_dir"]
     assert not Path(rel).is_absolute() and (wiki / rel) == cap
-    done = _script("capture_posts.py", "--capture-dir", rel, cwd=wiki)  # no --fetch: no network
+    done = _py("capture_posts.py", "--capture-dir", rel, cwd=wiki)  # no --fetch: no network
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["states"] == {"captured": 2, "paywalled": 1}
 
-    wrote = _script("write_report.py", "--capture-dir", rel, cwd=wiki)
+    wrote = _py("write_report.py", "--capture-dir", rel, cwd=wiki)
     assert wrote.returncode == 0, wrote.stderr
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
     assert report["outcome"] == "partial" and report["ticket"] == "0123456789ab"
@@ -371,27 +400,29 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     assert not (wiki / plan["leaves"][1]["dir"] / "capture.json").exists()  # a preview is never the article
 
     record = json.loads((wiki / report["captured"][0]["dir"] / "capture.json").read_text(encoding="utf-8"))
-    assert record["body"] == "page.md" and record["content_type"] == "text/markdown" and record["slug"] == job.slug
-    assert record["frontmatter"] == {"type": "article", "published": "2026-09-10", "author": "Ada Example",
-                                     "newsletter": "example-newsletter.invalid", "audience": "everyone", "paywalled": False}
+    # Harvest is BYTES: the page as it arrived, and no page's keys on the record.
+    assert record["body"] == "page.html" and record["content_type"] == "text/html" and record["slug"] == job.slug
+    assert set(record) == {"v", "slug", "item", "title", "body", "content_type", "fetched_at"}
+    said = json.loads((wiki / report["captured"][0]["dir"] / "leaf.json").read_text(encoding="utf-8"))
+    assert (said["title"], said["published"], said["audience"]) == ("The Newest One", "2026-09-10", "everyone")
 
-    # `apply` mints one process ticket per captured dir; each is one `pipeline extract`.
-    pages = [page for c in report["captured"] for page in extracted(ops, env, wiki, wiki / c["dir"])]
+    # `apply` mints one process ticket per captured dir; each is one build.
+    pages = [_paged(ops, env, wiki, wiki / c["dir"], job.dest) for c in report["captured"]]
     assert len(pages) == 2 and len(set(pages)) == 2
-    assert all(page.is_relative_to(wiki / job.dest) for page in pages)
+    assert all(page.is_relative_to(wiki / job.dest) and page.is_file() for page in pages)
 
     newest, podcast = (page.read_text(encoding="utf-8") for page in pages)
-    # the archive's calm title, not the clickbait og:title
-    assert "title: The Newest One" in newest and "You Won't Believe" not in newest
+    # the page is FILED under the archive's calm title, not the clickbait og:title
+    assert newest.splitlines()[1] == "title: The Newest One" and pages[0].name == "The Newest One.md"
     assert f"resource: {HOST}/p/the-newest-one" in newest and "status: draft" in newest
-    assert "- **Published:** 2026-09-10" in newest and "- **Author:** Ada Example" in newest
+    assert "published: '2026-09-10'" in newest
     assert "lighthouses" in newest and "## A section about lighthouses" in newest
     for chrome in ("SITE-NAV-CHROME", "SUBSCRIBE-BUTTON-CHROME", "COMMENTS-ARE-NOT-THE-ARTICLE", "FOOTER-CHROME"):
         assert chrome not in newest  # `.available-content` is the content root
-    # exactly ONE frontmatter block: the extractor's own
+    # exactly ONE frontmatter block: the page's own
     assert newest.startswith("---\n") and [line for line in newest.splitlines() if line == "---"] == ["---", "---"]
-    # the audio sits outside `.available-content`; the facts name it anyway
-    assert "- **Audio:** https://api.substack.com/api/v1/audio/upload/abc-123/src" in podcast and "tide tables" in podcast
+    assert "extracted: 'true'" in newest and "audience: everyone" in newest
+    assert "tide tables" in podcast  # the podcast post's own prose, from its content root
 
     # A slice that died before reporting: the next plan re-lists what is on
     # disk without spending the cap on it, and re-fetches nothing.
@@ -401,11 +432,11 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
 
 
 def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
-    """The extractor files a page under its title and overwrites what is there:
-    before the report settled titles, a newsletter's second "Open Thread" WAS
-    the first one's page, and both process tickets said ok."""
+    """A page is filed under its title, and the second write of a name takes the
+    first's file: before the report settled titles, a newsletter's second "Open
+    Thread" WAS the first one's page, and both process tickets said ok."""
     if shutil.which("uv") is None:
-        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+        pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     host = "https://second-newsletter.invalid"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-names")
     cap = ticket_in(wiki, job, "archive--0badc0de", unit=UNIT, item=f"{host}/archive")
@@ -421,17 +452,17 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
         "capture_dir": str(cap.relative_to(wiki)), "leaves": leaves, "summary": {"truncated": False}}), encoding="utf-8")
 
     rel = str(cap.relative_to(wiki))
-    done = _script("capture_posts.py", "--capture-dir", rel, cwd=wiki)
+    done = _py("capture_posts.py", "--capture-dir", rel, cwd=wiki)
     assert done.returncode == 0 and json.loads(done.stdout)["states"] == {"captured": 2}, done.stderr
     reports = []
     for _ in range(2):  # a respawned worker reports again: same names
-        wrote = _script("write_report.py", "--capture-dir", rel, cwd=wiki)
+        wrote = _py("write_report.py", "--capture-dir", rel, cwd=wiki)
         assert wrote.returncode == 0, wrote.stderr
         reports.append(json.loads((cap / "report.json").read_text(encoding="utf-8")))
     report = reports[-1]
     assert report["outcome"] == "ok"
 
-    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    pages = [_paged(ops, env, wiki, wiki / c["dir"], job.dest) for c in report["captured"]]
     assert len({page.resolve() for page in pages}) == 2 and all(page.is_relative_to(wiki / job.dest) for page in pages)
     assert [page.name for page in pages] == ["Open Thread.md", "Open Thread (2026-08-13).md"]
     assert [[c["title"] for c in r["captured"]] for r in reports] == [["Open Thread", "Open Thread (2026-08-13)"]] * 2
@@ -450,7 +481,7 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
 
 POST = f"{HOST}/p/the-newest-one"
 OWN = "_raw/news/p-the-newest-one--1e31d334"
-STDLIB = ("enumerate_archive.py", "write_report.py")  # these two carry no dependencies: plain python runs them
+STDLIB = ("enumerate_archive.py", "capture_posts.py", "write_report.py")  # no dependencies: plain python runs them
 
 
 def _py(name, *argv, cwd):
@@ -480,7 +511,6 @@ def test_no_script_runs_without_a_capture_dir_and_none_writes_at_the_wiki_root(t
     for name in STDLIB:
         done = _py(name, cwd=root)
         assert done.returncode == 2 and "--capture-dir" in done.stderr, (name, done.stderr)
-    assert "required=True" in (SCRIPTS / "capture_posts.py").read_text(encoding="utf-8").split('"--capture-dir"', 1)[1][:40]
     assert _litter(root) == []
 
     # Pointed at a directory that is no ticket's (the wiki root itself): refused, nothing written.
@@ -526,23 +556,44 @@ def test_the_enumerator_and_the_report_run_from_the_wiki_root_on_relative_paths(
 
 def test_capture_posts_runs_from_the_wiki_root_on_relative_paths(tmp_path):
     """No ops CLI needed: a stand-in root, the fixture page in the leaf dir, and
-    the script under `uv run` with cwd the root and `--capture-dir` relative."""
-    if shutil.which("uv") is None:
-        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+    the script with cwd the root and `--capture-dir` relative."""
     root = _root_with_post_ticket(tmp_path)
     assert _py("enumerate_archive.py", "--capture-dir", OWN, cwd=root).returncode == 0
     shutil.copy(FIX / "post-the-newest-one.html", root / OWN / "page.html")
 
-    done = _script("capture_posts.py", "--capture-dir", OWN, cwd=root)
+    done = _py("capture_posts.py", "--capture-dir", OWN, cwd=root)
     assert done.returncode == 0 and json.loads(done.stdout)["states"] == {"captured": 1}, done.stderr
-    assert (root / OWN / "capture.json").is_file() and (root / OWN / "results.json").is_file()
+    for name in ("capture.json", "leaf.json", "results.json"):
+        assert (root / OWN / name).is_file(), name
+    assert not (root / OWN / "page.md").exists()  # harvest renders nothing
     # a relative --plan is inside the capture dir too
-    again = _script("capture_posts.py", "--capture-dir", OWN, "--plan", "leaves.json", "--only", POST, cwd=root)
+    again = _py("capture_posts.py", "--capture-dir", OWN, "--plan", "leaves.json", "--only", POST, cwd=root)
     assert again.returncode == 0, again.stderr
     assert _py("write_report.py", "--capture-dir", OWN, cwd=root).returncode == 0
     assert json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))["outcome"] == "ok"
     assert _litter(root) == []
 
+
+
+def test_a_process_ticket_reports_the_page_it_wrote(tmp_path):
+    """`--written` makes it the PROCESS ticket's report: the pages, and no
+    capture. A process ticket captures nothing, so the refusal guarding a
+    success claimed over an empty capture directory does not apply to it."""
+    root = _root_with_post_ticket(tmp_path)
+    page = "sources/newsletters/news/The Newest One.md"
+    wrote = _py("write_report.py", "--capture-dir", OWN, "--written", page, cwd=root)
+    assert wrote.returncode == 0, wrote.stderr
+    report = json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))
+    assert (report["outcome"], report["written"], report["ticket"]) == ("ok", [page], "0123456789ab")
+    assert (report["captured"], report["missing"], report["discovered"]) == ([], [], [])
+
+    # A capture that earns no page says so instead, with no `--written` behind it.
+    skipped = _py("write_report.py", "--capture-dir", OWN, "--outcome", "skipped",
+                  "--reason", "excluded: the job's rules drop it", cwd=root)
+    assert skipped.returncode == 0, skipped.stderr
+    report = json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))
+    assert (report["outcome"], report["written"], report["captured"]) == ("skipped", [], [])
+    assert report["reason"].startswith("excluded:") and _litter(root) == []
 
 # ---- Rule 1: the title is a legal filename ---------------------------------
 
@@ -576,11 +627,11 @@ def _hostile_page():
 
 
 def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, wiki):
-    """Rule 1 + Rule 2, through the REAL extractor. Before the fix the raw
-    title went into `capture.json`, harvest said ok, and `pipeline extract`
-    refused the process ticket: "a title cannot carry ':'"."""
+    """Rule 1 + Rule 2, through the REAL `page create`. Before the fix the raw
+    title went into `capture.json`, harvest said ok, and the process ticket was
+    refused: "a title cannot carry ':'"."""
     if shutil.which("uv") is None:
-        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+        pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     host = "https://third-newsletter.invalid"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-titles")
     cap = ticket_in(wiki, job, "archive--0badf00d", unit=UNIT, item=f"{host}/archive")
@@ -598,38 +649,39 @@ def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, 
         "v": 1, "ticket": "0123456789ab", "slug": job.slug, "newsletter": "third-newsletter.invalid",
         "capture_dir": rel_cap, "leaves": leaves, "summary": {"truncated": False}}), encoding="utf-8")
 
-    done = _script("capture_posts.py", "--capture-dir", rel_cap, cwd=wiki)
+    done = _py("capture_posts.py", "--capture-dir", rel_cap, cwd=wiki)
     assert done.returncode == 0 and json.loads(done.stdout)["states"] == {"captured": 2}, done.stderr + done.stdout
-    assert _script("write_report.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
+    assert _py("write_report.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
     assert [c["title"] for c in report["captured"]] == ["Lesson 3 - What is 'A-B' testing # Forged heading ---",
                                                         "Lesson 3 - What is 'A-B' testing"]
 
     record = json.loads((wiki / leaves[0]["dir"] / "capture.json").read_text(encoding="utf-8"))
     assert record["title"] == report["captured"][0]["title"]
-    assert record["frontmatter"]["source_title"] == '.Lesson 3: What is "A/B" testing? # Forged heading ---'  # the true one, on one line
-    assert record["frontmatter"]["author"] == "Ada Example ## Forged by the author ```"
-    second = json.loads((wiki / leaves[1]["dir"] / "capture.json").read_text(encoding="utf-8"))
-    assert second["frontmatter"]["published"] == "2026-09-10"  # the plan's was no date: the page's own declared one
+    said = json.loads((wiki / leaves[0]["dir"] / "leaf.json").read_text(encoding="utf-8"))
+    assert said["title"] == '.Lesson 3: What is "A/B" testing? # Forged heading ---'  # the true one, on one line
+    second = json.loads((wiki / leaves[1]["dir"] / "leaf.json").read_text(encoding="utf-8"))
+    assert second["published"] is None  # `2026-09-03\n# Forged date` is no date: dropped, never passed on
 
-    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]  # the pages LAND
+    pages = [_paged(ops, env, wiki, wiki / c["dir"], job.dest) for c in report["captured"]]  # the pages LAND
     assert [page.name for page in pages] == [f"{c['title']}.md" for c in report["captured"]]
-    text = pages[0].read_text(encoding="utf-8")
-    assert '# .Lesson 3: What is "A/B" testing? # Forged heading ---' in text  # the venue's title is the H1
-    lines = text.splitlines()
-    assert "# Forged heading" not in lines and "## Forged by the author" not in lines and "# Forged date" not in lines
-    assert [line for line in lines if line.strip() == "---"] == ["---", "---"]  # the extractor's own block only
-    assert not any(line.startswith("```") for line in lines)  # no fence opened over the rest of the page
-    assert "- **Author:** Ada Example ## Forged by the author" in text and "lighthouses" in text
+    lines = pages[0].read_text(encoding="utf-8").splitlines()
+    # the venue's title reaches the page QUOTED, opening no heading and no rule of its own
+    assert lines[1] == """title: 'Lesson 3 - What is ''A-B'' testing # Forged heading ---'"""
+    assert "# Forged heading" not in lines and "# Forged date" not in lines
+    assert [line for line in lines if line.strip() == "---"] == ["---", "---"]  # the page's own block only
+    assert "lighthouses" in "\n".join(lines)
+    # the archive gave the second leaf no date, so its page declares none rather than a guess
+    assert not any(line.startswith("published:") for line in pages[1].read_text(encoding="utf-8").splitlines())
 
 
 def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki):
     """The host's `filename_for` checks no LENGTH: 100 CJK characters are 300
-    bytes and the real extractor died `OSError: File name too long`. The cap is
-    held in UTF-8 bytes — and the report's de-dup qualifier, added AFTER it,
-    still fits: this unit's qualifiers are a date, a hash8 and a counter."""
+    bytes and the write died `OSError: File name too long`. The cap is held in
+    UTF-8 bytes — and the report's de-dup qualifier, added AFTER it, still
+    fits: this unit's qualifiers are a date, a hash8 and a counter."""
     if shutil.which("uv") is None:
-        pytest.skip("no uv: capture_posts.py carries PEP 723 dependencies")
+        pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     host = "https://fourth-newsletter.invalid"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-cjk")
     cap = ticket_in(wiki, job, "archive--0badcafe", unit=UNIT, item=f"{host}/archive")
@@ -644,14 +696,14 @@ def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki
     (cap / "leaves.json").write_text(json.dumps({
         "v": 1, "ticket": "0123456789ab", "slug": job.slug, "newsletter": "fourth-newsletter.invalid",
         "capture_dir": rel_cap, "leaves": leaves, "summary": {"truncated": False}}), encoding="utf-8")
-    assert _script("capture_posts.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
-    assert _script("write_report.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
+    assert _py("capture_posts.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
+    assert _py("write_report.py", "--capture-dir", rel_cap, cwd=wiki).returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
     first, second = (c["title"] for c in report["captured"])
     assert first.endswith("…") and len(first.encode()) <= 203 and second == f"{first} (2026-09-03)"
-    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    pages = [_paged(ops, env, wiki, wiki / c["dir"], job.dest) for c in report["captured"]]
     assert [page.name for page in pages] == [f"{first}.md", f"{second}.md"] and all(page.is_file() for page in pages)
-    assert "# " + "語" * 100 in pages[0].read_text(encoding="utf-8")  # the whole title is still the H1
+    assert max(len(page.name.encode()) for page in pages) <= 255  # what the write dies on
 
 
 def test_no_qualifier_this_unit_adds_can_push_a_capped_title_past_a_filename():
@@ -666,14 +718,10 @@ def test_no_qualifier_this_unit_adds_can_push_a_capped_title_past_a_filename():
     assert max(len(f"{name}.md".encode()) for name in names) <= 255
 
 
-def test_the_body_top_is_one_line_per_fact_whatever_the_venue_says():
-    mod = _module("capture_posts")
-    body = mod.compose_body("Text.\n", "A title\n\n# Forged\n---", {"author": "A\n## B\n```", "published": "2026-09-10", "source": "u"})
-    assert body.splitlines()[:5] == ["# A title # Forged ---", "", "- **Published:** 2026-09-10", "- **Author:** A ## B ```", "- **Source:** u"]
-    assert mod.valid_day("2026-09-10") == "2026-09-10"
-    assert mod.valid_day("2026-09-10T00:00") is None and mod.valid_day("2026-09-10\n# x") is None and mod.valid_day(None) is None
-    assert mod.audio_of('<audio src="javascript:alert(1)">') is None
-    assert mod.audio_of('<audio src="https://api.substack.com/a b">') is None
+def test_a_date_is_a_fact_never_free_text():
+    valid_day = _module("capture_posts").valid_day
+    assert valid_day("2026-09-10") == "2026-09-10"
+    assert valid_day("2026-09-10T00:00") is None and valid_day("2026-09-10\n# x") is None and valid_day(None) is None
 
 
 # ---- S9: a page that is not a post is never the article ---------------------
@@ -697,20 +745,19 @@ def test_a_page_without_the_content_root_is_told_apart():
 def test_a_block_page_is_an_error_row_and_its_html_is_out_of_the_way(tmp_path, html, why):
     """Before: `to_markdown.pick_root` fell back to the whole body, "Just a
     moment…" landed as the article with outcome `ok`, and its `page.html` was
-    never fetched again. `capture_leaf` refuses BEFORE converting — which is
-    also why this runs with no converter dependencies installed."""
+    never fetched again. `capture_leaf` refuses before anything is captured."""
     mod = _module("capture_posts")
     leaf = {"item": POST, "dir": OWN, "title": "The Newest One"}
     directory = tmp_path / "p-the-newest-one--1e31d334"
     directory.mkdir()
     (directory / "page.html").write_text(html, encoding="utf-8")
-    (directory / "capture.json").write_text(json.dumps({"body": "page.md"}), encoding="utf-8")  # an older capture
-    (directory / "page.md").write_text("old\n", encoding="utf-8")
+    (directory / "capture.json").write_text(json.dumps({"body": "page.html"}), encoding="utf-8")  # an older capture
+    (directory / "leaf.json").write_text('{"item": "old"}\n', encoding="utf-8")
 
     row = mod.capture_leaf(directory, leaf, slug="news", newsletter="example-newsletter.invalid")
     assert (row["state"], row["why"]) == ("error", why) and row["detail"]
     assert not (directory / "page.html").exists() and (directory / "page.refused.html").is_file()  # the next run re-fetches
-    assert not (directory / "capture.json").exists() and not (directory / "page.md").exists()
+    assert not (directory / "capture.json").exists() and not (directory / "leaf.json").exists()
 
     plan = {"ticket": "t", "newsletter": "example-newsletter.invalid", "leaves": [leaf], "summary": {}}
     report = _module("write_report").build(plan, [row], {"ticket": "t"}, tmp_path)
@@ -736,12 +783,7 @@ def test_the_paywall_sentence_counts_only_outside_the_content_root():
 
 
 def _capture_main(monkeypatch, mod, capture_dir, fetch, *argv):
-    """`capture_posts.main` in process with an INJECTED fetcher — no network —
-    and the converter stubbed (its dependencies are not in the test env; the
-    real one runs in the `uv` cases)."""
-    def render(html_path, out_path, base_url, drop_selectors):
-        out_path.write_text("# tab title\n\n" + re.sub(r"<[^>]+>", " ", html_path.read_text(encoding="utf-8")) + "\n", encoding="utf-8")
-    monkeypatch.setattr(mod, "render", render)
+    """`capture_posts.main` in process with an INJECTED fetcher — no network."""
     slept = []
     code = mod.main(["--capture-dir", str(capture_dir), *argv], sleep=slept.append, fetch=fetch)
     return code, json.loads((capture_dir / "results.json").read_text(encoding="utf-8"))["rows"]
@@ -752,9 +794,9 @@ def _refresh_dir(tmp_path, monkeypatch, capsys):
     own = tmp_path / OWN
     own.mkdir(parents=True)
     old = (FIX / "post-the-newest-one.html").read_text(encoding="utf-8")
-    (own / "page.html").write_text(old, encoding="utf-8")
-    (own / "page.md").write_text("# The Newest One\n\nOLD BYTES\n", encoding="utf-8")
-    (own / "capture.json").write_text(json.dumps({"item": POST, "title": "The Newest One", "body": "page.md"}), encoding="utf-8")
+    (own / "page.html").write_text(old.replace("lighthouses", "OLD-BYTES"), encoding="utf-8")
+    (own / "leaf.json").write_text(json.dumps({"item": POST, "title": "The Newest One"}), encoding="utf-8")
+    (own / "capture.json").write_text(json.dumps({"item": POST, "title": "The Newest One", "body": "page.html"}), encoding="utf-8")
     (own / "report.json").write_text(json.dumps({"outcome": "ok"}), encoding="utf-8")
     ticket = _ticket(capture_dir=OWN, refresh=True, resource=POST, item=POST,
                      known=[{"resource": POST, "harvested_at": "2026-09-11T00:00:00Z"}])
@@ -782,9 +824,8 @@ def test_a_refresh_ticket_really_re_fetches(tmp_path, monkeypatch, capsys):
 
     code, rows = _capture_main(monkeypatch, mod, own, fetch, "--fetch")
     assert code == 0 and calls == [POST] and [row["state"] for row in rows] == ["captured"]
-    assert "REFETCHED" in (own / "page.html").read_text(encoding="utf-8")
-    body = (own / "page.md").read_text(encoding="utf-8")
-    assert "REFETCHED" in body and "OLD BYTES" not in body
+    landed = (own / "page.html").read_text(encoding="utf-8")
+    assert "REFETCHED" in landed and "OLD-BYTES" not in landed
     plan = json.loads((own / "leaves.json").read_text(encoding="utf-8"))
     report = _module("write_report").build(plan, rows, {"ticket": "t"}, own.parent)
     # `ok` WITH the capture: `unchanged` is apply's verdict, reached by hashing what was left.

@@ -68,7 +68,7 @@ own `capture_dir`, with no API call:
 - a ticket whose `target` is itself a post (`/p/<slug>`).
 
 That directory is STABLE across pulls, and the extractor writes into it too.
-So for such a plan the old `page.html`, `page.md`, `capture.json` and
+So for such a plan the old `page.html`, `leaf.json`, `capture.json` and
 `results.json` are removed here, before anything is fetched: a refresh that
 found yesterday's `page.html` would never fetch, and `apply` would stamp the
 page `unchanged` on bytes nobody re-read. And on EVERY ticket the first thing
@@ -89,31 +89,6 @@ there is a `ticket.json`, or `--out` names a file — the same object written as
 {"total_posts", "by_audience", "skipped_paywalled", "skipped_known",
 "skipped_excluded", "skipped_by_scope", "skipped_newer",
 "stopped_at_min_date", "planned", "on_disk", "truncated", "fetch_failed"}.
-
-History:
-- 2026-07-09: initial version; same-day pagination fix — `offset=0`
-  silently caps the response at 23 items even when `limit` asks for more,
-  so advance the offset by the actual page length returned and stop only on
-  a truly empty page.
-- 2026-07-28: ported into the channel-substack skill unit.
-- 2026-08-18: stopped queueing; emitted one row for a host script to apply.
-- 2026-09-19: ported to the rebuilt pipeline's worker contract. The host
-  half this script used to hand off to is gone — no child jobs, and no host
-  pass filtering what a worker reports — so it no longer emits a `discovered` row:
-  it reads `ticket.json`, applies scope, access, `exclude_urls`, `min_date`
-  and `known[]` itself, and plans the leaf capture directories. `--parent`
-  is gone (nothing matches a row to a job); `--max-urls` became
-  `--max-leaves` and is optional (the ceiling it restated was the host's);
-  `resume_max_date` and `stalled` are gone with the date-resume they served,
-  because `known[]` is what resumes a walk now and it cannot stall.
-- 2026-09-19 (review): `--capture-dir` is required and wiki-relative, and a
-  relative `--out` lands inside it — under `llm-wiki-ops run` the cwd is the
-  wiki root, so the old `.` default read and wrote in the wrong place. A
-  stale `report.json` is removed first; a single-leaf plan clears its own
-  directory so a refresh really re-fetches. An archive answer that is not
-  JSON (a challenge page) is `fetch_failed`, not a traceback.
-  `exclude_urls` prefixes end on a path-segment boundary, and `?` is no
-  longer a wildcard.
 """
 
 import argparse
@@ -136,7 +111,7 @@ CAPTURE_NAME = "capture.json"
 REPORT_NAME = "report.json"
 # What one leaf's capture is made of. Cleared from the ticket's own directory
 # when the plan is that one leaf: see "STABLE across pulls" above.
-OWN_LEAF_FILES = ("page.html", "page.md", CAPTURE_NAME, "results.json")
+OWN_LEAF_FILES = ("page.html", "leaf.json", CAPTURE_NAME, "results.json")
 RAW_DIRNAME = "_raw"
 SCOPES = ("page", "section", "domain")
 
