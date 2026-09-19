@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, at, declared_job, run, ticket_in
+from conftest import ROOT, declared_job, rooted, run, ticket_in
 
 UNIT = "channel-hubspot-video"
 SCRIPTS = ROOT / "skills" / UNIT / "scripts"
@@ -919,10 +919,10 @@ def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki
     job = declared_job(ops, env, wiki, UNIT, "https://www.example-hubspot.invalid/continue", slug="port-channel-hubspot-continue")
     assert job.record["every"] == "once"
     for cadence in ("1h", "once"):
-        done = run(ops, at(env, wiki), "--json", "pipeline", "edit", job.slug, f"every={cadence}")
+        done = run(ops, rooted(env, wiki), "--json", "pipeline", "edit", job.slug, f"every={cadence}")
         assert done.returncode == 0, done.stdout + done.stderr
-        assert run(ops, at(env, wiki), "--json", "pipeline", "show", job.slug).data["job"]["every"] == cadence
-    refused = run(ops, at(env, wiki), "--json", "pipeline", "queue", "retry", "0123456789ab")
+        assert run(ops, rooted(env, wiki), "--json", "pipeline", "show", job.slug).data["job"]["every"] == cadence
+    refused = run(ops, rooted(env, wiki), "--json", "pipeline", "queue", "retry", "0123456789ab")
     assert refused.returncode != 0 and "no finished item" in refused.stdout + refused.stderr  # the verb exists; this ticket never ran
 
 
@@ -952,6 +952,6 @@ def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env,
             + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
             + f" 'extracted=true' 'type=video' --stdin"
         )
-        done = subprocess.run(["/bin/sh", "-c", line], env=at(env, wiki), capture_output=True, text=True, check=False)
+        done = subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), capture_output=True, text=True, check=False)
         assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
         assert (wiki / json.loads(done.stdout)["path"]).is_file()

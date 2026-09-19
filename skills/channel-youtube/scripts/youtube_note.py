@@ -103,6 +103,21 @@ from pathlib import Path
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
 # root: the `cwd=<root>` this script was handed is what binds the nested call
@@ -265,15 +280,15 @@ def format_transcript(captions, chapters_json, wiki, override):
     if override:
         cmd, where = [sys.executable, str(Path(override).resolve())], {}
     else:
-        ops = shutil.which(OPS)
-        if ops is None:
+        door = front_door()
+        if not door:
             sys.exit(
-                f"youtube_note: `{OPS}` is not on PATH — the front door is "
-                "how this unit reaches the plugin's transcript formatter; "
-                "install the ops plugin on this machine"
+                f"youtube_note: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names "
+                "nothing — the front door is how this unit reaches the plugin's "
+                "transcript formatter; install the ops plugin on this machine"
             )
         # The wiki root is what binds the front door to THIS wiki.
-        cmd, where = [ops, "run", FORMATTER], {"cwd": str(wiki), "env": _front_door_env()}
+        cmd, where = [*door, "run", FORMATTER], {"cwd": str(wiki), "env": _front_door_env()}
     cmd += [str(Path(captions).resolve()), "--interval", "60"]
     if chapters_json:
         cmd += ["--chapters", str(Path(chapters_json).resolve())]
@@ -295,18 +310,19 @@ def write_page(wiki, dest, title, front, body, ops=None):
     every value on them is venue text — a title, a channel name, a url — and a
     venue that can type onto a Bash line can run a command.
     """
-    front_door = list(ops) if ops else [shutil.which(OPS)]
-    if front_door[0] is None:
+    door = list(ops) if ops else front_door()
+    if not door:
         sys.exit(
-            f"youtube_note: `{OPS}` is not on PATH — the front door is how "
-            "this unit writes a page; install the ops plugin on this machine"
+            f"youtube_note: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names "
+            "nothing — the front door is how this unit writes a page; install "
+            "the ops plugin on this machine"
         )
     where = {"cwd": str(wiki), "env": _front_door_env()}
     keys = [f"{k}={v}" for k, v in front.items() if k not in HOST_OWNED and not isinstance(v, (list, dict))]
     keys += [f"{k}={','.join(str(one) for one in v)}" for k, v in front.items() if isinstance(v, list) and v]
     keys += [f"extracted={EXTRACTED}"]
     created = subprocess.run(
-        [*front_door, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "--stdin"],
+        [*door, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     rel = f"{str(dest).rstrip('/')}/{title}.md"
@@ -320,7 +336,7 @@ def write_page(wiki, dest, title, front, body, ops=None):
     # The one refusal that is not a failure: this job pulled the video before,
     # and the page under `dest` is the one to replace.
     edited = subprocess.run(
-        [*front_door, "--json", "page", "edit", rel, *keys, "--stdin"],
+        [*door, "--json", "page", "edit", rel, *keys, "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     if edited.returncode != 0:

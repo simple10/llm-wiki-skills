@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from conftest import ROOT, SKILLS, SOURCE, TACTICS, at, enabled, run, unit_manifest
+from conftest import ROOT, SKILLS, SOURCE, TACTICS, enabled, rooted, run, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
 
@@ -18,21 +18,21 @@ VTT = "WEBVTT\n\n00:00:00.080 --> 00:00:02.629\nAt its peak, it grew\n"
 
 @pytest.mark.parametrize("name", SKILLS)
 def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env, wiki, name):
-    r = run(ops, at(env, wiki), "--json", "skills", "install", name)
+    r = run(ops, rooted(env, wiki), "--json", "skills", "install", name)
     assert r.returncode == 0, r.stderr
     got = r.data
     assert got["package"] == SOURCE and len(got["ref"]) == 12, got
     assert got["version"] == unit_manifest(name)["version"], got
     assert got["warnings"] == [], got["warnings"]
 
-    rows = run(ops, at(env, wiki), "--json", "skills", "ls", name).data["skills"]
+    rows = run(ops, rooted(env, wiki), "--json", "skills", "ls", name).data["skills"]
     row = next(s for s in rows if s["name"] == name)
     assert row["from"].startswith(f"{SOURCE}@"), row
     assert not row["customized"] and not row["drifted"], row
     assert row["warnings"] == [], row
 
     # `--confirm`: enable decides what this machine loads, so it refuses unattended without it
-    r = run(ops, at(env, wiki), "--json", "skills", "enable", name, "--confirm")
+    r = run(ops, rooted(env, wiki), "--json", "skills", "enable", name, "--confirm")
     assert r.returncode == 0, r.stderr
     assert (wiki / ".agents" / "skills" / name / "SKILL.md").is_file()
 
@@ -55,13 +55,13 @@ def test_channel_unit_routes_a_job_by_its_own_manifest(ops, env, wiki, name):
     ]
     required = sorted(k for k, v in (watch.get("inputs") or {}).items() if v.get("required") is True)
     if required:  # an add that skips a required input is refused, naming the key that answers it
-        r = run(ops, at(env, wiki), *add)
+        r = run(ops, rooted(env, wiki), *add)
         assert r.returncode == 2 and all(f"options.{k}=" in r.data["error"] for k in required), r.stdout
-    r = run(ops, at(env, wiki), *add, *(f"options.{k}=harness-{k}" for k in required))
+    r = run(ops, rooted(env, wiki), *add, *(f"options.{k}=harness-{k}" for k in required))
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.data["dest"] == watch["dest"].format(slug=slug), r.data
 
-    shown = run(ops, at(env, wiki), "--json", "pipeline", "show", slug)
+    shown = run(ops, rooted(env, wiki), "--json", "pipeline", "show", slug)
     assert shown.returncode == 0, shown.stderr
     job = shown.data["job"]
     assert {k: job["options"][k] for k in required} == {k: f"harness-{k}" for k in required}, job["options"]
@@ -115,9 +115,9 @@ def test_tactic_installs_or_is_already_seeded_and_lists_undiverged(ops, env, wik
     # UNVERIFIED BODY. Spelled the way `skills` is today; nobody has run this
     # against a ported group. The day the `tactics_group` skip lifts, a failure
     # here most likely means this guess is wrong, not that the package is.
-    r = run(ops, at(env, wiki), "--json", "tactics", "install", name) if name != "_TEMPLATE" else None
+    r = run(ops, rooted(env, wiki), "--json", "tactics", "install", name) if name != "_TEMPLATE" else None
     if r is not None:
         assert r.returncode == 0, r.stderr
-    rows = run(ops, at(env, wiki), "--json", "tactics", "ls").data["tactics"]
+    rows = run(ops, rooted(env, wiki), "--json", "tactics", "ls").data["tactics"]
     row = next(t for t in rows if t["name"] == name)
     assert row["from"].startswith(f"{SOURCE}@") and not row["customized"], row

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import at, declared_job, ticket_in
+from conftest import declared_job, rooted, ticket_in
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "channel-circle" / "scripts"
@@ -341,7 +341,7 @@ def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "
     return subprocess.run(
         [*ops, "--json", "page", verb, *where, f"resource={record['item']}", "type=lesson", "extracted=true",
          "--stdin"],
-        env=at(env, wiki), input=body, capture_output=True, text=True, check=False)
+        env=rooted(env, wiki), input=body, capture_output=True, text=True, check=False)
 
 
 def written(ops, env, wiki, capture_dir: Path, dest: str, body: str) -> Path:
@@ -1030,7 +1030,7 @@ def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env,
             + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
             + f" 'extracted=true' 'type=lesson' --stdin"
         )
-        done = subprocess.run(["/bin/sh", "-c", line], env=at(env, wiki), capture_output=True, text=True, check=False)
+        done = subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), capture_output=True, text=True, check=False)
         assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
         assert (wiki / json.loads(done.stdout)["path"]).is_file()
 

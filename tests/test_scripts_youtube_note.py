@@ -143,7 +143,7 @@ def _stub_front_door(tmp_path, body=None):
         "    sys.exit(0)\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}, seen
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": str(stub)}, seen
 
 
 def _calls(seen):
@@ -361,18 +361,32 @@ def test_a_refused_page_write_is_a_failure_not_a_silent_success(tmp_path):
 
 
 def test_a_machine_without_the_front_door_is_told_so(tmp_path, monkeypatch):
-    """No `llm-wiki-ops` on PATH: the failure names what is missing instead
-    of a traceback out of a subprocess call. In-process, because a PATH with
-    nothing on it cannot also start the `uv` the other cases run through."""
+    """Nothing on PATH and nothing named: the failure says what is missing
+    instead of a traceback out of a subprocess call. In-process, because a PATH
+    with nothing on it cannot also start the `uv` the other cases run through."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("youtube_note", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     monkeypatch.setenv("PATH", str(tmp_path / "nothing-here"))
+    monkeypatch.delenv("LLM_WIKI_OPS", raising=False)
     with pytest.raises(SystemExit) as exc:
         mod.format_transcript(tmp_path / "a.vtt", None, tmp_path, None)
     assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
     with pytest.raises(SystemExit) as exc:
         mod.write_page(tmp_path, DEST, "T", {}, "body")
     assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
+
+
+def test_the_front_door_a_hosted_run_names_wins_over_the_bare_name(tmp_path):
+    """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was reached
+    by — a jail is not promised the `~/.local/bin` entry the bare name is."""
+    cap = _capture(tmp_path)
+    path, seen = _stub_front_door(tmp_path)
+    broken = tmp_path / "wrong-bin"
+    broken.mkdir()
+    (broken / "llm-wiki-ops").write_text("#!/bin/sh\nexit 127\n")
+    (broken / "llm-wiki-ops").chmod(0o755)
+    _run(tmp_path, cap, extra_env={**path, "PATH": f"{broken}{os.pathsep}{os.environ['PATH']}"})
+    assert _page_calls(seen), "the named front door was not the one reached"

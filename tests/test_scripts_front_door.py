@@ -26,7 +26,7 @@ SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 PROFILE = "/home/u/.config/llm-wiki/credentials/realm/profiles/community.example"
 PROFILE_PROSE = f"domain: community.example\npath: {PROFILE}\nexists: no\n"
-NO_WIKI = {"error": "no wiki here — this CLI is scoped to one wiki through its shim"}
+NO_WIKI = {"error": "no wiki here — run `llm-wiki-cli wiki <key> ...` to reach one, or `llm-wiki-cli init <dir>` to make one"}
 ABSENT = {"error": "no credential 'spotify' on this machine"}
 STORED = {"client_id": "cid", "client_secret": "sec"}
 
@@ -57,6 +57,9 @@ def front_door(tmp_path, monkeypatch):
     bin_dir, seen = tmp_path / "stub-bin", tmp_path / "seen.json"
     bin_dir.mkdir()
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    # What a hosted run exports: the front door it was itself reached by. A
+    # script that honors it must reach THIS stub, not whatever the suite runs.
+    monkeypatch.setenv("LLM_WIKI_OPS", str(bin_dir / "llm-wiki-ops"))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "some-other-wiki"))
 
     def answer(rc: int, json_answer: dict, prose: str = "prose for a person\n", honors_json: bool = True):

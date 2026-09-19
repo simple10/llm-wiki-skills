@@ -625,7 +625,7 @@ def front_door(tmp_path: Path, monkeypatch, ops: list) -> None:
     shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(x) for x in ops) + ' "$@"\n')
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}")
-    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR"):
+    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS"):
         monkeypatch.delenv(ambient, raising=False)
 
 
@@ -1119,9 +1119,22 @@ def test_an_unreadable_store_on_a_hand_run_is_still_an_error(tmp_path):
 def test_any_other_store_failure_under_a_ticket_is_still_an_error(tmp_path):
     root, rel = fake_wiki(tmp_path), "_raw/money-models/playlist--deadbeef"
     ticket(root / rel)
-    path, _ = ops_stub(tmp_path, 1, {"error": "no wiki here — this CLI is scoped to one wiki through its shim"})
+    path, _ = ops_stub(tmp_path, 1, {"error": "no wiki here — run `llm-wiki-cli wiki <key> ...` to reach one, or `llm-wiki-cli init <dir>` to make one"})
     r = cli(tmp_path, "capture", "--capture-dir", rel, "--no-audio", cwd=root, env=path, routes=EMBED_ROUTES)
     assert r.returncode == 2 and "no wiki here" in r.stderr and not (root / rel / "capture.json").exists()
+
+
+def test_the_front_door_a_hosted_run_names_wins_over_the_bare_name(tmp_path):
+    """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was reached
+    by — a jail is not promised the `~/.local/bin` entry the bare name is. Here
+    nothing at all is on PATH under that name."""
+    root, rel = fake_wiki(tmp_path), "_raw/money-models/playlist--deadbeef"
+    ticket(root / rel)
+    _path, seen = ops_stub(tmp_path, 1, {"error": "no credential 'spotify' on this machine"})
+    r = cli(tmp_path, "capture", "--capture-dir", rel, "--no-audio", cwd=root,
+            env={"LLM_WIKI_OPS": str(tmp_path / "stub-bin" / "llm-wiki-ops")}, routes=EMBED_ROUTES)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(seen.read_text()) == ["--json", "credential", "get", "spotify"]
 
 
 def test_a_ticket_that_names_a_credential_is_asked_for_that_one(tmp_path):

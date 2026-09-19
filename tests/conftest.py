@@ -97,7 +97,7 @@ def run(ops: list, env: dict, *args, cwd=None) -> Result:
     return Result(cp.returncode, cp.stdout, cp.stderr)
 
 
-def at(env: dict, wiki: Path) -> dict:
+def rooted(env: dict, wiki: Path) -> dict:
     """The environment that binds a call to `wiki`. The CLI is root-bound and
     no verb takes a wiki argument: `LLM_WIKI_ROOT` names the wiki a caller
     standing outside it means, and it must be ABSOLUTE. A `run` child owns its
@@ -121,7 +121,7 @@ def tactics_group(ops, env, wiki) -> None:
     """Skips unless the CLI at hand has a `tactics` group. Asked of the CLI
     rather than assumed, so the cases run again the day it is ported. Asked
     INSIDE the wiki: a root-bound CLI refuses every argv without one."""
-    if run(ops, at(env, wiki), "tactics", "--help").returncode != 0:
+    if run(ops, rooted(env, wiki), "tactics", "--help").returncode != 0:
         pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")
 
 
@@ -131,7 +131,7 @@ def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
     that needs the unit asks for it rather than leaning on another having run
     (`-k`, `--lf`, a shuffled or split run)."""
     for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
-        r = run(ops, at(env, wiki), "--json", *verb)
+        r = run(ops, rooted(env, wiki), "--json", *verb)
         assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -150,9 +150,9 @@ def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extr
     source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
     slug = slug or f"port-{unit}"
-    r = run(ops, at(env, wiki), "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
     assert r.returncode == 0, r.stdout + r.stderr
-    record = run(ops, at(env, wiki), "--json", "pipeline", "show", slug).data["job"]
+    record = run(ops, rooted(env, wiki), "--json", "pipeline", "show", slug).data["job"]
     return Job(slug, record["dest"], record)
 
 
@@ -177,7 +177,7 @@ def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) 
 def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
     """The REAL extractor over one capture — the pages it wrote, as paths. The
     whole point of a unit's harvest is that this works on what it left."""
-    r = run(ops, at(env, wiki), "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)))
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)))
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.data["pages"] or r.data["ledgers"], r.data
     return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]

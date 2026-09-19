@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, at, run, unit_manifest
+from conftest import ROOT, rooted, run, unit_manifest
 
 DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), *ROOT.glob("tactics/*.md"), ROOT / "README.md"])
 
@@ -90,7 +90,7 @@ def cli(ops, env, wiki):
 
     def help_of(*path: str):
         if path not in seen:
-            r = run(ops, at(env, wiki), *path, "--help")
+            r = run(ops, rooted(env, wiki), *path, "--help")
             seen[path] = r.stdout if r.returncode == 0 else None
         return seen[path]
 
@@ -102,9 +102,9 @@ def job_record(ops, env, wiki) -> dict:
     """One real job's record — the sections and keys a dotted `section.key=`
     may name. Asked of the CLI, so a key the schema drops goes red here."""
     slug = "docs-probe"
-    r = run(ops, at(env, wiki), "--json", "pipeline", "add", "https://example.invalid/docs", f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once")
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "add", "https://example.invalid/docs", f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once")
     assert r.returncode == 0, r.stdout + r.stderr
-    return run(ops, at(env, wiki), "--json", "pipeline", "show", slug).data["job"]
+    return run(ops, rooted(env, wiki), "--json", "pipeline", "show", slug).data["job"]
 
 
 def _subcommands(help_text: str) -> set:

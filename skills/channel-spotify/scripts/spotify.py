@@ -88,6 +88,8 @@ import json
 import datetime
 import os
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -254,6 +256,21 @@ def wiki_root(start=None):
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
 # root: the `cwd=<root>` this script was handed is what binds the nested call
@@ -265,11 +282,11 @@ def _ops(root, *args, **kw):
     """One front-door command, bound to the wiki by running from its root,
     answered as JSON — the CLI's plain answer is prose for a person. Returns
     `(exit code, answer)`, the answer always a dict: a failure that printed
-    no JSON object is `{"error": <what it did print>}`. An `llm-wiki-ops` that
-    is not on PATH raises `FileNotFoundError` — an `OSError`, which every
+    no JSON object is `{"error": <what it did print>}`. A front door that is
+    not reachable raises `FileNotFoundError` — an `OSError`, which every
     caller reports as an unreachable store."""
     env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
-    proc = subprocess.run([OPS, "--json", *args], cwd=str(root), env=env, capture_output=True, **kw)
+    proc = subprocess.run([*(front_door() or [OPS]), "--json", *args], cwd=str(root), env=env, capture_output=True, **kw)
     try:
         answer = json.loads(proc.stdout)
     except ValueError:
