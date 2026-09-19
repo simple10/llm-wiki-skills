@@ -322,7 +322,7 @@ def test_no_captions_is_a_page_without_a_transcript_and_says_so(tmp_path):
     assert out["has_transcript"] is False
     assert "## Transcript" not in (cap / "page.md").read_text()
     _script(REPORTER, tmp_path, cap, "--outcome", "partial", "--reason", "no_captions",
-            "--written", out["written"][0])
+            "--written-from", "written.json")
     report = json.loads((cap / "report.json").read_text())
     assert (report["outcome"], report["reason"], report["captured"]) == ("partial", "no_captions", [])
     assert report["written"] == out["written"]
@@ -384,7 +384,7 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
 
     out = json.loads(_build(wiki, cap, "--format-transcript", str(formatter), dest=job.dest, ops=shlex.join(ops)).stdout)
     assert out["has_transcript"] is True and out["chapters"] == 2
-    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written", out["written"][0])
+    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written-from", "written.json")
     process_report = json.loads((cap / "report.json").read_text())
     assert process_report["written"] == out["written"] and process_report["captured"] == []
 
@@ -618,8 +618,8 @@ def test_both_scripts_run_from_the_wiki_root_with_the_tickets_relative_capture_d
     cp = _as_run_does(REPORTER, tmp_path, "--capture-dir", rel, "--outcome", "ok")
     assert cp.returncode == 0, cp.stderr
     new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
-    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", tmp_path / "fmt.py",
-                   tmp_path / "ops_stub.py", tmp_path / "page-calls.jsonl",
+    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", cap / "written.json",
+                   tmp_path / "fmt.py", tmp_path / "ops_stub.py", tmp_path / "page-calls.jsonl",
                    tmp_path / DEST / f"{META['title']}.md"}, new
     assert json.loads((cap / "report.json").read_text())["captured"][0]["dir"] == rel
 
@@ -757,3 +757,18 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
     assert body.lstrip().startswith(f"# {folded.replace('<', '&lt;')}\n"), "the TRUE title is the H1"
     assert f"source_title: " in front and folded[:20] in front
     assert len(re.findall(r"^---$", text, re.M)) == 2 and "\n# Forged" not in text
+
+
+def test_the_report_reads_the_pages_off_a_file_not_off_a_command_line(tmp_path):
+    """A page's filename IS the video's title, and `safe_title` leaves `;`, `$`
+    and a backtick in one — a filename may hold them. Typed onto the worker's
+    Bash line that is the venue running a command, so the builder leaves the
+    list under a fixed name and the report reads it."""
+    cap = _ticketed(tmp_path)
+    (cap / "metadata.json").write_text(json.dumps({**META, "title": "Pricing;$(touch PWNED) `id`"}))
+    _record(tmp_path, cap)
+    out = json.loads(_build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path))).stdout)
+    assert json.loads((cap / "written.json").read_text()) == out["written"]
+    assert ";" in out["written"][0] and "$(" in out["written"][0], out["written"]
+    _script(REPORTER, tmp_path, cap, "--outcome", "ok", "--written-from", "written.json")
+    assert json.loads((cap / "report.json").read_text())["written"] == out["written"]

@@ -435,11 +435,17 @@ REPORT_NAME = "report.json"
 # Written for the formatter's one call and removed after it: `metadata.json`'s
 # chapters with their titles made safe to print (`safe_chapters`).
 CHAPTERS_NAME = "chapters.safe.json"
+# Where the process arm leaves the pages it wrote, for the report step to read.
+# A FIXED name, so the page's path — which carries the venue's title — never
+# has to be typed onto a command line. `safe_title` makes a title a legal
+# FILENAME; it leaves `;`, `$` and a backtick alone, because a filename may
+# hold them.
+WRITTEN_NAME = "written.json"
 # What an earlier run over this SAME directory may have left. Removed first.
 # `capture.json` is harvest's own answer to "this item landed", so only the
 # harvest arm clears it — a process run that wiped it would throw away the
 # record of the bytes it is standing on.
-STALE = (BODY_NAME, REPORT_NAME, CHAPTERS_NAME)
+STALE = (BODY_NAME, REPORT_NAME, CHAPTERS_NAME, WRITTEN_NAME)
 
 # Keys this script never puts on the page verb's command line: `title` is its
 # own argument, `status` is the verb's default, and identity and the harvest
@@ -704,6 +710,7 @@ def main():
     if item:
         front["resource"] = item
     written = write_page(args.wiki, args.dest, page_title(meta), front, body, ops=shlex.split(args.ops) if args.ops else None)
+    (cap_dir / WRITTEN_NAME).write_text(json.dumps([written]) + "\n", encoding="utf-8")
     print(
         json.dumps(
             {

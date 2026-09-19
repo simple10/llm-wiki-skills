@@ -230,16 +230,21 @@ The page's full shape is `references/note-shape.md`.
 #### 4. Report — last
 
 ```
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome ok --written "<the page>"
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome partial --reason no_captions --written "<the page>"
+llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome ok --written-from written.json
+llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome partial --reason no_captions --written-from written.json
 llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome skipped --reason "<which rule said so>"
 llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome failed --reason "<why>"
 ```
 
-`--written` is the builder's `written[]`, verbatim — wiki-relative, and checked
-against the page being there. Given it, the report is a PROCESS report:
-`written[]` is those pages and `captured[]` is empty. `apply` adopts each page,
-stamps the job's `meta` on it, and moves the ticket; you do neither.
+`written.json` is the fixed name the builder left the pages under. **Never type
+the page path yourself.** Its filename is the video's TITLE, and `safe_title`
+only makes a title a legal filename — a filename may hold `;`, `$` and a
+backtick, so a path on your Bash line is the venue running a command. The flag
+reads the list out of the file instead.
+
+Given either, the report is a PROCESS report: `written[]` is those pages and
+`captured[]` is empty. `apply` adopts each page, stamps the job's `meta` on it,
+and moves the ticket; you do neither.
 
 - `ok` — the page landed with its transcript.
 - `partial` — the page landed and `has_transcript` is false; `--reason

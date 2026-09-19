@@ -10,7 +10,7 @@
   write_report.py <wiki> --capture-dir <dir> --outcome skipped --reason "known: already held"
   write_report.py <wiki> --capture-dir <dir> --outcome failed --reason "yt-dlp: Video unavailable" \\
                   [--missing <host> <url> <denied|timeout|auth|error>]... [--ticket <id>]
-  write_report.py <wiki> --capture-dir <dir> --outcome ok --written <page>...
+  write_report.py <wiki> --capture-dir <dir> --outcome ok --written-from written.json
 
 `report.json` is the only thing that travels back out of a harvest slice: the
 foreman's `pipeline apply` reads it, mints one process ticket per `captured[]`
@@ -26,7 +26,13 @@ What it reads, all in the capture dir: `ticket.json` for the ticket id and the
 host-derived `capture_dir` (`--ticket` stands in for the id where no spawner
 wrote one), and `capture.json` for the item and title of what landed.
 
-`--written` makes it a PROCESS report: the pages go in `written[]`, `captured[]`
+`--written-from <file>` reads those paths out of the JSON list the builder
+left beside the capture, so a page path — which carries the VENUE's title, and
+`safe_title` leaves `;`, `$` and a backtick in one because a filename may hold
+them — never has to be typed onto a command line. `--written` takes one
+directly, for a hand run.
+
+Either flag makes it a PROCESS report: the pages go in `written[]`, `captured[]`
 is empty, and the capture rule below does not apply. A process ticket rewrites
 `ticket.json` long after harvest wrote `capture.json`, so the freshness check
 would refuse every honest process report; what a process run must not do is
@@ -63,6 +69,7 @@ REPORT_V = 1
 REPORT_NAME = "report.json"
 TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
+WRITTEN_NAME = "written.json"
 
 OUTCOMES = ("ok", "partial", "skipped", "unchanged", "gone", "failed")
 # The outcomes that say a capture is on disk.
@@ -157,12 +164,28 @@ def main():
         help=f"one url that could not be reached (repeatable); WHY is one of {', '.join(WHYS)}",
     )
     ap.add_argument(
+        "--written-from", default=None, metavar="FILE",
+        help="a JSON list of wiki-relative pages, relative to the capture dir — what the builder left. "
+             "Preferred over --written: a page path carries the venue's title",
+    )
+    ap.add_argument(
         "--written", action="append", default=[], metavar="PAGE",
         help="a wiki-relative page this PROCESS run wrote (repeatable). Given, the report is a process "
              "report: `written[]` is these and `captured[]` is empty",
     )
     ap.add_argument("--ticket", default=None, help="the ticket id. Defaults to ticket.json's `ticket`")
     args = ap.parse_args()
+
+    written = list(args.written)
+    if args.written_from:
+        source = Path(args.wiki) / Path(args.capture_dir) / args.written_from
+        try:
+            found = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            sys.exit(f"write_report: {source} is not the builder's JSON list of pages ({exc})")
+        if not isinstance(found, list) or not all(isinstance(one, str) for one in found):
+            sys.exit(f"write_report: {source} is not a JSON list of page paths")
+        written += found
 
     given = Path(args.capture_dir)
     if given.is_absolute() or ".." in given.parts:
@@ -184,7 +207,7 @@ def main():
     try:
         report = build_report(
             cap_dir, capture_rel, ticket=ticket, outcome=args.outcome, reason=args.reason,
-            missing=args.missing, written=args.written, wiki=args.wiki,
+            missing=args.missing, written=written, wiki=args.wiki,
         )
     except ValueError as exc:
         sys.exit(f"write_report: {exc}")
