@@ -9,21 +9,11 @@ import re
 
 import pytest
 
-from conftest import ROOT, SKILLS, SOURCE, TACTICS, at, run, unit_manifest
+from conftest import ROOT, SKILLS, SOURCE, TACTICS, at, enabled, run, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
 
 VTT = "WEBVTT\n\n00:00:00.080 --> 00:00:02.629\nAt its peak, it grew\n"
-
-
-def _enabled(ops, env, wiki, name):
-    """The unit, installed and enabled in the session wiki — by whichever case
-    gets there first. Both verbs are no-ops over an identical copy, so a case
-    that needs the unit asks for it rather than leaning on the install case
-    having run (`-k`, `--lf`, a shuffled or split run)."""
-    for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
-        r = run(ops, env, "--json", *verb, at(wiki))
-        assert r.returncode == 0, r.stdout + r.stderr
 
 
 @pytest.mark.parametrize("name", SKILLS)
@@ -53,7 +43,7 @@ def test_channel_unit_routes_a_job_by_its_own_manifest(ops, env, wiki, name):
     template routes the job and its `watch.defaults` seed the record. This is
     the contract the unit manifest exists for (what `match.hosts` plus
     `skills find`'s rendered flags used to carry)."""
-    _enabled(ops, env, wiki, name)  # `add` reads `dest` and the defaults off the ENABLED copy
+    enabled(ops, env, wiki, name)  # `add` reads `dest` and the defaults off the ENABLED copy
     watch = unit_manifest(name)["watch"]
     slug = f"harness-{name}"
     # `research/channels/…` is the ledger route, and only a channel's pull lands

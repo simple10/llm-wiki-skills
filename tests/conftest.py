@@ -112,3 +112,60 @@ def tactics_group(ops, env) -> None:
     rather than assumed, so the cases run again the day it is ported."""
     if run(ops, env, "tactics", "--help").returncode != 0:
         pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")
+
+
+def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
+    """The unit, installed and enabled in the session wiki — by whichever case
+    gets there first. Both verbs are no-ops over an identical copy, so a case
+    that needs the unit asks for it rather than leaning on another having run
+    (`-k`, `--lf`, a shuffled or split run)."""
+    for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
+        r = run(ops, env, "--json", *verb, at(wiki))
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+@dataclass
+class Job:
+    slug: str
+    dest: str
+    record: dict
+
+
+def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str) -> Job:
+    """A real job for `unit` in the session wiki, declared the way INSTALL.md
+    says to — `pipeline extract` reads the job a capture belongs to, so a
+    capture with no job behind it is refused. Idempotent."""
+    enabled(ops, env, wiki, unit)
+    slug = f"port-{unit}"
+    r = run(ops, env, "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, at(wiki))
+    assert r.returncode == 0, r.stdout + r.stderr
+    record = run(ops, env, "--json", "pipeline", "show", slug, at(wiki)).data["job"]
+    return Job(slug, record["dest"], record)
+
+
+def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) -> Path:
+    """A capture directory holding the `ticket.json` a download worker is
+    started beside — every key `pipeline/dispatch.py` writes, the job's own
+    sections riding along. Returns the directory; `leaf` is `<page>--<hash8>`
+    for an item with an address, `<YYYY-MM-DD>` for a channel's pull."""
+    rel = f"_raw/{job.slug}/{leaf}"
+    directory = wiki / rel
+    directory.mkdir(parents=True, exist_ok=True)
+    ticket = {
+        "v": 1, "ticket": "0123456789ab", "unit": unit, "slug": job.slug, "item": item, "target": item,
+        "capture_dir": rel, "dest": None, "hosts": [], "harvest": job.record["harvest"],
+        "options": job.record.get("options") or {}, "credential": None, "min_date": None, "known": [],
+    }
+    ticket.update(over)
+    (directory / "ticket.json").write_text(json.dumps(ticket, indent=1), encoding="utf-8")
+    return directory
+
+
+def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
+    """The REAL extractor over one capture — the pages it wrote, as paths. The
+    whole point of a unit's harvest is that this works on what it left."""
+    r = run(ops, env, "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)), at(wiki))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.data["pages"] or r.data["ledgers"], r.data
+    return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]
+
