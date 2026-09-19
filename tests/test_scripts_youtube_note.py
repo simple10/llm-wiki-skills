@@ -1,8 +1,9 @@
-"""`youtube_note.py` builds the source note from a yt-dlp capture.
+"""`youtube_note.py` renders a yt-dlp capture into `page.md` + `capture.json`,
+in the capture directory, at harvest time.
 
-Both cases here are silent when broken: the note is written, exits 0, and
-reports success — it just has no transcript, or sits in a directory holding
-none of its own assets.
+The cases here are silent when broken: the page is written, exits 0, and
+reports success — it just has no transcript, or landed somewhere a harvest
+slice cannot write and the extractor never reads.
 
 The script now lives in the `channel-youtube` skill unit (wiki-owned, copied by
 `skills install`) rather than in `plugin/scripts/`, because exactly one unit
@@ -56,18 +57,19 @@ META = {"id": "abc123", "title": "A Video About Things", "duration": 327,
         "channel": "Some Channel", "description": "why it matters"}
 
 
-DEST = "sources/youtube/yt-somechannel"
+ITEM = "https://www.youtube.com/watch?v=abc123"
 
 
-def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True,
-             dest=DEST):
-    """A capture laid out the way harvest lays one out: inside the WATCH's
-    `_raw/<slug>` slice, with the `dest` the host wrote onto it."""
+def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True, ticket=True):
+    """A capture laid out the way a harvest slice finds one: inside the JOB's
+    `_raw/<slug>` slice, with the `ticket.json` the spawner wrote beside it."""
     cap = tmp_path / "_raw" / slug / "a-video-about-things--4cf2bd5f"
     cap.mkdir(parents=True)
     (cap / "metadata.json").write_text(json.dumps(META))
-    if dest is not None:
-        (cap / "capture.json").write_text(json.dumps({"dest": dest}))
+    if ticket:
+        (cap / "ticket.json").write_text(json.dumps({
+            "v": 1, "ticket": "0123456789ab", "unit": "channel-youtube", "slug": slug, "item": ITEM,
+            "target": ITEM, "capture_dir": str(cap.relative_to(tmp_path)), "dest": None}))
     dest = cap / "captions" if captions_subdir else cap
     dest.mkdir(exist_ok=True)
     (dest / "abc123.en.vtt").write_text(VTT)
@@ -91,7 +93,7 @@ def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
         env.update(extra_env)
     cp = subprocess.run(
         ["uv", "run", str(SCRIPT), str(tmp_path),
-         "--capture-dir", str(cap.relative_to(tmp_path)), "--force",
+         "--capture-dir", str(cap.relative_to(tmp_path)),
          *(extra_argv or []),
          *(["--format-transcript", str(formatter)] if formatter else [])],
         check=check, capture_output=True, text=True, env=env)
@@ -100,11 +102,11 @@ def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
 
 def test_captions_are_found_in_the_captions_subdirectory(tmp_path):
     """Harvest files captions under `captions/`. A glob that only looks at the
-    capture root finds nothing and the note ships with no transcript at all."""
+    capture root finds nothing and the page ships with no transcript at all."""
     cap = _capture(tmp_path)
     res = _run(tmp_path, cap)
     assert res["has_transcript"] is True
-    body = (tmp_path / res["note"]).read_text()
+    body = (tmp_path / res["page"]).read_text()
     assert "## Transcript" in body
     assert "At its peak, it grew fast and loudly" in body
 
@@ -115,51 +117,57 @@ def test_a_bare_capture_directory_still_works(tmp_path):
     assert _run(tmp_path, cap)["has_transcript"] is True
 
 
-def test_the_note_lands_where_the_watch_says_and_nowhere_else(tmp_path):
-    """`<dest>/pages/<slug>.md` — the watch's own `dirs.sources`, read off
-    the capture, with NO component composed under it.
-
-    It used to insert `cap_dir.parent.name`, the netloc. That parent is the
-    watch's slug now, so keeping it would bury every note under a name that
-    is already the bundle's — and `scaffold.py` writes `<dest>/pages/` for
-    the same captures. Two builders disagreeing about where a note lands is
-    the thing `scaffold.py`'s own comment warns against.
-    """
+def test_the_page_lands_in_the_capture_dir_and_nowhere_else(tmp_path):
+    """REPLACES `test_the_note_lands_where_the_watch_says_and_nowhere_else`,
+    which asserted `<dest>/pages/<slug>.md`. A harvest slice is granted its
+    capture directory and no `dest`, and no process ticket ever reaches this
+    unit — so a page written under `dest` is a write that fails in a slice,
+    and one nothing reads outside it. The body and its record land beside the
+    metadata; the host's extractor is what writes under `dest`."""
     cap = _capture(tmp_path)
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
     res = _run(tmp_path, cap)
-    assert res["note"].startswith(f"{DEST}/pages/"), res["note"]
-    assert "yt-somechannel/pages" not in res["note"].removeprefix(DEST)
+    assert res["page"] == f"{cap.relative_to(tmp_path)}/page.md"
+    assert res["capture"] == f"{cap.relative_to(tmp_path)}/capture.json"
+    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
+    assert new == {cap / "page.md", cap / "capture.json"}, new
+    assert not (tmp_path / "sources").exists()
 
 
-def test_a_capture_with_no_dest_is_refused_rather_than_guessed(tmp_path):
-    """No third fallback: a capture carrying neither is one the host never
-    produced, and a guessed bundle would silently disagree with wherever
-    the watch's notes actually go."""
-    cap = _capture(tmp_path, dest=None)
-
-    cp = _run(tmp_path, cap, check=False)
-
-    assert cp.returncode != 0
-    assert "dest" in cp.stderr and "--notes-dir" in cp.stderr
-    # The refusal NAMES the file the operator has to go and look at. Asserted
-    # on the path because the two words above both survive an f-string whose
-    # braces are doubled — which is how the message shipped reading
-    # `{cap_dir / 'capture.json'} carries no dest` verbatim.
-    assert str(cap / "capture.json") in cp.stderr, cp.stderr
+def test_slug_and_item_are_the_tickets(tmp_path):
+    """REPLACES `test_a_capture_with_no_dest_is_refused_rather_than_guessed`.
+    There is no `dest` to refuse over any more: the host writes no
+    `capture.json` ahead of the worker, and `ticket.json` is the worker's
+    whole input. What the record names is read off it, never guessed."""
+    cap = _capture(tmp_path)
+    _run(tmp_path, cap)
+    record = json.loads((cap / "capture.json").read_text())
+    assert (record["slug"], record["item"]) == ("yt-somechannel", ITEM)
 
 
-def test_notes_dir_still_overrides_for_a_hand_run_capture(tmp_path):
-    cap = _capture(tmp_path, dest=None)
+def test_flags_override_the_ticket_and_stand_in_for_it_on_a_hand_run(tmp_path):
+    """REPLACES `test_notes_dir_still_overrides_for_a_hand_run_capture`:
+    `--notes-dir` is gone with the `dest` write. The hand-run overrides that
+    remain are the two facts a ticket would have supplied."""
+    cap = _capture(tmp_path, ticket=False)
+    _run(tmp_path, cap, extra_argv=["--slug", "by-hand", "--item", "https://youtu.be/abc123"])
+    record = json.loads((cap / "capture.json").read_text())
+    assert (record["slug"], record["item"]) == ("by-hand", "https://youtu.be/abc123")
 
-    res = json.loads(_run(tmp_path, cap, check=False,
-                          extra_argv=["--notes-dir", "sources/hand"]).stdout)
 
-    assert res["note"].startswith("sources/hand/pages/")
+def test_a_hand_run_with_no_ticket_and_no_flags_reads_the_layout(tmp_path):
+    """No ticket, no flags: the slug is the capture dir's parent — `_raw/<slug>/
+    <leaf>` is the layout by definition — and the item is the metadata's own
+    `webpage_url`, which here is absent, so `item` is null rather than made up."""
+    cap = _capture(tmp_path, ticket=False)
+    _run(tmp_path, cap)
+    record = json.loads((cap / "capture.json").read_text())
+    assert record["slug"] == "yt-somechannel" and record["item"] is None
 
 
 def test_per_word_cue_markup_never_reaches_the_note(tmp_path):
     cap = _capture(tmp_path)
-    body = (tmp_path / _run(tmp_path, cap)["note"]).read_text()
+    body = (tmp_path / _run(tmp_path, cap)["page"]).read_text()
     assert "<c>" not in body and "<00:00:" not in body
     # the rolling repeat is collapsed, not emitted twice
     assert body.count("At its peak") == 1
@@ -178,14 +186,20 @@ def test_the_unit_script_imports_nothing_from_the_plugin(tmp_path):
 def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     """The whole point of the subprocess boundary's exit check. Before it, a
     broken formatter produced a note with no transcript, exit 0, reporting
-    success — the exact silent failure this file was written to guard."""
+    success — the exact silent failure this file was written to guard.
+
+    CHANGED with the port: "no note" used to mean nothing under `sources/`.
+    It means no `page.md` AND no `capture.json` now — and a record an earlier
+    run left is gone too, because `capture.json` is what says "this landed"."""
     cap = _capture(tmp_path)
+    (cap / "capture.json").write_text(json.dumps({"body": "page.md", "stale": True}))
     boom = tmp_path / "boom.py"
     boom.write_text("import sys; sys.exit(9)\n")
     cp = _run(tmp_path, cap, formatter=boom, check=False)
     assert cp.returncode != 0
     assert "transcript formatting failed" in cp.stderr
-    assert not list((tmp_path / "sources").rglob("*.md")), "note was written"
+    assert not (cap / "page.md").exists(), "page was written"
+    assert not (cap / "capture.json").exists(), "a stale capture record survived a failed build"
 
 
 def _stub_front_door(tmp_path, body):
@@ -223,7 +237,7 @@ def test_the_formatter_is_reached_by_the_bare_front_door_from_the_wiki_root(tmp_
     assert got["argv"][2] == str(next((cap / "captions").glob("abc123.en.vtt"))), got
     assert Path(got["cwd"]) == tmp_path.resolve(), got
     assert got["guard"] is None, got
-    assert "stubbed transcript" in (tmp_path / res["note"]).read_text()
+    assert "stubbed transcript" in (tmp_path / res["page"]).read_text()
 
 
 def test_a_front_door_refusal_aborts_and_says_why(tmp_path):
@@ -234,7 +248,8 @@ def test_a_front_door_refusal_aborts_and_says_why(tmp_path):
     cp = _run(tmp_path, cap, formatter=None, check=False, extra_env=path)
     assert cp.returncode != 0
     assert "transcript formatting failed" in cp.stderr and "no such script" in cp.stderr
-    assert not list((tmp_path / "sources").rglob("*.md")), "note was written"
+    # CHANGED with the port: the page is `page.md` in the capture dir now.
+    assert not (cap / "page.md").exists() and not (cap / "capture.json").exists(), "page was written"
 
 
 def test_a_machine_without_the_front_door_is_told_so(tmp_path, monkeypatch):

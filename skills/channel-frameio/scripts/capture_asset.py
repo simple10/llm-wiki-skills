@@ -20,9 +20,9 @@ enough for the relevant request to fire, then:
   - document: streams the proxy URL down with httpx (same signed-CDN pattern
     as the video asset's low-res proxy — no auth needed beyond the URL itself)
 
-Does not write capture.json or handle stage-2 handoff — the caller wraps this
-per-item with metadata (path, tags, watch_id) into the pipeline's job/capture
-schema (capture_job.py does exactly that).
+Does not write `capture.json` or `page.md` — `capture_job.py` wraps this per
+leaf and leaves the dir in the shape the generic extractor reads (a rendered
+`page.md` for a document, the media file itself as the body for a video).
 
 Usage:
   uv run capture_asset.py <view-url> --out <dir> --name <asset-name>
@@ -31,7 +31,8 @@ Usage:
 Outputs into <dir>/:
   - video.mp4   (video assets)
   - document.<ext>  (document assets; the original filename is recorded in
-                     meta.json's "name" — the note builder restores it)
+                     meta.json's "name" — frameio_doc_note.py names it in the
+                     page body)
   - meta.json   title, final_url, kind, resolved asset URL, bytes
 
 Exit 0 on success, 2 if no video/doc URL was ever observed (page didn't
@@ -42,9 +43,10 @@ History:
   2026-07-14  created — first Frame.io share harvest.
   2026-07-29  packaged into the channel-frameio skill unit.
   2026-08-18  the document extension falls back to the proxy URL's own
-              `_proxy.<ext>` when no --name is passed: the per-job
-              capture path has only the job's URL, and every document
-              landed as `document.bin` without it.
+              `_proxy.<ext>` when no --name is passed: a capture with
+              only a URL landed every document as `document.bin` without it.
+  2026-09-19  docstrings only — ported with the unit to the ticket contract;
+              the capture itself is unchanged.
 """
 
 import argparse
@@ -64,9 +66,9 @@ def document_ext(name, doc_url):
 
     `--name` wins where it is passed: it is the asset's ORIGINAL filename,
     off the share's leaf manifest, and the proxy route names only whatever
-    Frame.io converted the asset to. But a dispatched leaf job carries a URL
-    and nothing else, so on the per-job capture path there is no name
-    — and the signed conversion route spells the extension itself
+    Frame.io converted the asset to. But a ticket whose target is itself a
+    leaf viewer has a URL and no manifest, so there is no name — and the
+    signed conversion route spells the extension itself
     (`.../<kind>_proxy.<ext>?<signature>`). Without that fallback every
     document on that path landed as `document.bin`.
     """

@@ -27,12 +27,20 @@ Outputs a JSON manifest to stdout (or --out):
   ]
 }
 
+Leaves come out in folder-walk order, which is stable for an unchanged
+share. `harvest_share.py` captures them in that order and resumes a share too
+large for one slice from the ticket's `known[]`, so the order is part of the
+contract: do not sort or shuffle it.
+
 Usage:
-  uv run enumerate_tree.py <share-url> [--out tree.json]
+  uv run enumerate_tree.py <share-url> [--out <capture_dir>/tree.json]
 
 History:
   2026-07-14  created — first Frame.io share harvest.
   2026-07-29  packaged into the channel-frameio skill unit.
+  2026-09-19  docstring only — ported with the unit to the ticket contract:
+              the manifest is written into the ticket's capture dir and read
+              by `harvest_share.py`, which captures the leaves itself.
 """
 
 import argparse

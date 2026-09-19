@@ -11,14 +11,14 @@
   "name": "channel-hubspot-video",
   "requires": {
     "credential": false,
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
     "harvest"
   ],
   "v": 2,
   "venue": "hubspot-cms",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -32,6 +32,6 @@
       }
     },
     "dest": "sources/courses/{slug}",
-    "note": "Keep `transcribe.when: always`. On this platform a page's text is typically a heading plus the player — the video IS the content — so without a transcript the capture carries almost nothing. Point the watch at the section ROOT, not at a leaf: the prefix is derived from the URL you give, so a leaf-rooted watch rejects every sibling as out-of-scope while still exiting 0. Set the wiki's own `extract` block (content_selector / drop_selectors / title_selector) after the first capture — every HubSpot site themes differently."
+    "note": "Keep `transcribe.when: always`. On this platform a page's text is typically a heading plus the player — the video IS the content — so without a transcript the capture carries almost nothing. Point the job at the section ROOT, not at a leaf: `harvest.scope: section` means under the job's own url, so from a leaf every sibling page is outside it. Set the site's selectors in the unit's `references/sites.json` after the first capture — every HubSpot site themes differently."
   }
 }

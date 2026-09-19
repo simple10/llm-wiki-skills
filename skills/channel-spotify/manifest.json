@@ -18,14 +18,14 @@
       "spotify.com",
       "itunes.apple.com"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
     "harvest"
   ],
   "v": 2,
   "venue": "spotify",
-  "version": "1.7.5",
+  "version": "1.8.0",
   "watch": {
     "defaults": {
       "every": "once",

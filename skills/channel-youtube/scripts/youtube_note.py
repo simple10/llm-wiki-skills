@@ -3,30 +3,51 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Build a complete, well-formed note from a YouTube capture — deterministic,
-so every YouTube note is consistent instead of hand-assembled (which flattened
-transcripts into one paragraph and dumped raw descriptions).
+"""Render a YouTube capture into the page body and capture record the generic
+extractor reads — deterministic, so every YouTube page is consistent instead of
+hand-assembled (which flattened transcripts into one paragraph and dumped raw
+descriptions).
 
-  youtube_note.py <wiki> --capture-dir <dir> --notes-dir <dir> [--force]
+  youtube_note.py <wiki> --capture-dir <dir> [--item <url>] [--slug <slug>]
+                  [--tag <tag>]... [--area <area>]... [--format-transcript <path>]
 
-Reads the capture's metadata.json (yt-dlp --dump-json) + transcript.<lang>
-subtitle file (.vtt or .srt — whatever yt-dlp fetched) and
-writes <notes-dir>/youtube.com/pages/<slug>.md with:
-- rich frontmatter (channel, date, duration, views, likes, video id, thumbnail,
-  source_host, areas, tags) — video metadata belongs in frontmatter, not prose
-- a thumbnail + embed
-- the description converted to markdown (bare URLs linkified, the creator's
-  own TIMESTAMPS block turned into a list, hashtag soup collapsed)
-- the transcript as timestamped, chapter-headed sections, noise-stripped and
-  de-duplicated
+Run at HARVEST time, because harvest is the only stage that reaches a unit: every
+process ticket goes to the host's generic extractor, which takes a `.md` body
+verbatim and writes the page under the job's `dest` with its own frontmatter
+(`title`, `status`, `resource`, `harvested`). A harvest slice cannot write
+`dest`, so this script writes nothing there.
 
-The [!summary] is left as a placeholder for the process worker to fill.
+Reads, in the capture dir: `metadata.json` (`yt-dlp --dump-json`), the subtitle
+file yt-dlp fetched (.vtt or .srt, under `captions/` or beside the metadata),
+and `ticket.json` when the spawner left one (`slug`, `item`). `--slug`/`--item`
+override it, and stand in for it on a hand run; with neither, the slug is the
+capture dir's parent (`_raw/<slug>/<leaf>`) and the item is the metadata's
+`webpage_url`.
+
+Writes, in the capture dir and nowhere else:
+- `page.md` — BODY ONLY, never a `---` block (the extractor prepends its own
+  and a second one corrupts the page): thumbnail, embed, a compact facts list,
+  the description converted to markdown (bare URLs linkified, the creator's own
+  TIMESTAMPS block turned into a list, hashtag soup collapsed), and the
+  transcript as timestamped, chapter-headed sections, noise-stripped and
+  de-duplicated. No summary placeholder: the summary is the host's process
+  side's to write, not a harvest worker's.
+- `capture.json` — `slug`, `item`, `title`, `body: "page.md"`,
+  `content_type: "text/markdown"`, `fetched_at`, and a `frontmatter` object
+  carrying the video's exact facts (type, channel, channel_url, published,
+  duration, views, likes, video_id, thumbnail, source_host, tags, areas).
+  Unknown facts are omitted, never emitted empty. It never carries `title`,
+  `resource`, `status` or any other key a host verb owns. The extractor ignores
+  `frontmatter` today, which is why the same facts are also in the body.
+
+`report.json` is NOT this script's: `write_report.py` beside it writes that,
+last.
 
 This script belongs to the `channel-youtube` skill unit and is WIKI-OWNED: it
-ships in the bundled catalog, `skills install` copies it, and the wiki's copy is
-the one that runs. It is deliberately stdlib-only and imports nothing from the
-plugin — a unit that imported plugin modules would couple itself to a layout it
-does not control.
+ships in the catalog, `skills install` copies it, and the wiki's copy is the one
+that runs. It is deliberately stdlib-only and imports nothing from the plugin —
+a unit that imported plugin modules would couple itself to a layout it does not
+control.
 
 Transcript formatting is the one thing it does not do itself: cue parsing,
 rolling-caption dedup and chapter bucketing are generic across video venues, so
@@ -38,9 +59,9 @@ front door, by its bare name on PATH, run from the wiki root —
 
 whose stdout is the markdown. `--format-transcript <path>` skips the front door
 and runs a known path directly (tests, and any caller that already has one).
-A non-zero status from either form ABORTS: a note that silently ships without
-its transcript, exit 0, reporting success, is the exact failure this script
-exists to prevent.
+A non-zero status from either form ABORTS before anything is written: a page
+that silently ships without its transcript, exit 0, reporting success, is the
+exact failure this script exists to prevent.
 """
 
 import argparse
@@ -50,6 +71,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # The front door, by the bare name every SKILL.md already runs this script
@@ -73,16 +95,14 @@ def _front_door_env():
 URL_RE = re.compile(r"(?<![\(\]])\bhttps?://[^\s)]+")
 TS_LINE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—:]?\s*(.+)$")
 HASHTAGS = re.compile(r"(?:(?:^|\s)#[\w]+){2,}\s*$")
-SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def source_hosts_for(host: str) -> list:
     """`www.a.com` -> `["www.a.com", "a.com"]` — progressively broader hosts so
     a query for either matches. No Public Suffix List; `co.uk` as a trailing
     entry is a correct host and a useless filter value, which is the cheaper
-    trade. Duplicated from the pipeline's scaffold.py on purpose: a skill unit
-    runs as a hosted script (the front door's `run` verb) and cannot import
-    plugin/scripts/."""
+    trade. Carried here rather than imported: a skill unit runs as a hosted
+    script (the front door's `run` verb) and imports nothing from the plugin."""
     if not host:
         return []
     labels = host.split(".")
@@ -90,11 +110,10 @@ def source_hosts_for(host: str) -> list:
 
 
 def normalize_tags(tags):
-    """Lowercase-kebab tag vocabulary, order-preserving dedupe. Duplicated
-    from the pipeline's scaffold.py for the same reason as source_hosts_for:
-    a unit script cannot import plugin/scripts/. Everything outside
-    [a-z0-9/] folds to '-' (Obsidian's tag charset; dots render as invalid
-    tags there). keep-in-sync: scaffold.py / watch.py normalize_tags."""
+    """Lowercase-kebab tag vocabulary, order-preserving dedupe. Carried here
+    for the same reason as source_hosts_for: a unit script imports nothing
+    from the plugin. Everything outside [a-z0-9/] folds to '-' (Obsidian's
+    tag charset; dots render as invalid tags there)."""
     out = []
     for tag in tags:
         tag = re.sub(r"[^a-z0-9/]+", "-", str(tag).strip().lower())
@@ -117,8 +136,8 @@ def mmss(sec):
 def format_transcript(captions, chapters_json, wiki, override):
     """The plugin's formatter, through the front door. Returns markdown.
 
-    Aborts on failure rather than returning empty: the caller writes the note
-    either way, so a swallowed error here ships a transcript-less note that
+    Aborts on failure rather than returning empty: the caller writes the page
+    either way, so a swallowed error here ships a transcript-less page that
     reports success."""
     if override:
         cmd, where = [sys.executable, str(Path(override).resolve())], {}
@@ -143,11 +162,6 @@ def format_transcript(captions, chapters_json, wiki, override):
             f"transcript.\n{(cp.stderr or '').strip()[-500:]}"
         )
     return cp.stdout
-
-
-def slugify(text, fallback):
-    s = SLUG_RE.sub("-", (text or "").lower()).strip("-")[:70].rstrip("-")
-    return s or fallback
 
 
 def yt_date(d):
@@ -196,96 +210,109 @@ def description_to_md(desc):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("wiki", type=Path)
-    ap.add_argument("--capture-dir", required=True)
-    ap.add_argument(
-        "--notes-dir",
-        default=None,
-        help="wiki-relative bundle root. Defaults to the `dest` "
-        "the host wrote onto capture.json — the watch's own "
-        "dirs.sources. Pass it only for a hand-run capture "
-        "with no job behind it",
+TICKET_NAME = "ticket.json"
+CAPTURE_NAME = "capture.json"
+BODY_NAME = "page.md"
+
+# Keys a host verb owns on the page. `frontmatter` never carries one: the
+# extractor writes `title`, `status`, `resource` and `harvested` itself, and
+# identity and the `extracted` flag are minted outside any slice.
+HOST_OWNED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource")
+
+# Tried in order. yt-dlp writes whatever sub format it fetched (suffix is not
+# provenance; .vtt is its common default, .srt still appears). Captions are
+# filed under `captions/`; a bare capture dir is also honored.
+CAPTION_GLOBS = (
+    "captions/transcript*.vtt",
+    "captions/transcript*.srt",
+    "captions/*.vtt",
+    "captions/*.srt",
+    "transcript*.vtt",
+    "transcript*.srt",
+    "*.vtt",
+    "*.srt",
+)
+
+
+def read_ticket(cap_dir):
+    """`ticket.json` as the spawner wrote it, or `{}` — a hand run has none."""
+    try:
+        ticket = json.loads((Path(cap_dir) / TICKET_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return ticket if isinstance(ticket, dict) else {}
+
+
+def find_captions(cap_dir):
+    """The caption track to format, or None. Prefers a non-`-orig` track:
+    YouTube ships `<id>.en.vtt` alongside `<id>.en-orig.vtt`, and the plain one
+    is the corrected caption track."""
+    return next(
+        (
+            p
+            for pat in CAPTION_GLOBS
+            for p in sorted(Path(cap_dir).glob(pat), key=lambda q: ("-orig" in q.stem, q.name))
+        ),
+        None,
     )
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument(
-        "--format-transcript",
-        default=None,
-        metavar="PATH",
-        help="run this format_transcript.py directly instead of reaching the plugin's copy through the front door",
+
+
+def duration_of(meta):
+    return meta.get("duration_string") or (mmss(meta["duration"]) if meta.get("duration") else "")
+
+
+def frontmatter_for(meta, tags=(), areas=()):
+    """The video's exact facts, as the `frontmatter` object of `capture.json`:
+    scalars and flat lists only, unknown facts OMITTED.
+
+    `published` is protocol-well-known and optional, so it is emitted only when
+    the upload date is actually known — never as an empty key, which would read
+    as a malformed date to lint and as absent to everything else. The same rule
+    is applied to every other fact here."""
+    facts = {
+        "type": "video",
+        "channel": meta.get("uploader") or meta.get("channel"),
+        "channel_url": meta.get("channel_url"),
+        "published": yt_date(meta.get("upload_date")),
+        "duration": duration_of(meta),
+        "views": meta.get("view_count"),
+        "likes": meta.get("like_count"),
+        "video_id": meta.get("id"),
+        "thumbnail": meta.get("thumbnail"),
+        "source_host": source_hosts_for("www.youtube.com"),
+        "tags": normalize_tags(tags),
+        "areas": [f"[[{a}]]" for a in areas if a],
+    }
+    return {k: v for k, v in facts.items() if v not in (None, "", []) and k not in HOST_OWNED}
+
+
+def facts_block(front, item):
+    """The same facts as a compact list for the page body — the extractor
+    ignores `frontmatter` today, so this is what keeps them on the page."""
+    channel = front.get("channel")
+    if channel and front.get("channel_url"):
+        channel = f"[{channel}]({front['channel_url']})"
+    counts = " · ".join(
+        f"**{label}**: {front[key]}" for label, key in (("Views", "views"), ("Likes", "likes")) if key in front
     )
-    args = ap.parse_args()
-
-    cap_dir = args.wiki / args.capture_dir
-    meta = json.loads((cap_dir / "metadata.json").read_text())
-    cap = {}
-    if (cap_dir / "capture.json").exists():
-        cap = json.loads((cap_dir / "capture.json").read_text())
-
-    # `--dest`-or-`capture.json` is `scaffold.py`'s rule, and this is the
-    # same question: the HOST decides where a watch's notes land and writes
-    # it onto the capture, so a unit reads it and never guesses. No third
-    # fallback — a capture with neither is one `job_from_watch` never
-    # produced, and a guessed bundle would silently disagree with wherever
-    # the watch's notes actually go.
-    notes_rel = args.notes_dir or cap.get("dest")
-    if not notes_rel:
-        sys.exit(
-            f"{cap_dir / 'capture.json'} carries no `dest` and "
-            f"--notes-dir was not given — every job-driven capture has "
-            f"one (dirs.sources is required on every watch); pass "
-            f"--notes-dir explicitly for a hand-run capture"
-        )
-    notes_dir = Path(notes_rel)
-    title = meta.get("title") or "Untitled"
-    slug = slugify(title, cap_dir.name.rsplit("--", 1)[0])
-    # `<dest>/pages/<slug>.md`, with NO component composed under the bundle
-    # root. The capture dir's parent is the watch's slug, which is already
-    # what `dest` is named for, so inserting it buries every note a level
-    # deeper under a duplicate. `scaffold.py` writes the same shape for the
-    # same captures, and two builders disagreeing about where a note lands
-    # is exactly what its own comment warns against.
-    note_rel = notes_dir / "pages" / f"{slug}.md"
-    note_path = args.wiki / note_rel
-    if note_path.exists() and not args.force:
-        sys.exit(f"{note_rel} exists — use --force")
-    note_path.parent.mkdir(parents=True, exist_ok=True)
-
-    vid = meta.get("id", "")
-    source_host = source_hosts_for("www.youtube.com")
-    areas = [f'"[[{a}]]"' for a in (cap.get("areas") or []) if a]
-    tags = normalize_tags(cap.get("tags") or [])
-    dur = meta.get("duration_string") or (mmss(meta["duration"]) if meta.get("duration") else "")
-
-    # Protocol-well-known and OPTIONAL, so it is emitted only when the upload
-    # date is actually known — never as an empty key, which would read as a
-    # malformed date to lint and as absent to everything else.
-    published = yt_date(meta.get("upload_date"))
-
-    fm = [
-        "---",
-        f'title: "{title.replace(chr(34), chr(39))}"',
-        f"resource: {meta.get('webpage_url') or meta.get('original_url')}",
-        "type: video",
-        f"channel: {meta.get('uploader') or meta.get('channel') or ''}",
-        f"channel_url: {meta.get('channel_url') or ''}",
-        *([f"published: {published}"] if published else []),
-        f"duration: {dur}",
-        f"views: {meta.get('view_count') or ''}",
-        f"likes: {meta.get('like_count') or ''}",
-        f"video_id: {vid}",
-        f"thumbnail: {meta.get('thumbnail') or ''}",
-        f"source_host: [{', '.join(source_host)}]",
-        f"areas: [{', '.join(areas)}]",
-        f"tags: [{', '.join(tags)}]",
-        "status: draft",
-        "---",
+    rows = [
+        f"**Channel**: {channel}" if channel else "",
+        f"**Published**: {front['published']}" if front.get("published") else "",
+        f"**Duration**: {front['duration']}" if front.get("duration") else "",
+        counts,
+        f"**Video ID**: `{front['video_id']}`" if front.get("video_id") else "",
+        f"**Source**: <{item}>" if item else "",
     ]
+    lines = [f"- {row}" for row in rows if row]
+    return "\n".join(lines)
 
-    parts = ["\n".join(fm), ""]
-    parts.append("> [!summary]\n> TODO-SUMMARY — 2-4 information-dense sentences before completing the handoff.\n")
 
+def build_body(meta, front, item, transcript_md):
+    """`page.md`: body only. Every block either opens with markup of its own or
+    sits under a heading, so the body can never open with a `---` line."""
+    title = meta.get("title") or "Untitled"
+    vid = meta.get("id", "")
+    parts = []
     if meta.get("thumbnail"):
         parts.append(f"![thumbnail]({meta['thumbnail']})\n")
     if vid:
@@ -295,51 +322,88 @@ def main():
             f'title="{title.replace(chr(34), " ")}" frameborder="0" '
             f'allowfullscreen></iframe>\n'
         )
-
+    facts = facts_block(front, item)
+    if facts:
+        parts.append(facts + "\n")
     desc = description_to_md(meta.get("description", ""))
     if desc:
         parts.append("## Description\n\n" + desc + "\n")
-
-    # transcript — yt-dlp writes whatever sub format it fetched (suffix is
-    # not provenance; .vtt is its common default, .srt still appears)
-    # Harvest files them under `captions/`; a bare capture dir is also honored.
-    # Prefer a non-`-orig` track: YouTube ships `<id>.en.vtt` alongside
-    # `<id>.en-orig.vtt`, and the plain one is the corrected caption track.
-    srt = next(
-        (
-            p
-            for pat in (
-                "captions/transcript*.vtt",
-                "captions/transcript*.srt",
-                "captions/*.vtt",
-                "captions/*.srt",
-                "transcript*.vtt",
-                "transcript*.srt",
-                "*.vtt",
-                "*.srt",
-            )
-            for p in sorted(cap_dir.glob(pat), key=lambda q: ("-orig" in q.stem, q.name))
-        ),
-        None,
-    )
-    if srt:
-        tx = format_transcript(
-            srt, (cap_dir / "metadata.json") if meta.get("chapters") else None, args.wiki, args.format_transcript
-        )
+    if transcript_md:
         parts.append(
             "## Transcript\n\n*Auto-generated captions, cleaned "
             "(sound tags removed, rolling overlap de-duplicated) and "
-            "split by chapter. Not manually corrected.*\n\n" + tx
+            "split by chapter. Not manually corrected.*\n\n" + transcript_md
+        )
+    return "\n".join(parts).rstrip() + "\n", bool(desc)
+
+
+def fetched_at_of(metadata_path):
+    """When yt-dlp wrote `metadata.json` — that IS when the item was fetched,
+    and it keeps a re-run over the same capture byte-identical."""
+    stamp = datetime.fromtimestamp(Path(metadata_path).stat().st_mtime, tz=timezone.utc)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("wiki", type=Path, help="the wiki root — what binds the front door to this wiki")
+    ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off ticket.json")
+    ap.add_argument("--item", default=None, help="the video url. Defaults to ticket.json's `item`, then the metadata's `webpage_url`")
+    ap.add_argument("--slug", default=None, help="the job slug. Defaults to ticket.json's `slug`, then the capture dir's parent")
+    ap.add_argument("--tag", action="append", default=[], help="a tag for `frontmatter.tags` (repeatable) — a hand run's; a ticket carries none")
+    ap.add_argument("--area", action="append", default=[], help="a knowledge area for `frontmatter.areas` (repeatable) — a hand run's; a ticket carries none")
+    ap.add_argument(
+        "--format-transcript",
+        default=None,
+        metavar="PATH",
+        help="run this format_transcript.py directly instead of reaching the plugin's copy through the front door",
+    )
+    args = ap.parse_args()
+
+    cap_dir = args.wiki / args.capture_dir
+    metadata_path = cap_dir / "metadata.json"
+    if not metadata_path.is_file():
+        sys.exit(f"youtube_note: {metadata_path} is not there — run `yt-dlp --dump-json --no-download <url>` into it first")
+    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    ticket = read_ticket(cap_dir)
+
+    # A capture record left by an earlier run must not outlive a build that
+    # fails: `capture.json` is what says "this item landed".
+    (cap_dir / CAPTURE_NAME).unlink(missing_ok=True)
+
+    slug = args.slug or ticket.get("slug") or cap_dir.resolve().parent.name
+    item = args.item or ticket.get("item") or meta.get("webpage_url") or meta.get("original_url")
+    front = frontmatter_for(meta, tags=args.tag, areas=args.area)
+
+    captions = find_captions(cap_dir)
+    transcript_md = ""
+    if captions:
+        transcript_md = format_transcript(
+            captions, metadata_path if meta.get("chapters") else None, args.wiki, args.format_transcript
         )
 
-    note_path.write_text("\n".join(parts).rstrip() + "\n")
+    body, has_desc = build_body(meta, front, item, transcript_md)
+    (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")
+    record = {
+        "slug": slug,
+        "item": item,
+        "title": meta.get("title") or None,
+        "body": BODY_NAME,
+        "content_type": "text/markdown",
+        "fetched_at": fetched_at_of(metadata_path),
+        "frontmatter": front,
+    }
+    # Written after the body it names, so a capture record never points at a
+    # page that is not there.
+    (cap_dir / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(
         json.dumps(
             {
-                "note": str(note_rel),
-                "has_transcript": bool(srt),
+                "page": f"{args.capture_dir.rstrip('/')}/{BODY_NAME}",
+                "capture": f"{args.capture_dir.rstrip('/')}/{CAPTURE_NAME}",
+                "has_transcript": bool(captions),
                 "chapters": len(meta.get("chapters") or []),
-                "description": bool(desc),
+                "description": has_desc,
             }
         )
     )

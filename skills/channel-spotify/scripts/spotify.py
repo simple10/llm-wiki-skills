@@ -21,12 +21,25 @@ Subcommands:
   meta          full metadata JSON for any supported entity URL/URI
   resolve-feed  show/episode -> public RSS feed + episode list
   capture       full capture into --capture-dir: meta.json, items.json,
-                page.md, assets.json (pending cover art + audio enclosures)
+                assets.json (pending cover art + audio enclosures), page.md
+                (the rendered page BODY) and capture.json (names page.md as
+                the body, carries the entity's facts under `frontmatter`).
+                Reads the URL, slug, min_date and asset policy off the
+                ticket.json the spawner left in that directory; flags override.
+  report        report.json into --capture-dir, read off what is there — the
+                last thing a harvest worker writes.
 
 Inputs:  entity URL (https://open.spotify.com/<type>/<id>) or spotify:<type>:<id>
 Outputs: JSON on stdout (all subcommands); capture writes files, stdout JSON
          is the run summary. Exit 4 from capture = entity captured but no
-         audio was resolvable (all-DRM or no feed match) — metadata-only.
+         audio was resolvable (all-DRM or no feed match) — metadata-only,
+         and still a complete capture (capture.json is written).
+
+The harvest worker is the only stage that reaches this unit: the pipeline's
+generic extractor turns the capture into a page, taking page.md verbatim and
+prepending its own frontmatter. Everything venue-specific is therefore
+rendered here, at harvest time, into the capture directory — never into the
+job's `dest`, which a harvest slice cannot write.
 
 Auth: the `spotify` credential, {"client_id": ..., "client_secret": ...}
       (env SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET override). The token is
@@ -46,6 +59,10 @@ History:
   2026-08-04  Auth resolves through the wiki's credential store (`credential
               get|set spotify` via the front door); the token is held in memory
               for the process lifetime, never cached to disk.
+  2026-09-19  Ported to the rebuilt worker contract: `capture` reads
+              ticket.json, writes capture.json (body page.md + `frontmatter`
+              facts) and a facts list in page.md; `report` writes report.json;
+              unreachable feed hosts are recorded instead of swallowed.
 """
 
 import argparse
@@ -454,18 +471,85 @@ def match_episode(feed_items, name, duration_ms, tol_s=150):
 # -------------------------------------------------------------------- capture
 
 
-def cmd_capture(a):
-    root = wiki_root()
-    cap = Path(a.capture_dir)
-    cap.mkdir(parents=True, exist_ok=True)
-    typ, eid = parse_entity(a.url)
-    token = None if a.keyless else get_token(root)
-    ent = fetch_entity(token, typ, eid, a.market) if token else fetch_entity_keyless(typ, eid)
+# What the spawner leaves beside a worker, what the extractor reads, and what
+# travels back out of the slice. The names are the host's; this unit only
+# reads the first and writes the other two.
+TICKET_NAME = "ticket.json"
+CAPTURE_NAME = "capture.json"
+REPORT_NAME = "report.json"
 
-    if a.min_date:
-        ent["items"] = [i for i in ent["items"] if not i.get("release_date") or i["release_date"] >= a.min_date]
+# Frontmatter keys another verb owns — never offered in `capture.json`'s
+# `frontmatter` object, whatever the entity is called.
+FRONTMATTER_RESERVED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource")
 
-    assets, drm_refs, feeds = [], [], {}
+ASSET_POLICIES = ("reference", "download", "download-audio")
+
+# The tail `assets.py download` takes for each `harvest.assets` policy. The
+# flags are the plugin script's own (`--mode`, `--skip-types`); the reading of
+# `download-audio` as "the enclosures, not the cover" is this unit's.
+ASSET_ARGS = {"reference": ["--mode", "reference"], "download": [], "download-audio": ["--skip-types", "image"]}
+
+OUTCOMES = ("ok", "partial", "skipped", "unchanged", "gone", "failed")
+WHYS = ("denied", "timeout", "auth", "error")
+
+# How the slice proxy words a refusal (measured by the plugin's own fetch
+# worker; repeated here because a unit imports nothing from the plugin).
+DENIED_MARKERS = ("tunnel connection failed", "not in the allowlist")
+
+
+def read_ticket(cap):
+    """`ticket.json` beside the capture, or `{}` — a hand run has none."""
+    try:
+        data = json.loads((Path(cap) / TICKET_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def host_of(url):
+    return (urlsplit(url or "").hostname or "").lower()
+
+
+def why_for(said):
+    """One of the report's four `why` words, read off what a failure said."""
+    low = str(said or "").lower()
+    if any(m in low for m in DENIED_MARKERS):
+        return "denied"
+    if "timed out" in low or "timeout" in low:
+        return "timeout"
+    if re.search(r"\b(401|403|407)\b", low) or "auth/paywall" in low:
+        return "auth"
+    return "error"
+
+
+def already_held(ticket, item):
+    """Is this entity a page `known[]` says the job already has? Matched on
+    `resource` exactly — the key the page carries."""
+    known = ticket.get("known")
+    if not isinstance(known, list):
+        return False
+    return any(isinstance(k, dict) and k.get("resource") == item for k in known)
+
+
+def plan_capture(ent, *, market="US", min_date=None, no_audio=False):
+    """An already-fetched entity -> `(meta, assets)`: items filtered by date,
+    each item's audio route decided, the pending asset manifest built.
+
+    The only network here is the open-feed lookup (`itunes_feed_candidates`,
+    `_parse_rss`), skipped entirely under `no_audio`. A lookup that could not
+    be reached is recorded in `meta["unreachable"]` rather than swallowed: it
+    is what `report` turns into `missing[]`, and `missing[]` is what the
+    foreman widens egress from.
+    """
+    ent = {**ent, "items": [dict(i) for i in ent.get("items") or []]}
+    if min_date:
+        ent["items"] = [i for i in ent["items"] if not i.get("release_date") or i["release_date"] >= min_date]
+
+    assets, drm_refs, feeds, unreachable = [], [], {}, []
     for img in [u for u in ent.get("images") or [] if u]:
         assets.append(
             {
@@ -478,19 +562,23 @@ def cmd_capture(a):
         )
     audio_n = 0
     for it in ent["items"]:
-        if a.no_audio:
+        if no_audio:
             break
         if it["type"] == "episode" and it.get("show"):
             fkey = it["show"]
             if fkey not in feeds:
-                cands = itunes_feed_candidates(fkey)
-                feeds[fkey] = {"candidates": cands, "items": None, "feed": None}
-                for c in cands:
+                feeds[fkey] = {"candidates": [], "items": None, "feed": None}
+                try:
+                    feeds[fkey]["candidates"] = itunes_feed_candidates(fkey)
+                except Exception as e:  # noqa: BLE001 — an unreachable lookup is a report line, never a traceback
+                    unreachable.append({"host": host_of(ITUNES_SEARCH), "url": ITUNES_SEARCH, "why": why_for(e)})
+                for c in feeds[fkey]["candidates"]:
                     try:
                         feeds[fkey]["items"] = _parse_rss(c["feed"])
                         feeds[fkey]["feed"] = c["feed"]
                         break
-                    except Exception:
+                    except Exception as e:  # noqa: BLE001 — try the next candidate, but say this one failed
+                        unreachable.append({"host": host_of(c["feed"]), "url": c["feed"], "why": why_for(e)})
                         continue
             fi, score = (None, 0)
             if feeds[fkey]["items"]:
@@ -507,7 +595,7 @@ def cmd_capture(a):
                         "note": f"open RSS enclosure ({feeds[fkey]['feed']}); matched '{fi['title']}' score={score}",
                     }
                 )
-                it["audio"] = {"route": "rss", "asset_id": f"asset-audio-{audio_n:03d}"}
+                it["audio"] = {"route": "rss", "asset_id": f"asset-audio-{audio_n:03d}", "src_url": fi["enclosure"]}
             else:
                 drm_refs.append(_drm_ref(it, "episode not matched in any public feed"))
                 it["audio"] = {"route": "none"}
@@ -516,35 +604,215 @@ def cmd_capture(a):
             it["audio"] = {"route": "drm"}
     meta = {
         **ent,
-        "market": a.market,
+        "market": market,
         "feeds": {k: {"feed": v["feed"], "candidates": v["candidates"]} for k, v in feeds.items()},
         "drm_refs": drm_refs,
+        "unreachable": unreachable,
         "counts": {"items": len(ent["items"]), "audio_resolved": audio_n, "drm_or_unmatched": len(drm_refs)},
     }
-    (cap / "meta.json").write_text(json.dumps(meta, indent=1))
-    (cap / "items.json").write_text(json.dumps(ent["items"], indent=1))
-    (cap / "assets.json").write_text(json.dumps(assets, indent=1))
-    (cap / "page.md").write_text(render_page_md(meta))
+    return meta, assets
+
+
+def capture_frontmatter(meta):
+    """The entity's exact facts, as the flat object `capture.json` carries
+    under `frontmatter` — scalars only, nothing another verb owns, and no key
+    for a fact the venue did not declare (an absent `published` is absent,
+    never a guess)."""
+    counts = meta.get("counts") or {}
+    items = meta.get("items") or []
+    facts = {
+        "type": meta.get("type"),
+        "venue": "spotify",
+        "spotify_id": meta.get("id"),
+        "author": meta.get("creator") or None,
+        "show": (items[0].get("show") if meta.get("type") == "episode" and items else None) or None,
+        "published": _published_day(meta.get("release_date")) or None,
+        "items": counts.get("items", len(items)),
+        "audio_resolved": counts.get("audio_resolved", 0),
+        "drm_or_unmatched": counts.get("drm_or_unmatched", 0),
+        "keyless": bool(meta.get("keyless")),
+        "market": meta.get("market") or None,
+    }
+    return {k: v for k, v in facts.items() if v is not None and k not in FRONTMATTER_RESERVED}
+
+
+def capture_record(meta, *, slug, item, fetched_at=None):
+    """`capture.json`: the whole agreement with the generic extractor. The body
+    is the markdown page this unit rendered; the extractor takes it verbatim."""
+    return {
+        "v": 1,
+        "slug": slug,
+        "item": item or meta["url"],
+        "title": meta.get("name") or f"Spotify {meta['type']} {meta['id']}",
+        "body": "page.md",
+        "content_type": "text/markdown",
+        "fetched_at": fetched_at or now_iso(),
+        "frontmatter": capture_frontmatter(meta),
+    }
+
+
+def _dump(path, data):
+    path.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def write_capture_dir(cap, meta, assets, *, slug=None, item=None, fetched_at=None):
+    """Every file a capture leaves, `capture.json` last — it names `page.md`,
+    so it is written only once the page is on disk."""
+    cap = Path(cap)
+    cap.mkdir(parents=True, exist_ok=True)
+    _dump(cap / "meta.json", meta)
+    _dump(cap / "items.json", meta["items"])
+    _dump(cap / "assets.json", assets)
+    (cap / "page.md").write_text(render_page_md(meta), encoding="utf-8")
+    record = capture_record(meta, slug=slug, item=item, fetched_at=fetched_at)
+    _dump(cap / CAPTURE_NAME, record)
+    return record
+
+
+def cmd_capture(a):
+    cap = Path(a.capture_dir)
+    cap.mkdir(parents=True, exist_ok=True)
+    ticket = read_ticket(cap)
+    url = a.url or ticket.get("item") or ticket.get("target")
+    if not url:
+        die(f"no entity URL: pass one, or run beside a {TICKET_NAME} that names an item")
+    slug = a.slug or ticket.get("slug")
+    min_date = a.min_date or ticket.get("min_date")
+    policy = a.assets or (ticket.get("harvest") or {}).get("assets") or "download"
+    if policy not in ASSET_POLICIES:
+        die(f"unknown assets policy {policy!r} (one of: {', '.join(ASSET_POLICIES)})")
+
+    # A respawn lands in this same directory. What an earlier attempt left must
+    # not answer for this one: `report` reads `capture.json` as "it landed".
+    for stale in (CAPTURE_NAME, REPORT_NAME):
+        (cap / stale).unlink(missing_ok=True)
+
+    if ticket and already_held(ticket, url) and not ticket.get("refresh"):
+        # The pull whose target the job already holds: a designed non-event.
+        # Nothing is fetched, and the report is the whole of the run.
+        report = build_report(cap, ticket, outcome="skipped", reason=f"known: {url}")
+        _dump(cap / REPORT_NAME, report)
+        print(json.dumps({"url": url, "skipped": True, "reason": report["reason"], "capture_dir": str(cap)}, indent=1))
+        return
+
+    typ, eid = parse_entity(url)
+    if a.entity_json:
+        try:
+            ent = json.loads(Path(a.entity_json).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            die(f"cannot read --entity-json {a.entity_json}: {e}")
+        if not isinstance(ent, dict) or (ent.get("type"), ent.get("id")) != (typ, eid):
+            die(f"--entity-json is not the {typ} {eid} that {url} names")
+    else:
+        token = None if a.keyless else get_token(wiki_root())
+        ent = fetch_entity(token, typ, eid, a.market) if token else fetch_entity_keyless(typ, eid)
+
+    meta, assets = plan_capture(ent, market=a.market, min_date=min_date, no_audio=a.no_audio)
+    record = write_capture_dir(cap, meta, assets, slug=slug, item=url)
+    counts = meta["counts"]
     summary = {
-        "url": ent["url"],
-        "name": ent["name"],
+        "url": meta["url"],
+        "item": record["item"],
+        "name": meta["name"],
         "type": typ,
-        "items": len(ent["items"]),
-        "audio_resolved": audio_n,
-        "drm_or_unmatched": len(drm_refs),
-        "keyless": ent["keyless"],
-        # The venue's native creation timestamp, under the protocol's
-        # name for it, so the worker copies it into capture.json rather
-        # than translating `release_date` itself. Emitted only at day
-        # precision: Spotify's `release_date` follows its
-        # `release_date_precision`, so an album can legitimately return
-        # a bare "1979", which is not a publication DAY.
-        "published": _published_day(ent.get("release_date")),
+        "items": counts["items"],
+        "audio_resolved": counts["audio_resolved"],
+        "drm_or_unmatched": counts["drm_or_unmatched"],
+        "unreachable": len(meta["unreachable"]),
+        "keyless": meta["keyless"],
+        # The venue's native creation timestamp, under the protocol's name
+        # for it — the same value `capture.json`'s `frontmatter.published`
+        # carries. Emitted only at day precision: Spotify's `release_date`
+        # follows its `release_date_precision`, so an album can legitimately
+        # return a bare "1979", which is not a publication DAY.
+        "published": _published_day(meta.get("release_date")),
+        # The job's `harvest.assets`, and the tail `assets.py download` takes for it.
+        "assets": policy,
+        "assets_args": ASSET_ARGS[policy],
         "capture_dir": str(cap),
+        "wrote": ["meta.json", "items.json", "assets.json", "page.md", CAPTURE_NAME],
     }
     print(json.dumps(summary, indent=1))
-    if ent["items"] and audio_n == 0 and not a.no_audio:
+    if meta["items"] and counts["audio_resolved"] == 0 and not a.no_audio:
         sys.exit(4)
+
+
+# --------------------------------------------------------------------- report
+
+
+def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capture_dir=None, extra_missing=()):
+    """`report.json` for one entity capture, read off what is on disk.
+
+    `captured[]` names the capture dir exactly when `capture.json` is there.
+    `missing[]` is every failed asset in `assets.json`, every feed lookup the
+    capture could not reach (`meta.json` `unreachable`), and whatever the
+    caller adds. The outcome, unless the caller names one: `failed` with no
+    capture; `partial` when something is missing or the item list came from
+    the keyless embed (possibly truncated); else `ok`.
+    """
+    cap = Path(cap)
+
+    def load(name, default):
+        try:
+            return json.loads((cap / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return default
+
+    record = load(CAPTURE_NAME, None)
+    meta = load("meta.json", {})
+    assets = load("assets.json", [])
+    where = capture_dir or ticket.get("capture_dir") or str(cap)
+    captured, missing, why_partial = [], [], []
+    if isinstance(record, dict) and outcome != "skipped":
+        captured.append({"item": record.get("item"), "dir": where, "title": record.get("title")})
+    for m in (meta.get("unreachable") or []) if isinstance(meta, dict) else []:
+        if isinstance(m, dict) and m.get("url"):
+            missing.append({"host": m.get("host") or host_of(m["url"]), "url": m["url"], "why": m.get("why") if m.get("why") in WHYS else "error"})
+    for entry in assets if isinstance(assets, list) else []:
+        if isinstance(entry, dict) and entry.get("status") == "failed" and entry.get("src_url"):
+            missing.append({"host": host_of(entry["src_url"]), "url": entry["src_url"], "why": why_for(entry.get("error"))})
+    missing.extend(extra_missing)
+    if missing:
+        why_partial.append(f"{len(missing)} url(s) not reached")
+    if isinstance(meta, dict) and meta.get("keyless"):
+        why_partial.append("keyless capture: the item list may be truncated")
+    if outcome is None:
+        outcome = "failed" if not captured else ("partial" if why_partial else "ok")
+    if reason is None:
+        if outcome == "failed":
+            reason = f"no {CAPTURE_NAME} in {where}"
+        elif outcome == "partial":
+            reason = "; ".join(why_partial) or None
+    return {
+        "v": 1,
+        "ticket": ticket_id or ticket.get("ticket"),
+        "outcome": outcome,
+        "reason": reason,
+        "captured": captured,
+        "written": [],
+        "missing": missing,
+        "discovered": [],
+    }
+
+
+def cmd_report(a):
+    cap = Path(a.capture_dir)
+    ticket = read_ticket(cap)
+    extra = []
+    for spec in a.missing or []:
+        url, _, why = spec.rpartition("=")
+        if not url or why not in WHYS:
+            die(f"--missing takes <url>=<{'|'.join(WHYS)}>, got {spec!r}")
+        extra.append({"host": host_of(url), "url": url, "why": why})
+    report = build_report(
+        cap, ticket, outcome=a.outcome, reason=a.reason, ticket_id=a.ticket, capture_dir=a.dir, extra_missing=extra
+    )
+    if not report["ticket"]:
+        die(f"no ticket id: pass --ticket, or run beside a {TICKET_NAME}")
+    _dump(cap / REPORT_NAME, report)
+    print(json.dumps(report, indent=1))
+    if report["outcome"] == "failed":
+        sys.exit(1)
 
 
 def _published_day(value):
@@ -592,10 +860,25 @@ def _drm_ref(it, why):
     }
 
 
+def _one_line(value):
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
 def render_page_md(meta):
-    L = [f"## {meta.get('name') or 'Spotify: ' + meta['id']}", ""]
+    """The page BODY the generic extractor takes verbatim. Never a `---`
+    frontmatter block: the extractor prepends its own, and a second one
+    corrupts the page. The entity's facts ride as a plain list instead — the
+    same keys `capture.json`'s `frontmatter` object carries — so nothing is
+    lost while the extractor does not merge that object."""
+    L = [f"## {_one_line(meta.get('name') or 'Spotify: ' + meta['id'])}", ""]
     if meta.get("creator"):
-        L.append(f"By **{meta['creator']}** — Spotify {meta['type']}: {meta['url']}")
+        L.append(f"By **{_one_line(meta['creator'])}** — Spotify {meta['type']}: {meta['url']}")
+    else:
+        L.append(f"Spotify {meta['type']}: {meta['url']}")
+    L.append("")
+    for key, value in capture_frontmatter(meta).items():
+        shown = str(value).lower() if isinstance(value, bool) else _one_line(value)
+        L.append(f"- {key}: {shown}")
     if meta.get("keyless"):
         L.append("")
         L.append(
@@ -603,6 +886,8 @@ def render_page_md(meta):
             "configure API credentials and re-capture for the full set."
         )
     if meta.get("description"):
+        # A venue-supplied `---` line is a thematic break mid-body, harmless —
+        # but it is never allowed to open the file, which the heading above sees to.
         L += ["", meta["description"].strip()]
     if meta.get("items"):
         L += ["", "| # | Item | Duration | Released | Audio | Spotify |", "|---|---|---|---|---|---|"]
@@ -611,6 +896,8 @@ def render_page_md(meta):
             audio = {"rss": "open RSS feed", "drm": "DRM — listen at source", "none": "no open feed match", "-": "-"}[
                 route
             ]
+            if route == "rss" and (it.get("audio") or {}).get("src_url"):
+                audio = f"[open RSS feed]({it['audio']['src_url'].replace('|', '%7C').replace(' ', '%20')})"
             name = (it.get("name") or "?").replace("|", "\\|")
             L.append(
                 f"| {it['n']} | {name} | {ms_to_hms(it.get('duration_ms'))} "
@@ -732,14 +1019,31 @@ def main():
     c.add_argument("--limit", type=int, default=0, help="cap episodes in output")
     c.set_defaults(fn=cmd_resolve_feed)
 
-    c = sub.add_parser("capture", help="capture an entity into --capture-dir")
-    c.add_argument("url")
-    c.add_argument("--capture-dir", required=True)
+    c = sub.add_parser(
+        "capture",
+        help="capture an entity into --capture-dir: meta.json, items.json, assets.json, page.md, capture.json",
+    )
+    c.add_argument("url", nargs="?", help=f"entity URL/URI; default: `item` in <capture-dir>/{TICKET_NAME}")
+    c.add_argument("--capture-dir", required=True, help=f"the ticket's capture directory (holds {TICKET_NAME})")
+    c.add_argument("--slug", help=f"job slug for {CAPTURE_NAME}; default: the ticket's `slug`")
     c.add_argument("--market", default="US")
-    c.add_argument("--min-date", help="drop items released before YYYY-MM-DD")
+    c.add_argument("--min-date", help="drop items released before YYYY-MM-DD; default: the ticket's `min_date`")
+    c.add_argument(
+        "--assets", choices=ASSET_POLICIES, help="asset policy echoed in the summary; default: the ticket's `harvest.assets`"
+    )
     c.add_argument("--keyless", action="store_true", help="force embed fallback")
-    c.add_argument("--no-audio", action="store_true", help="metadata + images only")
+    c.add_argument("--no-audio", action="store_true", help="metadata + images only (no feed lookup)")
+    c.add_argument("--entity-json", help="an already-fetched entity (what `meta` prints) instead of calling the API")
     c.set_defaults(fn=cmd_capture)
+
+    c = sub.add_parser("report", help=f"write {REPORT_NAME} from what the capture dir holds — run it LAST")
+    c.add_argument("--capture-dir", required=True)
+    c.add_argument("--ticket", help=f"ticket id; default: `ticket` in <capture-dir>/{TICKET_NAME}")
+    c.add_argument("--dir", help="wiki-relative capture dir for captured[]; default: the ticket's `capture_dir`")
+    c.add_argument("--outcome", choices=OUTCOMES, help="override the outcome read off the capture dir")
+    c.add_argument("--reason")
+    c.add_argument("--missing", action="append", metavar="URL=WHY", help=f"a url not reached; WHY is {'|'.join(WHYS)}")
+    c.set_defaults(fn=cmd_report)
 
     a = ap.parse_args()
     a.fn(a)

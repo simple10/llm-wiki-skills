@@ -12,8 +12,12 @@ Customize the wiki's copy now, while the operator is present:
    identity, so a mechanically-derived one would be opaque
    (`slug=<content-name> dest=sources/scrapes/<content-name>`).
 2. Ask whether asset titles carry a share-wide suffix worth trimming — that
-   becomes `--title-strip` on the doc-note step; record the chosen value in
-   the installed SKILL.md.
+   becomes `--title-strip` on the capture step (`harvest_share.py`, which
+   hands it to every leaf); record the chosen value in the installed
+   SKILL.md. The share's author, group and tags go on the JOB, not in this
+   file — `meta.author=`, `meta.group=`, `meta.group_type=`, `meta.tags=`,
+   `meta.areas=` on the `pipeline add` in step 5 — and the host stamps them
+   onto every page the job lands.
 3. Check `yt-dlp` is on PATH on the harvesting machine (video capture
    depends on it); tell the operator if it is missing.
 4. No auth walkthrough: guest share links authorize themselves.

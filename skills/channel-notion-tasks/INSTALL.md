@@ -23,9 +23,10 @@ Customize the wiki's copy now, while the operator is present:
    defaults off the enabled copy, and answers `dest required` without it.
    `llm-wiki-ops pipeline add notion-tasks slug=notion-tasks
    description="<what this is>" skill=channel-notion-tasks
-   options.workspace=<workspace> [every=1d]` — the target is the channel's
-   bare name, never a url, and `add` refuses without `options.workspace`
-   (the unit's one required input). The manifest's `watch.dest` puts its daily
+   options.workspace=<workspace> [every=1d]` — the target is a bare channel
+   NAME, never a url, and a wiki holds ONE job per target: a second workspace
+   needs its own name (`acme-tasks`), reused as its slug. `add` refuses
+   without `options.workspace` (the unit's one required input). The manifest's `watch.dest` puts its daily
    ledgers under `research/channels/<slug>/` — the ledger route, outside the
    searchable corpus and the curation lifecycle (tasks are a stream; the
    wiki's synthesize policy is how their substance reaches `wiki/`). The
@@ -34,6 +35,7 @@ Customize the wiki's copy now, while the operator is present:
    keeps its `sources/tasks/<slug>/` literal. To re-point it:
    `pipeline edit` refuses `dest`, but re-running `add` with the same target and slug moves it and
    keeps every other key:
-   `llm-wiki-ops pipeline add notion-tasks slug=<slug> dest=research/channels/<slug>`.
+   `llm-wiki-ops pipeline add <its target> slug=<slug> dest=research/channels/<slug>`
+   (`pipeline show <slug>` names the target).
    Remind the operator that connector auth is session-level on the pulling
    machine.

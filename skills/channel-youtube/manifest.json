@@ -18,15 +18,14 @@
       "*.googlevideo.com",
       "*.ytimg.com"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest",
-    "process"
+    "harvest"
   ],
   "v": 2,
   "venue": "youtube",
-  "version": "1.10.3",
+  "version": "1.11.0",
   "watch": {
     "defaults": {
       "every": "once",

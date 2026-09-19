@@ -15,15 +15,14 @@
       "*.circle.so",
       "circle.so"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest",
-    "process"
+    "harvest"
   ],
   "v": 2,
   "venue": "circle",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "watch": {
     "defaults": {
       "every": "once",

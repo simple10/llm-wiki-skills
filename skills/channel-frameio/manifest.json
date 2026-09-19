@@ -15,15 +15,14 @@
       "*.frame.io",
       "frame.io"
     ],
-    "ops": ">=1.62"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest",
-    "process"
+    "harvest"
   ],
   "v": 2,
   "venue": "frameio",
-  "version": "1.14.5",
+  "version": "1.15.0",
   "watch": {
     "defaults": {
       "every": "once",

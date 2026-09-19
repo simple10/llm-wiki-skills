@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "sites": {
+    "www.example-hubspot.invalid": {
+      "content_selector": "main#main-content",
+      "drop_selectors": [".course-modules", ".cta-block", ".legal-disclaimer", "main#main-content h1"],
+      "title_selector": "main#main-content h2",
+      "strip_params": ["utm_source"],
+      "exclude_urls": ["*/learn/legacy/*"]
+    }
+  }
+}

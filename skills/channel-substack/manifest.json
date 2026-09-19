@@ -14,15 +14,14 @@
       "*.substack.com",
       "substack.com"
     ],
-    "ops": ">=1.62"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest",
-    "process"
+    "harvest"
   ],
   "v": 2,
   "venue": "substack",
-  "version": "1.9.4",
+  "version": "1.10.0",
   "watch": {
     "defaults": {
       "every": "1d",

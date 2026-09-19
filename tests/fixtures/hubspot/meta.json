@@ -1,0 +1,13 @@
+{
+ "url": "https://www.example-hubspot.invalid/learn/offers/lesson-two",
+ "final_url": "https://www.example-hubspot.invalid/learn/offers/lesson-two",
+ "title": "Pricing the offer",
+ "page_title": "Start Here",
+ "mux_playback_id": "AbCdEfGhIjKlMnOpQrStUvWx0123456789",
+ "stream_url": "https://stream.mux.com/AbCdEfGhIjKlMnOpQrStUvWx0123456789.m3u8",
+ "player_url": "https://play.hubspotvideo.com/v/1234567/id/987654321",
+ "embed_url": "https://play.hubspotvideo.com/v/1234567/id/987654321?parentOrigin=https%3A%2F%2Fwww.example-hubspot.invalid&renderContext=iframe",
+ "tracks": [],
+ "play_selector": "video",
+ "requests": 42
+}

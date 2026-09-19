@@ -10,15 +10,14 @@
   "name": "channel-notion-tasks",
   "requires": {
     "credential": false,
-    "ops": ">=1.67.0"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest",
-    "process"
+    "harvest"
   ],
   "v": 2,
   "venue": "notion-tasks",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "watch": {
     "defaults": {
       "every": "1d"

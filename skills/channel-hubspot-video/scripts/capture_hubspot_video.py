@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["playwright>=1.44"]
 # ///
-"""Capture one HubSpot CMS page whose content is a HubSpot Video.
+"""Render one HubSpot CMS page whose content is a HubSpot Video.
 
 Platform: HubSpot CMS + HubSpot Video, which is Mux underneath. Not tied to
 any one site — every HubSpot customer runs its own domain, which is why the
@@ -19,11 +19,19 @@ rewrites it as the STABLE master playlist
 `https://stream.mux.com/<playback_id>.m3u8`, which yt-dlp handles and which
 does not expire.
 
+This is the capture I/O of ONE page — one leaf of a section harvest. Which
+pages, which directories, the `page.md` + `capture.json` the extractor reads
+and the `report.json` are the sibling `leaves.py`'s.
+
 Inputs / outputs (default mode, `render`):
-  <capture-dir>/page.html   rendered DOM (asset-detection ground truth)
+  <capture-dir>/page.html   rendered DOM (asset-detection ground truth, and
+                            what `leaves.py page` converts to `page.md`)
   <capture-dir>/net.json    network log, list of {url,type,method}
   <capture-dir>/meta.json   {title, mux_playback_id, player_url, final_url, ...}
   stdout                    the same meta.json as one JSON object
+
+`<url>` may be omitted where `<capture-dir>/ticket.json` is: the ticket's own
+`item` is then the page. Every other leaf names its url.
 
 Second mode, `patch-assets`, applies the platform's manifest rules to a
 manifest produced by the plugin's `assets.py detect`:
@@ -31,9 +39,9 @@ manifest produced by the plugin's `assets.py detect`:
     per-rendition, so yt-dlp cannot pick a format from them)
   - drop the verifi.podscribe.com beacon (analytics pixel, not content)
   - append the stable Mux master playlist as the page's video asset,
-    carrying the rendered iframe's live src as `embed_url` so a
-    non-bundled note can embed the venue's player instead of linking a
-    play.hubspotvideo.com URL that refuses to play outside its page
+    carrying the rendered iframe's live src as `embed_url` — the same value
+    `leaves.py page` writes into `page.md` as the page's iframe, because a
+    bare play.hubspotvideo.com URL refuses to play outside its page
 
 Usage:
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/capture_hubspot_video.py \\
@@ -41,8 +49,10 @@ Usage:
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/capture_hubspot_video.py \\
       patch-assets <capture-dir>/assets.json --meta <capture-dir>/meta.json
 
-`--capture-dir` is host-derived (inside the watch's own slice) and handed
-over by the caller — this unit never composes one itself.
+`--capture-dir` is one leaf inside the job's own `_raw/<slug>/` slice: the
+ticket's `capture_dir` for the ticket's own item, and a `dir` out of
+`leaves.py plan`'s `plan.json` for every other page. Never a path made up
+at the call.
 
 (The leading `ops/` is the run verb's frozen argument grammar, resolved by
 the front door to wherever this wiki's machinery tree lives.)
@@ -61,8 +71,6 @@ import json
 import re
 import sys
 from pathlib import Path
-
-from playwright.sync_api import sync_playwright
 
 # The playback id shows up in several shapes; the storyboard request is the
 # most reliable because the player always fetches it, even before play.
@@ -91,8 +99,26 @@ def find_mux_id(requests):
     return None
 
 
+def ticket_item(capture_dir):
+    """The ticket's own page, where the spawner left a `ticket.json` here."""
+    try:
+        ticket = json.loads((Path(capture_dir) / "ticket.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    item = ticket.get("item") if isinstance(ticket, dict) else None
+    return item if isinstance(item, str) and item.startswith(("http://", "https://")) else None
+
+
 def render(args):
+    # Imported here, not at the top: `patch-assets` is pure JSON and must run
+    # where no browser is installed.
+    from playwright.sync_api import sync_playwright
+
     cap = Path(args.capture_dir)
+    args.url = args.url or ticket_item(cap)
+    if not args.url:
+        print(f"no url given and no ticket.json in {cap} names one", file=sys.stderr)
+        return 2
     cap.mkdir(parents=True, exist_ok=True)
     reqs = []
 
@@ -137,8 +163,9 @@ def render(args):
         # The LIVE iframe src after HubSpot's script swapped data-hsv-src in
         # — verbatim, params and all (parentOrigin is what lets the player
         # run inside a frame; the bare player URL refuses to play outside
-        # its page). scaffold renders it as the note's iframe when media
-        # isn't bundled and [media] policy allows.
+        # its page). `leaves.py page` writes it into page.md as the page's
+        # iframe; the extractor strips it when the job says `process.embeds:
+        # false`, which is why a plain link rides beside it.
         embed_src = page.evaluate(
             "() => { const f = document.querySelector(\"iframe[src*='hubspotvideo']\"); return f ? f.src : null; }"
         )
@@ -210,7 +237,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a lesson page and resolve its Mux stream")
-    r.add_argument("url")
+    r.add_argument("url", nargs="?", default=None, help="default: the `item` of <capture-dir>/ticket.json")
     r.add_argument("--capture-dir", required=True)
     r.add_argument("--timeout", type=int, default=90000, help="page.goto timeout (ms)")
     r.add_argument("--settle", type=int, default=9000, help="ms to wait after clicking play, for the manifest request")

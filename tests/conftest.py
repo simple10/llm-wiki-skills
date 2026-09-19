@@ -131,12 +131,14 @@ class Job:
     record: dict
 
 
-def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str) -> Job:
+def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
     """A real job for `unit` in the session wiki, declared the way INSTALL.md
     says to — `pipeline extract` reads the job a capture belongs to, so a
-    capture with no job behind it is refused. Idempotent."""
+    capture with no job behind it is refused. Idempotent for one
+    (slug, target) pair; a wiki holds ONE job per target and a slug names one
+    source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
-    slug = f"port-{unit}"
+    slug = slug or f"port-{unit}"
     r = run(ops, env, "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, at(wiki))
     assert r.returncode == 0, r.stdout + r.stderr
     record = run(ops, env, "--json", "pipeline", "show", slug, at(wiki)).data["job"]

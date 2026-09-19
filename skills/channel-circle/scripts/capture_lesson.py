@@ -2,12 +2,12 @@
 # requires-python = ">=3.10"
 # dependencies = ["playwright>=1.44"]
 # ///
-"""Capture a single Circle.so lesson/post page into a raw capture dir.
+"""Capture a single Circle.so page — a space root or one lesson — into a capture dir.
 
 platform: circle
 scope: platform-general (any Circle-hosted community: *.circle.so or a
 custom domain fronted by Circle). No hardcoded domain/slug — takes the URL
-as an arg.
+as an arg, or off the `ticket.json` the spawner wrote into the capture dir.
 
 Circle is a React SPA behind Cloudflare, with lesson bodies and video
 players rendered client-side. So we drive a real Chrome via Playwright
@@ -20,21 +20,26 @@ render, then dump:
                       that never appear in the DOM live here)
   - meta.json         title, final_url, canonical, discovered sidebar links
 
-It does NOT write page.md, capture.json, or download assets — the caller
-runs this unit's `to_markdown.py` and the harvest skill's `assets.py` on the
-outputs (keeps this script pure I/O).
+It does NOT write page.md, capture.json, report.json, or download assets —
+the caller runs this unit's `to_markdown.py` and `section_plan.py` and the
+harvest skill's `assets.py` on the outputs (keeps this script pure I/O). One
+harvest ticket runs it once for the job's target and once per planned lesson:
+`meta.json`'s `discovered_lesson_links` is what `section_plan.py plan` reads.
 
 Usage:
-  uv run capture_lesson.py <root> <lesson-url> --out <dir> \
-         [--headed] [--timeout-ms 45000]
+  llm-wiki-ops run ops/skills/channel-circle/scripts/capture_lesson.py \
+         <root> [<url>] --out <dir> [--headed] [--timeout-ms 45000]
 
-`<root>` is the wiki root — auth profiles are reached through the
-credential store's `profile-dir` lookup, keyed by domain. Outputs land in
-<dir>/. Exit 0 on capture, 2 if there is no auth profile yet or the session
+`<root>` is the wiki root (`.` under `llm-wiki-ops run`, which starts a script
+there) — auth profiles are reached through the credential store's
+`profile-dir` lookup, keyed by domain. `<url>` may be left out when `<dir>`
+holds a `ticket.json`: its `target` is what is captured; a url given on the
+command line always wins. Outputs land in <dir>/. Exit 0 on capture, 2 if there is no auth profile yet or the session
 had expired (landed on a sign_in page) — either way, re-run the login
 helper. 3 on a Cloudflare challenge that didn't clear. 5 if the credential
 store itself could not be reached (denied/unreadable) — a REAL failure,
 distinct from "no profile yet"; re-running the login helper will not fix it.
+4 if no url was given and <dir> holds no `ticket.json` naming a target.
 
 History:
   2026-07-11  created — first Circle course capture.
@@ -43,6 +48,9 @@ History:
               auth directory.
   2026-08-04  auth profile lookup moves through the credential store's
               `profile-dir` verb instead of a hardcoded path.
+  2026-09-19  the url may come off the capture dir's `ticket.json`; sidebar
+              links are what `section_plan.py` plans a section from — no
+              host queues them any more.
 """
 
 import argparse
@@ -115,6 +123,17 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
+def ticket_target(out: Path) -> str | None:
+    """The `target` of the `ticket.json` the spawner wrote into the capture
+    dir, or None where nothing spawned this capture."""
+    try:
+        ticket = json.loads((out / "ticket.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    target = ticket.get("target") if isinstance(ticket, dict) else None
+    return target if isinstance(target, str) and target else None
+
+
 def caption_records(tracks):
     """Map resolved <track> dicts to (meta record incl. text) list. Keeps only
     kind in {captions, subtitles} with non-empty text; names files by srclang,
@@ -139,14 +158,18 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="wiki root path")
-    ap.add_argument("url")
+    ap.add_argument("url", nargs="?", help="page to capture; default: `target` of <out>/ticket.json")
     ap.add_argument("--out", required=True, help="Output capture dir")
     ap.add_argument("--headed", action="store_true", help="Show the browser (safer vs Cloudflare; default headless)")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     args = ap.parse_args()
 
-    domain = domain_of(args.url)
     out = Path(args.out)
+    args.url = args.url or ticket_target(out)
+    if not args.url:
+        print(f"error: no url given and {out / 'ticket.json'} names no target", file=sys.stderr)
+        return 4
+    domain = domain_of(args.url)
     out.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -236,7 +259,9 @@ def main() -> int:
             context.close()
             return 3
 
-        # Discovered sidebar / curriculum links (provenance; scope=page won't queue them)
+        # Sidebar / curriculum links, in the order the course lists them. Nothing
+        # queues these: `section_plan.py plan` reads them off meta.json and applies
+        # the ticket's scope itself.
         links = page.eval_on_selector_all(
             "a[href]", "els => els.map(e => ({href: e.href, text: (e.innerText||'').trim().slice(0,80)}))"
         )
