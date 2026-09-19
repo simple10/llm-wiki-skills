@@ -98,6 +98,28 @@ def test_a_manifest_carries_no_key_the_contract_does_not_name(name):
     assert set(json.loads((ROOT / "skills" / name / "manifest.json").read_text())) <= known
 
 
+@pytest.mark.parametrize("name", SKILLS)
+def test_every_script_a_unit_ships_is_one_something_runs(name):
+    """A unit's scripts are its whole executable surface, and `run` is the only
+    door to one. A file no `run` line names and no sibling imports is code that
+    ships, installs and enables while nothing can reach it."""
+    unit = ROOT / "skills" / name
+    scripts = sorted(p for p in unit.glob("scripts/*.py") if "__pycache__" not in p.parts)
+    if not scripts:
+        return
+    skill = (unit / "SKILL.md").read_text(encoding="utf-8")
+    run_lines = "\n".join(line for line in skill.splitlines() if "llm-wiki-ops run" in line or "run ops/skills/" in line)
+    siblings = "\n".join(p.read_text(encoding="utf-8") for p in scripts)
+    dead = []
+    for script in scripts:
+        named = script.name in run_lines
+        # A sibling reaches it by import (`import leaves`) or by running it.
+        reached = re.search(rf"(?<![\w.-]){re.escape(script.stem)}(?![\w-])", siblings.replace(script.read_text(encoding="utf-8"), "")) is not None
+        if not named and not reached:
+            dead.append(str(script.relative_to(ROOT)))
+    assert not dead, "no `run` line names these and no sibling reaches them: " + ", ".join(dead)
+
+
 def _function(path, name: str) -> str:
     found = re.search(rf"^def {name}\(.*?(?=^\S)", path.read_text(encoding="utf-8"), re.M | re.S)
     return found.group(0).strip() if found else ""
