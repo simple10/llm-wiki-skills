@@ -11,6 +11,12 @@
   "name": "channel-hubspot-video",
   "requires": {
     "credential": false,
+    "network": [
+      "play.hubspotvideo.com",
+      "image.mux.com",
+      "stream.mux.com",
+      "*.mux.com"
+    ],
     "ops": ">=1.88"
   },
   "stages": [

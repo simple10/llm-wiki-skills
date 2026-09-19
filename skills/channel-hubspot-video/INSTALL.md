@@ -10,6 +10,22 @@ rewrite) and deliberately **no selectors** — every HubSpot customer runs its
 own domain and its own theme. The wiki's copy turns site-specific the moment
 you customize it.
 
+0. **A browser, before the first run.** `capture_hubspot_video.py render`
+   launches Chromium through Playwright INSIDE the harvest slice. `run`
+   resolves the Playwright package like any script dependency; the browser
+   BUILD it drives is a separate download into `~/.cache/ms-playwright`
+   (`~/Library/Caches/ms-playwright` on a Mac), and a slice can never make it:
+   both paths are on the slice's write-deny floor
+   (`schedule/runner/floor.py::DENY_WRITE_OUTSIDE`). So the operator installs
+   it on every machine that harvests this unit, outside any jail, with the
+   Playwright version the script resolves (`playwright>=1.44`) — e.g.
+   `uvx playwright install chromium`. Unverified, because no live slice has
+   run this unit since the rebuild: that the slice may READ that cache (the
+   floor's read list does not name it, so the machine-local
+   `~/.config/llm-wiki/sandbox/base.jsonc` or `slice.jsonc` has to grant it),
+   that the uv-cached build and the `uvx` one agree on a browser revision, and
+   that Chromium's own sandbox starts under the jail. If the first render dies
+   on a missing executable, that is this step, not the site.
 1. **One copy, and every site in it.** `skills install` has no rename: the
    unit is `channel-hubspot-video` in every wiki, and identity is the JOB's
    slug. A second HubSpot-hosted site is a second job on this same unit, so
@@ -18,16 +34,17 @@ you customize it.
 2. **Confirm the platform** against the SKILL.md Fingerprints section:
    `hubfs/` / `hs-fs/hubfs/` asset paths, `data-hsv-src` iframes, `_hcms/`
    in robots.txt, `?hsLang=` params. A miss means this is not the unit.
-3. **Pin the hosts.** In the wiki's copy of `manifest.json` add to
-   `requires.network` the site's real domain — from then on
-   `skills search <domain>` answers from the wiki's copy directly — AND the
-   platform's media hosts: `play.hubspotvideo.com`, `image.mux.com`,
-   `stream.mux.com` and `*.mux.com` (the rendition hosts behind the master
-   playlist; the exact set is unverified). A slice reaches the job's target
-   host plus what the ENABLED manifest lists and nothing else, so without them
-   the page renders and the video is refused; a host still missing comes back
-   in the report's `missing[]` as `denied`. Add no other key: `skills doctor`
-   fails a manifest carrying one the contract does not name.
+3. **Pin the site's host.** In the wiki's copy of `manifest.json` add the
+   site's real domain to `requires.network` — from then on
+   `skills search <domain>` answers from the wiki's copy directly. That is the
+   only host to add: the platform's own — `play.hubspotvideo.com`,
+   `image.mux.com`, `stream.mux.com` and `*.mux.com` (the rendition hosts
+   behind the master playlist; the exact set is unverified) — ship in the
+   manifest, because they are the same for every HubSpot customer. A slice
+   reaches the job's target host plus what the ENABLED manifest lists and
+   nothing else; a host still missing comes back in the report's `missing[]`
+   as `denied`. Add no other key: `skills doctor` fails a manifest carrying
+   one the contract does not name.
 4. **First capture, then selectors.** Run one capture, read the RENDERED
    `page.html`, and fill the site's entry in the wiki's copy of
    `references/sites.json`, keyed by host (`content_selector`,
@@ -40,8 +57,9 @@ you customize it.
    FILED by title, so identically titled lessons overwrite each other
    (`leaves.py report` tells namesakes apart within one run only).
    Check it without the network:
-   `llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> <leaf_dir> --sites <ops dir>/skills/channel-hubspot-video/references/sites.json --no-media-leaf`
-   re-renders `page.md` from the `page.html` already on disk.
+   `llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> --leaf <n> --sites <ops dir>/skills/channel-hubspot-video/references/sites.json --no-media-leaf`
+   re-renders `page.md` from the `page.html` already on disk (`<capture_dir>`
+   is the ticket's, wiki-relative; `<n>` the leaf's index in its `plan.json`).
 5. **Record site traps in the wiki's SKILL.md** as they surface, under the
    site's own heading: the section map, why each selector is what it is, what
    a pointer page looks like there. Traps a SCRIPT must act on go where a
@@ -64,4 +82,13 @@ you customize it.
    the section ROOT, not a leaf page — the manifest's `watch.note` says why:
    the unit's own filter (`leaves.py plan`) takes the section prefix from the
    job's target, so under a leaf-rooted job every sibling is skipped as out of
-   scope.
+   scope — and the run reports `failed`, naming `harvest.scope` and the
+   target, rather than closing the job with nothing captured.
+7. **Expect to continue it by hand.** Videos run ~28 minutes a page, a slice
+   is killed at thirty minutes, and one run attempts six pages by default, so
+   a section reports `partial` many times. `every=once` — the default above —
+   is NOT pulled again after a `partial`: either
+   `llm-wiki-ops pipeline queue retry <ticket>` (three attempts a ticket), or
+   declare the job with a period while it fills (`every=1h`, at `pipeline add`
+   or `llm-wiki-ops pipeline edit <slug> every=1h`) and set `every=once` when
+   a run reports `skipped`. The report's `reason` says the same.

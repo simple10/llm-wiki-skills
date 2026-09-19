@@ -10,4 +10,6 @@
   <url><loc>https://www.example-hubspot.invalid/learning-is-not-learn</loc><lastmod>2026-07-21</lastmod></url>
   <url><loc>https://www.example-hubspot.invalid/blog/a-post</loc><lastmod>2026-07-22</lastmod></url>
   <url><loc>https://other.example.invalid/learn/elsewhere</loc><lastmod>2026-07-23</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/x;$(touch${IFS}PWNED)</loc><lastmod>2026-07-24</lastmod></url>
+  <url><loc>javascript:alert(1)</loc><lastmod>2026-07-25</lastmod></url>
 </urlset>

@@ -4,63 +4,120 @@
 # dependencies = ["beautifulsoup4", "markdownify"]
 # ///
 """The deterministic half of a HubSpot section harvest: which pages, which
-directories, what each page says, and the report.
+directories, what each page says, when to stop, and the report.
 
 One download ticket captures EVERY page of the section. The host no longer
 fans pages out or filters them by scope, so this script does what the ticket
 asks of the unit itself: it applies `harvest.scope`, `harvest.exclude_urls`,
 `min_date` and `known[]` to the enumerated URLs, names one capture directory
 per page, renders each rendered `page.html` to the `page.md` + `capture.json`
-the generic extractor reads, and writes `report.json` last.
+the generic extractor reads, and writes `report.json`.
 
 Everything it needs comes from `ticket.json` in the ticket's capture
 directory (the spawner wrote it). With no `ticket.json` — `whereami` says
 `spawn: none` and the foreman read the facts off `pipeline queue show` — pass
-them to `plan` as flags; `page` and `report` then read them back off
+them to `plan` as flags; every other command then reads them back off
 `plan.json`.
 
-  plan   <capture-dir> --urls <file> [--urls <file> ...] [--limit N]
-         Reads the enumeration (a saved sitemap.xml, a JSON list of urls or
-         of {url, lastmod} objects, or one url per line), normalizes each url
-         (fragment and `hsLang` stripped, plus the site's own `strip_params`),
-         filters, orders newest-first, and writes `<capture-dir>/plan.json`:
-           {"leaves": [{"item", "dir", "lastmod"}], "skipped": [{"url", "why"}]}
+**No command takes a venue's url on its command line.** A sitemap is the
+venue's text, and a `<loc>` ending `;$(touch${IFS}PWNED)` typed onto a shell
+line is a command. So `plan` DROPS (why: `unsafe_url`) every url that is not
+http(s), does not parse, or carries a character outside a conservative set —
+no whitespace, quote, `;`, `&`, `$`, backtick, bracket, brace, `|`, `<`, `>`,
+`*`, `!` or backslash — and every per-leaf command names its page as
+`--leaf <n>`, the index in `plan.json`'s `leaves[]`, and reads the url from
+there. (`&` is refused too, so a page addressed by two query parameters is
+dropped: name the one that does not change the page in the site's
+`strip_params`.)
+
+  plan   <capture_dir> --urls <file> [--urls <file> ...] [--limit N]
+         [--budget-minutes M]
+         FIRST removes what an earlier run left in the ticket's capture
+         directory — `report.json`, `plan.json` — because that directory is
+         stable across pulls and a respawn that fails must not be read as the
+         success the run before it had. Then reads the enumeration (a saved
+         sitemap.xml, a JSON list of urls or of {url, lastmod} objects, or one
+         url per line), normalizes each url (fragment and `hsLang` stripped,
+         plus the site's own `strip_params`), filters, orders newest-first,
+         and writes `<capture_dir>/plan.json`:
+           {"leaves": [{"item", "dir", "lastmod"[, "landed"]}],
+            "skipped": [{"url", "why"}], "deadline", "deadline_epoch",
+            "hard_stop_epoch", "limit", ...}
          The ticket's own item keeps the ticket's own `capture_dir`; every
          other page gets `_raw/<slug>/<page-slug>--<hash8>`. The host has no
          verb for that name, so it is composed here in the host's own shape
          (`pipeline/jobs.py::capture_dir_for`): the url's path slugified, then
          the first 8 hex of sha1(item url).
+         A leaf whose directory ALREADY holds a finished capture of the same
+         url — a run the slice cap killed before its report was read — is
+         marked `landed`: it is not captured again, does not count against
+         `--limit`, and `report` lists it.
+         `--limit` caps the pages ONE run attempts (default 6 where the job
+         downloads, none where `harvest.assets` is `reference`; `0` is none).
+         The deadline is the SPAWN's — `ticket.json`'s mtime, which the
+         spawner rewrites on every dispatch (`pipeline/dispatch.py::
+         start_slice` -> `write_ticket`), plus `--budget-minutes` (default 20
+         of the slice's 30) — because the ticket id is the same on every pull.
+         A REFRESH ticket (`refresh: true`) plans exactly its `resource`, into
+         the ticket's own `capture_dir`, whatever `known[]` says, and removes
+         the capture an earlier pull left there: `apply` hashes the body in
+         that directory, so it has to be this run's. `--urls` is not needed.
 
-  page   <capture-dir> <leaf-dir> [--published YYYY-MM-DD]
-         [--external-url URL] [--media-file <path> | --no-media-leaf]
-         Converts `<leaf-dir>/page.html` with this unit's `to_markdown.py` and
-         the site's selectors (`references/sites.json`, keyed by host), puts a
-         facts block and the video reference on top, and writes `page.md` and
+  next   <capture_dir>
+         The next planned page with no capture yet, as {"n", "dir", ...}; or
+         {"done": true}; or — exit 5 — {"stop": true} once the deadline has
+         passed. Ask it before every leaf.
+
+  assets <capture_dir> --leaf <n>
+         The plugin's `assets.py detect`, this unit's `patch-assets`, then the
+         plugin's `assets.py download` in the job's `harvest.assets` mode —
+         each started with an argv list, never a shell, because `--base-url`
+         and `--referer` are the page's url. Exit 3 when a download was asked
+         for and the video did not arrive (`"video"` says why).
+
+  page   <capture_dir> --leaf <n> [--published YYYY-MM-DD]
+         [--media-file <path> | --no-media-leaf]
+         Converts the leaf's `page.html` with this unit's `to_markdown.py` and
+         the site's selectors (`references/sites.json`, keyed by host), puts
+         the true title and a facts block on top, and writes `page.md` and
          `capture.json` (with the `frontmatter` object) into the leaf.
-         Where the video was downloaded — `<leaf-dir>/assets.json` marks the
+         `capture.json`'s `title` is `safe_title(<the venue's title>)` — the
+         page's FILE is named from it and the host refuses one it cannot hold.
+         Reads, from the leaf: `published.txt` (the plugin's
+         `published_date.py` output, redirected) and `external_url.txt` (a
+         pointer page's payload, written with the Write tool). `fetched_at` is
+         the render's own time off `meta.json`, else `page.html`'s mtime —
+         never the time this command ran.
+         Where the video was downloaded — the leaf's `assets.json` marks the
          stable Mux master `downloaded`, or `--media-file` names the file — it
          also writes the page's MEDIA leaf: a sibling capture directory whose
          body is that file, which is the only thing the extractor turns into a
-         queued transcription.
+         queued transcription. Never on a refresh ticket.
+         Exit 5 = written, and the deadline has passed: report and stop.
 
-  report <capture-dir> [--missing <why> <url> ...] [--reason TEXT] [--failed]
+  report <capture_dir> [--missing-leaf <why> <n>] [--missing-host <why> <host>]
+         [--reason TEXT] [--failed | --gone]
          Reads `plan.json`, lists every leaf that really holds a capture in
-         `captured[]`, and writes `<capture-dir>/report.json`. Run it LAST.
+         `captured[]`, and writes `<capture_dir>/report.json`. Cheap — it
+         reads one small JSON file per leaf — so run it after EVERY leaf, not
+         only last: the report on disk is then true whenever the worker stops.
          First it settles the titles: the extractor files a page under its
          TITLE and overwrites what is there, so a later page whose title makes
          the filename an earlier one made is retitled `<title> (<the url path
          segment that tells them apart>)` in its own `capture.json`, its media
          leaf following it (see "page names" below).
 
-Usage:
+Usage (`<capture_dir>` is the ticket's `capture_dir`, verbatim — it is
+WIKI-RELATIVE, and `run` starts every script at the wiki root; every other
+relative path here is wiki-relative too):
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py plan <capture_dir> --urls <capture_dir>/sitemap.xml
-  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> <leaf_dir>
+  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py next <capture_dir>
+  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py assets <capture_dir> --leaf <n>
+  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> --leaf <n>
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir>
 
 (The leading `ops/` is the run verb's frozen argument grammar, resolved by
-the front door to wherever this wiki's machinery tree lives. `run` starts the
-script at the wiki root, so the ticket's wiki-relative `capture_dir` and a
-`plan.json` leaf's `dir` are the paths to pass.)
+the front door to wherever this wiki's machinery tree lives.)
 
 Stdlib only in this file; the declared dependencies are `to_markdown.py`'s,
 which `page` runs as a child of the same interpreter. Nothing is imported
@@ -72,6 +129,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -79,6 +137,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,13 +146,26 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 HERE = Path(__file__).resolve().parent
 SITES = HERE.parent / "references" / "sites.json"
 CONVERTER = HERE / "to_markdown.py"
+CAPTURER = HERE / "capture_hubspot_video.py"
 
 TICKET_NAME = "ticket.json"
 PLAN_NAME = "plan.json"
 CAPTURE_NAME = "capture.json"
 REPORT_NAME = "report.json"
 BODY_NAME = "page.md"
+PUBLISHED_NAME = "published.txt"
+EXTERNAL_NAME = "external_url.txt"
 RAW = "_raw"
+
+# The front door, by the bare name every SKILL.md runs this script under.
+OPS = "llm-wiki-ops"
+# What a nested front-door call must NOT inherit from the one that ran this
+# script: the machine-global dispatcher's re-entry guard (a call carrying it
+# is refused, 127, as a loop — and this is not one) and the variable it binds
+# a wiki from AHEAD of the cwd.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# Addresses `run` serves out of the plugin, not paths in this wiki.
+ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
 
 # Always stripped: HubSpot appends `?hsLang=<lang>` to internal nav links, so
 # one page is otherwise two urls. A site adds its own under `strip_params`.
@@ -109,14 +181,139 @@ HOST_KEYS = frozenset({"status", "document_id", "document_revision", "harvested"
 
 WHY = ("denied", "timeout", "auth", "error")
 
+# The clock. A slice is killed at thirty minutes (`schedule/runner/slice.py::
+# SLICE_CAP_SECONDS`) and the kill fails the ticket WITHOUT reading a report
+# (`schedule/broker.py::_kill`), so the run has to end itself first. No new
+# leaf is started past the BUDGET; a download still running at the HARD STOP
+# is ended so the last `report` is written by this worker and not lost.
+SLICE_CAP_SECONDS = 1800
+BUDGET_MINUTES = 20
+HARD_STOP_SECONDS = SLICE_CAP_SECONDS - 180
+# Render (~45 s) plus the download of a ~28-minute video is ESTIMATED at three
+# to five minutes a page (unmeasured inside a live slice), so six fit the budget.
+# The deadline ends the run either way; the limit keeps the PLAN honest.
+DOWNLOAD_LIMIT = 6
+STOP = 5  # exit code: the deadline has passed — report, and stop
+
+# What a skipped row must say for "nothing new" to be a true `skipped`: the
+# job already holds the page, or it is too old, or this run left it for the
+# next. Rows that are ALL `scope`/`excluded`/`unsafe_url` are a mis-rooted job.
+CLOSES = ("known", "older_than_min_date", "over_limit")
+
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _PLACEHOLDER = re.compile(r"<!-- media:(video|audio|embed):(\d+) -->")
 _H1 = re.compile(r"\A# +(.+?)\s*\n+")
+
+# A url this unit will carry: http(s), and nothing a shell, a markdown link or
+# an HTML attribute reads as anything but text.
+_SAFE_URL = re.compile(r"^https?://[A-Za-z0-9._~:/?#@=%+,-]+$")
+_HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+# What `capture_hubspot_video.py render` writes into `meta.json` is read off
+# the venue's DOM and network log, so each value is checked against the one
+# shape it can honestly have before it reaches `page.md`. A HubSpot player on
+# another host is added HERE, in the wiki's copy, once it has been seen.
+PLAYER_HOSTS = ("play.hubspotvideo.com",)
+_PLAYER_PATH = re.compile(r"^/v/\d+/id/\d+$")
+_EMBED_QUERY = re.compile(r"^[A-Za-z0-9._~%&=+:/,-]*$")
+_MUX_ID = re.compile(r"^[A-Za-z0-9]{20,}$")
+_STREAM = re.compile(r"^https://stream\.mux\.com/[A-Za-z0-9]{20,}\.m3u8$")
 
 
 class Problem(Exception):
     """Something the caller got wrong; said on stderr, exit 2."""
+
+
+# ------------------------------------------------------------ pure: venue text
+
+
+# The page's FILE is named from this title, and the host refuses a title its filename rule
+# cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
+# leading dot) — failing the process ticket after harvest said ok. keep-in-sync: every unit's safe_title.
+_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "'", "<": "(", ">": ")"}
+TITLE_MAX = 120        # characters
+TITLE_MAX_BYTES = 200  # UTF-8 bytes: the host checks no length, and a filename is capped in BYTES (255 on
+                       # ext4/APFS) with `.md` appended — 100 CJK characters is 300 bytes and the REAL extractor
+                       # dies `OSError: [Errno 36] File name too long` (measured, channel-youtube)
+
+def safe_title(text, fallback="Untitled"):
+    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))   # control chars, newlines, tabs
+    for bad, good in _TITLE_SWAPS.items():
+        text = text.replace(bad, good)
+    text = " ".join(text.split()).lstrip(". ").rstrip(" .")
+    cut = text[:TITLE_MAX]
+    while len(cut.encode("utf-8")) > TITLE_MAX_BYTES:
+        cut = cut[:-1]
+    if cut != text:
+        text = cut.rstrip(" .-") + "…"
+    return text or fallback
+
+
+def fold(text) -> str:
+    """Venue text as ONE line: newlines, tabs and control characters become a
+    space. What every title and fact value passes through before it reaches
+    `page.md` or `capture.json`, so none of them can start a line of its own."""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in str(text or "")).split())
+
+
+# Inline markup a venue's title must not get to write into the page: raw HTML,
+# a wikilink or `![[embed]]`, and the two Obsidian spans that hide everything
+# after them when left unclosed. Escaped, so each still READS as typed.
+_INLINE = (("<", "&lt;"), ("[[", "\\[\\["), ("%%", "\\%\\%"), ("$$", "\\$\\$"))
+
+
+def plain(text) -> str:
+    text = fold(text)
+    for bad, good in _INLINE:
+        text = text.replace(bad, good)
+    return text
+
+
+def safe_url(url) -> str | None:
+    """The url, when it is one this unit will carry; else None."""
+    if not isinstance(url, str) or not _SAFE_URL.match(url):
+        return None
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 — a port that is not a number raises here
+    except ValueError:
+        return None
+    return url if parts.hostname and _HOST.match(parts.hostname.lower()) else None
+
+
+def player_url(url, *, query: bool) -> str | None:
+    """A HubSpot player address, `https` on an expected host, in the one shape
+    the platform serves: `/v/<portal>/id/<video>` — with the live iframe's
+    own query where `query` allows one."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or parts.netloc not in PLAYER_HOSTS or not _PLAYER_PATH.match(parts.path) or parts.fragment:
+        return None
+    if parts.query and (not query or not _EMBED_QUERY.match(parts.query)):
+        return None
+    return url
+
+
+def clean_meta(meta: dict) -> dict:
+    """`meta.json` with every value that reaches the page checked, the rest dropped."""
+    stream = meta.get("stream_url") if isinstance(meta.get("stream_url"), str) and _STREAM.match(meta["stream_url"]) else None
+    mux_id = meta.get("mux_playback_id") if isinstance(meta.get("mux_playback_id"), str) and _MUX_ID.match(meta["mux_playback_id"]) else None
+    return {
+        "title": meta.get("title") if isinstance(meta.get("title"), str) else None,
+        "stream_url": stream,
+        "mux_playback_id": mux_id,
+        "player_url": player_url(meta.get("player_url"), query=False),
+        "embed_url": player_url(meta.get("embed_url"), query=True),
+        "final_url": safe_url(meta.get("final_url")),
+        "status": meta.get("status") if isinstance(meta.get("status"), int) else None,
+        "fetched_at": meta.get("fetched_at") if isinstance(meta.get("fetched_at"), str) and _STAMP.match(meta["fetched_at"]) else None,
+    }
 
 
 # ------------------------------------------------------------ pure: urls
@@ -180,10 +377,15 @@ def _day(value) -> str | None:
 
 def parse_urls(text: str) -> tuple[list[dict], list[str]]:
     """`([{url, lastmod}], [child sitemap urls])` from a sitemap, a JSON list
-    or plain lines. A sitemap INDEX yields no pages, only the children to fetch."""
-    stripped = text.lstrip("\ufeff \t\r\n")
+    or plain lines. A sitemap INDEX yields no pages, only the children to
+    fetch. Raises `ValueError` (XML's and JSON's parse errors are both one) on
+    a file that is neither."""
+    stripped = text.lstrip("﻿ \t\r\n")
     if stripped.startswith("<"):
-        root = ET.fromstring(stripped)
+        try:
+            root = ET.fromstring(stripped)
+        except ET.ParseError as exc:
+            raise ValueError(f"not a sitemap — {exc}") from None
         local = lambda tag: str(tag).rsplit("}", 1)[-1]  # noqa: E731
         pages, children = [], []
         for node in root:
@@ -206,24 +408,45 @@ def parse_urls(text: str) -> tuple[list[dict], list[str]]:
     return [{"url": line.strip(), "lastmod": None} for line in stripped.splitlines() if line.strip()], []
 
 
+def _normal(url, strip_params) -> str | None:
+    """The normalized url, or None for one this unit will not carry."""
+    if safe_url(url.strip() if isinstance(url, str) else url) is None:
+        return None
+    try:
+        return safe_url(normalize_url(url, strip_params))
+    except ValueError:
+        return None
+
+
 def plan_leaves(pages: list[dict], *, slug: str, target: str, item: str | None, capture_dir: str | None,
                 scope: str = "section", exclude_urls=(), min_date: str | None = None, known=(),
-                strip_params=(), limit: int | None = None) -> dict:
+                strip_params=(), limit: int | None = None, refresh: str | None = None, landed=None) -> dict:
     """The filter, as data in and data out. Order of the tests is the order a
-    reader would ask them: is it a page of this job, was it excluded, is it too
-    old, do we already hold it."""
+    reader would ask them: can this url be carried at all, is it a page of
+    this job, was it excluded, is it too old, do we already hold it.
+
+    `refresh` is a refresh ticket's `resource`: the plan is exactly that page,
+    in the ticket's own directory, and nothing else is asked. `landed(leaf)`
+    says a leaf's directory already holds its finished capture."""
+    if refresh is not None:
+        return {"leaves": [{"item": refresh, "dir": capture_dir or leaf_dir(slug, refresh), "lastmod": None}], "skipped": []}
     target_n = normalize_url(target, strip_params)
     item_n = normalize_url(item, strip_params) if item else target_n
     held = {normalize_url(row["resource"], strip_params) for row in known if isinstance(row, dict) and isinstance(row.get("resource"), str)}
-    if scope == "page" and not any(normalize_url(p["url"], strip_params) == target_n for p in pages):
+    if scope == "page" and not any(_normal(p["url"], strip_params) == target_n for p in pages):
         pages = [*pages, {"url": target, "lastmod": None}]
     seen, kept, skipped = set(), [], []
     for page in pages:
-        url = normalize_url(page["url"], strip_params)
+        url = _normal(page["url"], strip_params)
+        if url is None:
+            # Kept as evidence, folded to a line and capped: a row in a JSON
+            # file, never a thing to type.
+            skipped.append({"url": fold(page["url"])[:300], "why": "unsafe_url"})
+            continue
         if url in seen:
             continue
         seen.add(url)
-        if not url.startswith(("http://", "https://")) or not in_scope(url, target_n, scope):
+        if not in_scope(url, target_n, scope):
             skipped.append({"url": url, "why": "scope"})
         elif any(fnmatch.fnmatchcase(url, pattern) for pattern in exclude_urls):
             skipped.append({"url": url, "why": "excluded"})
@@ -234,12 +457,16 @@ def plan_leaves(pages: list[dict], *, slug: str, target: str, item: str | None, 
         else:
             directory = capture_dir if (capture_dir and url == item_n) else leaf_dir(slug, url)
             kept.append({"item": url, "dir": directory, "lastmod": page.get("lastmod")})
-    # Newest first, undated last: a slice is killed at thirty minutes, and what
-    # it did not reach is what the next run picks up through `known[]`.
+    # Newest first, undated last: what this run does not reach is what the
+    # next one plans, once the pages this one landed are in `known[]`.
     kept.sort(key=lambda leaf: leaf["lastmod"] or "", reverse=True)
-    if limit is not None and len(kept) > limit:
-        skipped += [{"url": leaf["item"], "why": "over_limit"} for leaf in kept[limit:]]
-        kept = kept[:limit]
+    if landed is not None:
+        kept = [{**leaf, "landed": True} if landed(leaf) else leaf for leaf in kept]
+    if limit:
+        fresh = [leaf for leaf in kept if not leaf.get("landed")]
+        over = {leaf["item"] for leaf in fresh[limit:]}
+        skipped += [{"url": leaf["item"], "why": "over_limit"} for leaf in kept if leaf["item"] in over]
+        kept = [leaf for leaf in kept if leaf["item"] not in over]
     return {"leaves": kept, "skipped": skipped}
 
 
@@ -271,20 +498,26 @@ def load_sites(path: Path | None) -> dict:
 
 
 def split_title(md: str) -> tuple[str | None, str]:
-    """A leading `# Title` off the converter's output. The extractor writes the
-    title into the page's frontmatter, so the body does not repeat it."""
+    """A leading `# Title` off the converter's output: the title is settled
+    here (the site's rule, the render's, the converter's) and written back as
+    the body's one H1, folded."""
     found = _H1.match(md)
     return (found.group(1).strip(), md[found.end():]) if found else (None, md)
 
 
 def video_block(meta: dict) -> str:
-    """How this unit references its video: the venue's live iframe — verbatim,
-    params and all, because the bare player url refuses to play outside its
-    page — and a plain link under it, which is what is left when the job says
-    `process.embeds: false` and the extractor takes every iframe out."""
+    """How this unit references its video: the venue's live iframe — params and
+    all, because the bare player url refuses to play outside its page — and a
+    plain link under it, which is what is left when the job says
+    `process.embeds: false` and the extractor takes every iframe out.
+
+    `meta` is `clean_meta`'s: an `embed_url` that is not `https` on an expected
+    player host in the player's own shape is not here at all, so the iframe is
+    omitted and the plain Mux link stands alone. HTML-escaped, because it is
+    an attribute value."""
     lines = []
     if meta.get("embed_url"):
-        lines.append(f'<iframe src="{meta["embed_url"]}" width="640" height="360" allowfullscreen></iframe>')
+        lines.append(f'<iframe src="{html.escape(meta["embed_url"], quote=True)}" width="640" height="360" allowfullscreen></iframe>')
     link = meta.get("stream_url") or meta.get("player_url")
     if link:
         lines.append(f"[Video: {link}]({link})")
@@ -308,41 +541,49 @@ def place_video(body: str, meta: dict) -> str:
     return body if placed else f"{block}\n\n{body}"
 
 
-def facts_of(item: str, meta: dict, *, published: str | None, external_url: str | None) -> dict:
-    """The unit's exact facts: scalars only, none of the host's own keys."""
+def facts_of(item: str, meta: dict, *, published: str | None, external_url: str | None, source_title: str | None = None) -> dict:
+    """The unit's exact facts: scalars only, each folded to one line, none of the host's own keys."""
     facts = {
         "type": "video" if meta.get("stream_url") else "page",
         "venue": "hubspot-cms",
-        "published": published,
+        "published": published if isinstance(published, str) and _DAY.match(published) else None,
         "mux_playback_id": meta.get("mux_playback_id"),
         "video_url": meta.get("stream_url"),
         "player_url": meta.get("player_url"),
         "external_url": external_url,
         "canonical_url": meta.get("final_url") if meta.get("final_url") and meta.get("final_url") != item else None,
+        "source_title": source_title,
     }
-    return {key: value for key, value in facts.items() if value not in (None, "") and key not in HOST_KEYS}
+    return {key: fold(value) for key, value in facts.items() if value not in (None, "") and fold(value) and key not in HOST_KEYS}
 
 
 def facts_block(item: str, facts: dict) -> str:
-    rows = [f"- source: <{item}>", *(f"- {key}: {value}" for key, value in facts.items())]
+    rows = [f"- source: <{item}>", *(f"- {key}: {plain(value)}" for key, value in facts.items())]
     return "\n".join(rows)
 
 
-def render_body(md: str, item: str, meta: dict, facts: dict) -> str:
+def render_body(md: str, item: str, meta: dict, facts: dict, true_title: str | None = None) -> str:
     body = place_video(md.strip(), meta)
-    # The facts block opens the body, so the file can never open with `---`:
-    # the extractor prepends its own frontmatter and a second block corrupts it.
-    return f"{facts_block(item, facts)}\n\n{body}".rstrip() + "\n"
+    # The H1 and the facts block open the body, so the file can never open with
+    # `---`: the extractor prepends its own frontmatter and a second block
+    # corrupts it. The H1 is the venue's TRUE title, which `capture.json`'s
+    # filename-safe one may not be.
+    head = f"# {plain(true_title)}\n\n" if true_title and plain(true_title) else ""
+    return f"{head}{facts_block(item, facts)}\n\n{body}".rstrip() + "\n"
 
 
-def capture_record(*, slug: str, item: str, title: str | None, body: str, content_type: str, facts: dict) -> dict:
+def now_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def capture_record(*, slug: str, item: str, title: str | None, body: str, content_type: str, facts: dict, fetched_at: str | None = None) -> dict:
     return {
         "slug": slug,
         "item": item,
         "title": title,
         "body": body,
         "content_type": content_type,
-        "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "fetched_at": fetched_at or now_stamp(),
         "frontmatter": facts,
     }
 
@@ -350,31 +591,68 @@ def capture_record(*, slug: str, item: str, title: str | None, body: str, conten
 # ------------------------------------------------------------ pure: the report
 
 
+def how_to_continue(job: dict) -> str:
+    """What an operator does after a `partial`. `apply` records `partial` as
+    `ok` (`pipeline/apply.py::_record_progress`), and `pipeline/dueness.py::
+    _harvest` never finds an `every: once` job due again once an `ok` exists —
+    this unit's manifest default. `ticket.json` does not say which cadence the
+    job has, so the reason says both."""
+    ticket, slug = job.get("ticket") or "<ticket>", job.get("slug") or "<slug>"
+    return (
+        f"a periodic job is pulled again on its own; an `every: once` job is NOT (a partial lands as ok) — "
+        f"`llm-wiki-ops pipeline queue retry {ticket}` re-runs this ticket (three attempts a ticket), or "
+        f"`llm-wiki-ops pipeline edit {slug} every=1h` until a run reports `skipped`, then `every=once`"
+    )
+
+
 def build_report(*, ticket: str | None, planned: list[dict], captured: list[dict], skipped: list[dict],
-                 missing: list[dict], reason: str | None = None, failed: bool = False) -> dict:
-    """`ok` when every planned page landed, `partial` when some did, `skipped`
-    when there was nothing new to get, `failed` otherwise."""
+                 missing: list[dict], reason: str | None = None, failed: bool = False, gone: bool = False,
+                 job: dict | None = None) -> dict:
+    """`ok` when every page of the job's that is not already held landed,
+    `partial` when some did — or all the PLANNED ones did and the limit left
+    others — `skipped` when there was truly nothing new to get, `gone` on a
+    refresh whose source answered 404/410, `failed` otherwise.
+
+    "Nothing new" is only true when some row says the job already HOLDS a page
+    (`known`), or it is too old, or it was left for the next run. Rows that
+    are all `scope`/`excluded` mean the job is rooted where the section is
+    not: `apply` lands `skipped` as done, so an `every: once` job would close
+    having captured nothing, and that is reported `failed`."""
+    job = job or {}
     pages = [leaf for leaf in planned if not leaf.get("media_of")]
     landed = {row["dir"] for row in captured}
     got = [leaf for leaf in pages if leaf["dir"] in landed]
+    over = sum(1 for row in skipped if row.get("why") == "over_limit")
     reasons = [reason] if reason else []
     if failed:
         outcome = "failed"
         reasons = reasons or ["failed"]
-    elif pages and len(got) == len(pages):
+    elif gone:
+        outcome = "gone"
+    elif pages and len(got) == len(pages) and not over:
         outcome = "ok"
     elif got:
         outcome = "partial"
-        reasons.append(f"{len(got)} of {len(pages)} pages captured; the rest are picked up next run")
+        total = len(pages) + over
+        reasons.append(f"{len(got)} of {total} pages captured, {total - len(got)} left for another run; {how_to_continue(job)}")
     elif pages:
         outcome = "failed"
         reasons = reasons or [f"none of {len(pages)} pages captured"]
     elif skipped:
-        outcome = "skipped"
         counts: dict = {}
         for row in skipped:
             counts[row["why"]] = counts.get(row["why"], 0) + 1
-        reasons.append("nothing new in scope — " + ", ".join(f"{why}: {n}" for why, n in sorted(counts.items())))
+        said = ", ".join(f"{why}: {n}" for why, n in sorted(counts.items()))
+        if any(why in counts for why in CLOSES):
+            outcome = "skipped"
+            reasons.append(f"nothing new in scope — {said}")
+        else:
+            outcome = "failed"
+            reasons.append(
+                f"nothing enumerated is inside harvest.scope `{job.get('scope') or 'section'}` of the job's target "
+                f"{job.get('target') or '<target>'} ({said}) — a job rooted at a leaf, or on another host, captures "
+                f"nothing: point it at the section ROOT"
+            )
     else:
         outcome = "failed"
         reasons = reasons or ["no pages enumerated"]
@@ -386,7 +664,7 @@ def build_report(*, ticket: str | None, planned: list[dict], captured: list[dict
         "ticket": ticket,
         "outcome": outcome,
         "reason": "; ".join(reasons) or None,
-        "captured": captured if outcome != "failed" else [],
+        "captured": captured if outcome not in ("failed", "gone") else [],
         "written": [],
         "missing": missing,
         "discovered": [],
@@ -417,23 +695,26 @@ def wiki_root(capture: Path, rel: str) -> Path:
 
 def job_facts(capture: Path, args=None) -> dict:
     """The job, off `ticket.json`; off `plan.json` where no spawner wrote one;
-    off `plan`'s own flags the first time."""
+    off the command's own flags the first time."""
+    blank = {"ticket": None, "slug": None, "item": None, "target": None, "capture_dir": None, "scope": "section",
+             "exclude_urls": [], "min_date": None, "known": [], "assets": "download", "refresh": False, "resource": None}
     ticket = _read_json(capture / TICKET_NAME)
     if isinstance(ticket, dict):
         harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
         facts = {
+            **blank,
             "ticket": ticket.get("ticket"), "slug": ticket.get("slug"), "item": ticket.get("item"),
             "target": ticket.get("target") or ticket.get("item"), "capture_dir": ticket.get("capture_dir"),
             "scope": harvest.get("scope") or "section", "exclude_urls": harvest.get("exclude_urls") or [],
             "min_date": ticket.get("min_date"), "known": ticket.get("known") or [],
+            "assets": harvest.get("assets") or "download",
+            "refresh": ticket.get("refresh") is True,
+            "resource": ticket.get("resource") or ticket.get("item"),
         }
     else:
         plan = _read_json(capture / PLAN_NAME)
-        facts = dict(plan["job"]) if isinstance(plan, dict) and isinstance(plan.get("job"), dict) else {
-            "ticket": None, "slug": None, "item": None, "target": None, "capture_dir": None,
-            "scope": "section", "exclude_urls": [], "min_date": None, "known": [],
-        }
-    for key in ("ticket", "slug", "target", "scope", "min_date"):  # explicit flags win: a hand run
+        facts = {**blank, **plan["job"]} if isinstance(plan, dict) and isinstance(plan.get("job"), dict) else dict(blank)
+    for key in ("ticket", "slug", "target", "scope", "min_date", "assets"):  # explicit flags win: a hand run
         if args is not None and getattr(args, key, None):
             facts[key] = getattr(args, key)
     if args is not None and getattr(args, "exclude_url", None):
@@ -445,35 +726,160 @@ def job_facts(capture: Path, args=None) -> dict:
     return facts
 
 
+def _capture_dir(given: str) -> Path:
+    capture = Path(given).resolve()
+    if not capture.is_dir():
+        raise Problem(
+            f"{given} is not a directory here ({Path.cwd()}) — pass the ticket's `capture_dir` verbatim: it is "
+            f"wiki-relative, and `run` starts this script at the wiki root"
+        )
+    return capture
+
+
+def _spawned_at(capture: Path) -> float:
+    """When THIS run began: `ticket.json`'s mtime — the spawner rewrites it on
+    every dispatch, while the ticket id is the same on every pull — else now."""
+    try:
+        return (capture / TICKET_NAME).stat().st_mtime
+    except OSError:
+        return time.time()
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def clock(plan: dict) -> dict:
+    """`{"stop", "seconds_left"}` against the plan's deadline; never stops a plan that carries none."""
+    deadline = plan.get("deadline_epoch")
+    if not isinstance(deadline, (int, float)):
+        return {"stop": False, "seconds_left": None}
+    left = int(deadline - time.time())
+    return {"stop": left <= 0, "seconds_left": max(left, 0)}
+
+
+def _urls_text(name: str) -> str:
+    if name == "-":
+        return sys.stdin.read()
+    try:
+        return Path(name).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise Problem(
+            f"--urls {name}: {exc.strerror or exc} — save the enumeration into the capture directory first; the path "
+            f"is wiki-relative. Then `report --failed --reason <why>` if it cannot be had"
+        ) from None
+
+
 def cmd_plan(args) -> int:
-    capture = Path(args.capture_dir).resolve()
+    capture = _capture_dir(args.capture_dir)
     job = job_facts(capture, args)
-    wiki_root(capture, job["capture_dir"])
+    root = wiki_root(capture, job["capture_dir"])
+    # Before anything else: this directory is stable across pulls, so what an
+    # earlier run left must not outlive a run that fails.
+    stale = [REPORT_NAME, PLAN_NAME]
+    if job["refresh"]:
+        # `apply` hashes the body in THIS directory against the page's stamp:
+        # it has to be this run's bytes, or `unchanged` is a claim nobody checked.
+        stale += [CAPTURE_NAME, BODY_NAME, "page.html", "meta.json", "net.json", "assets.json", PUBLISHED_NAME, EXTERNAL_NAME]
+    for name in stale:
+        (capture / name).unlink(missing_ok=True)
     rules = site_rules(load_sites(args.sites), urlsplit(job["target"]).netloc)
-    pages, children = [], []
-    for name in args.urls or []:
-        text = sys.stdin.read() if name == "-" else Path(name).read_text(encoding="utf-8", errors="replace")
-        found, more = parse_urls(text)
-        pages += found
-        children += more
+    strip = rules.get("strip_params") or ()
+    pages, children, refresh = [], [], None
+    if job["refresh"]:
+        refresh = _normal(job["resource"], strip)
+        if refresh is None or _STREAM.match(job["resource"] or ""):
+            raise Problem(
+                f"refresh of {fold(job['resource'])[:200]}: not a page this unit can re-fetch — a media stub's resource "
+                f"is the Mux master, which is re-downloaded with its PAGE, never alone. `report --failed --reason "
+                f"refresh_unsupported:media`"
+            )
+    else:
+        if not args.urls:
+            raise Problem("plan needs --urls <file> (the saved sitemap) on a ticket that is not a refresh")
+        for name in args.urls:
+            try:
+                found, more = parse_urls(_urls_text(name))
+            except ValueError as exc:
+                raise Problem(f"--urls {name}: {exc}. Save what the site really served, or `report --failed --reason <why>`") from None
+            pages += found
+            children += more
+    limit = args.limit if args.limit is not None else (None if job["assets"] == "reference" else DOWNLOAD_LIMIT)
+
+    def landed(leaf: dict) -> bool:
+        record = _read_json(root / leaf["dir"] / CAPTURE_NAME)
+        return held(root, leaf) is not None and isinstance(record, dict) and record.get("item") == leaf["item"]
+
     plan = plan_leaves(
         pages, slug=job["slug"], target=job["target"], item=job["item"], capture_dir=job["capture_dir"],
         scope=job["scope"], exclude_urls=[*job["exclude_urls"], *(rules.get("exclude_urls") or [])],
-        min_date=job["min_date"], known=job["known"], strip_params=rules.get("strip_params") or (), limit=args.limit,
+        min_date=job["min_date"], known=job["known"], strip_params=strip, limit=limit or None,
+        refresh=refresh, landed=None if job["refresh"] else landed,
     )
-    plan = {"v": 1, "job": {**job, "known": []}, "sitemaps": children, **plan}
+    # A landed page's media leaf is a row of its own, as `page` would have added it.
+    for leaf in [leaf for leaf in plan["leaves"] if leaf.get("landed")]:
+        meta = clean_meta(_read_json(root / leaf["dir"] / "meta.json") or {})
+        media_item = meta["stream_url"] or f"{leaf['item']}#video"
+        row = {"item": media_item, "dir": media_leaf_dir(leaf["dir"], media_item), "lastmod": None, "media_of": leaf["item"], "landed": True}
+        if held(root, row) is not None:
+            plan["leaves"].append(row)
+    spawned = _spawned_at(capture)
+    plan = {
+        # The one kind of venue url a worker fetches by hand: only a safe one, on the target's own host.
+        "v": 1, "job": {**job, "known": []}, "sitemaps": [url for url in children if safe_url(url) and in_scope(url, job["target"], "domain")],
+        "spawned_at": _iso(spawned), "deadline": _iso(spawned + args.budget_minutes * 60),
+        "deadline_epoch": spawned + args.budget_minutes * 60, "hard_stop_epoch": spawned + HARD_STOP_SECONDS,
+        "limit": limit or None, **plan,
+    }
     _write_json(capture / PLAN_NAME, plan)
-    print(json.dumps({"leaves": plan["leaves"], "skipped": len(plan["skipped"]), "sitemaps": children}, indent=1))
+    counts: dict = {}
+    for row in plan["skipped"]:
+        counts[row["why"]] = counts.get(row["why"], 0) + 1
+    print(json.dumps({
+        "leaves": [{"n": n, "dir": leaf["dir"], "item": leaf["item"], "landed": bool(leaf.get("landed"))} for n, leaf in enumerate(plan["leaves"])],
+        "skipped": counts, "sitemaps": plan["sitemaps"], "limit": plan["limit"], "deadline": plan["deadline"], **clock(plan),
+    }, indent=1))
     return 0
+
+
+def _plan_of(capture: Path) -> dict:
+    plan = _read_json(capture / PLAN_NAME)
+    return plan if isinstance(plan, dict) else {}
+
+
+def _leaf_at(plan: dict, n: int) -> dict:
+    leaves = plan.get("leaves") or []
+    if not 0 <= n < len(leaves) or leaves[n].get("media_of"):
+        raise Problem(f"--leaf {n}: {PLAN_NAME} names no page at that index (it holds {len(leaves)} rows; run `plan`, then `next`)")
+    return leaves[n]
 
 
 def _leaf_of(plan: dict, root: Path, leaf: Path) -> dict | None:
     return next((row for row in plan.get("leaves") or [] if (root / row["dir"]).resolve() == leaf), None)
 
 
-def convert(html: Path, url: str, rules: dict) -> str:
+def cmd_next(args) -> int:
+    capture = _capture_dir(args.capture_dir)
+    job = job_facts(capture)
+    root = wiki_root(capture, job["capture_dir"])
+    plan = _plan_of(capture)
+    pages = [(n, leaf) for n, leaf in enumerate(plan.get("leaves") or []) if not leaf.get("media_of")]
+    todo = [(n, leaf) for n, leaf in pages if held(root, leaf) is None]
+    now = clock(plan)
+    if not todo:
+        print(json.dumps({"done": True, "captured": len(pages), **now}))
+        return 0
+    if now["stop"]:
+        print(json.dumps({"stop": True, "why": "deadline", "left": len(todo), **now}))
+        return STOP
+    n, leaf = todo[0]
+    print(json.dumps({"n": n, "dir": leaf["dir"], "item": leaf["item"], "left": len(todo), **now}))
+    return 0
+
+
+def convert(html_file: Path, url: str, rules: dict) -> str:
     """`page.html` → markdown, through this unit's own converter and the site's selectors."""
-    argv = [sys.executable, str(CONVERTER), str(html), "--out", "-", "--base-url", url]
+    argv = [sys.executable, str(CONVERTER), str(html_file), "--out", "-", "--base-url", url]
     if rules.get("content_selector"):
         argv += ["--selector", rules["content_selector"]]
     for selector in rules.get("drop_selectors") or []:
@@ -483,7 +889,7 @@ def convert(html: Path, url: str, rules: dict) -> str:
     done = subprocess.run(argv, capture_output=True, text=True, check=False)
     sys.stderr.write(done.stderr)
     if done.returncode != 0:
-        raise Problem(f"to_markdown.py exited {done.returncode} on {html}")
+        raise Problem(f"to_markdown.py exited {done.returncode} on {html_file}")
     return done.stdout
 
 
@@ -517,21 +923,119 @@ def _place(source: Path, dest: Path) -> None:
         shutil.copy2(source, dest)
 
 
-def cmd_page(args) -> int:
-    capture, leaf = Path(args.capture_dir).resolve(), Path(args.leaf_dir).resolve()
+def _line_of(path: Path) -> str | None:
+    """The first non-empty line of a small file the worker left in the leaf."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return None
+    return next((line.strip() for line in text.splitlines() if line.strip()), None)
+
+
+def _front_door(root: Path, *args, timeout: float | None = None) -> int:
+    """One front-door command by ARGV — no shell ever reads these words — bound
+    to the wiki by running from its root. Its stdout goes to our stderr, so
+    this script's own stdout stays the one JSON answer. -1 = ended at the hard stop."""
+    env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+    try:
+        return subprocess.run([OPS, *args], cwd=str(root), env=env, stdout=sys.stderr, timeout=timeout, check=False).returncode
+    except FileNotFoundError:
+        raise Problem(f"`{OPS}` is not on PATH — this command runs the plugin's assets.py through the front door") from None
+    except subprocess.TimeoutExpired:
+        return -1
+
+
+def assets_steps(job: dict, leaf: dict) -> list[list[str]]:
+    """The front-door argv of each plugin step for one leaf, as data: every
+    path wiki-relative, the page's url an argv element of its own."""
+    directory, item = leaf["dir"], leaf["item"]
+    manifest = f"{directory}/assets.json"
+    detect = ["run", ASSETS_SCRIPT, "detect", f"{directory}/page.html", "--base-url", item, "--out", manifest]
+    download = ["run", ASSETS_SCRIPT, "download", manifest, "--dest", f"{RAW}/{job['slug']}/assets"]
+    if job["assets"] == "reference":
+        download += ["--mode", "reference"]
+    else:
+        download += ["--referer", item, *(["--audio-only"] if job["assets"] == "download-audio" else [])]
+    return [detect, download]
+
+
+def cmd_assets(args) -> int:
+    capture = _capture_dir(args.capture_dir)
     job = job_facts(capture)
     root = wiki_root(capture, job["capture_dir"])
-    plan = _read_json(capture / PLAN_NAME) or {}
-    row = _leaf_of(plan, root, leaf)
-    item = args.url or (row or {}).get("item") or (job["item"] if leaf == capture else None)
+    plan = _plan_of(capture)
+    leaf = _leaf_at(plan, args.leaf)
+    directory = root / leaf["dir"]
+    if not (directory / "page.html").is_file():
+        raise Problem(f"{leaf['dir']}/page.html is not there — render the page first")
+    detect, download = assets_steps(job, leaf)
+    if (directory / "net.json").is_file():
+        detect += ["--network-log", f"{leaf['dir']}/net.json"]
+    answer = {"n": args.leaf, "dir": leaf["dir"], "mode": job["assets"], "video": "none"}
+    answer["detect"] = _front_door(root, *detect)
+    if answer["detect"] != 0:
+        raise Problem(f"assets.py detect exited {answer['detect']} on {leaf['dir']}")
+    patched = subprocess.run([sys.executable, str(CAPTURER), "patch-assets", str(directory / "assets.json"), "--meta", str(directory / "meta.json")],
+                             stdout=sys.stderr, check=False)
+    if patched.returncode != 0:
+        raise Problem(f"patch-assets exited {patched.returncode} on {leaf['dir']}")
+    hard_stop = plan.get("hard_stop_epoch")
+    left = max(hard_stop - time.time(), 1) if isinstance(hard_stop, (int, float)) else None
+    answer["download"] = _front_door(root, *download, timeout=left)
+    meta = clean_meta(_read_json(directory / "meta.json") or {})
+    for asset in _read_json(directory / "assets.json") or []:
+        if isinstance(asset, dict) and meta["stream_url"] and asset.get("src_url") == meta["stream_url"]:
+            answer["video"] = fold(asset.get("status") or "pending")
+    if answer["download"] == -1:
+        answer["video"] = "timed_out"
+    print(json.dumps({**answer, **clock(plan)}))
+    wanted = job["assets"] != "reference" and meta["stream_url"]
+    return 3 if wanted and answer["video"] != "downloaded" else 0
+
+
+def cmd_page(args) -> int:
+    capture = _capture_dir(args.capture_dir)
+    job = job_facts(capture)
+    root = wiki_root(capture, job["capture_dir"])
+    plan = _plan_of(capture)
+    if args.leaf is not None:
+        row = _leaf_at(plan, args.leaf)
+        leaf = (root / row["dir"]).resolve()
+    elif args.leaf_dir:
+        leaf = Path(args.leaf_dir).resolve()
+        row = _leaf_of(plan, root, leaf)
+    else:
+        raise Problem("page needs --leaf <n> (the index `next` printed)")
+    item = (row or {}).get("item") or (job["item"] if leaf == capture else None)
+    if args.url:  # a hand run, on a page `plan.json` does not name
+        item = _normal(args.url, ())
+        if item is None:
+            raise Problem("--url: not an http(s) url this unit will carry")
     if not item:
-        raise Problem(f"{leaf} is not a leaf {PLAN_NAME} names; run `plan` first, or pass --url")
-    html = leaf / "page.html"
-    if not html.is_file():
-        raise Problem(f"{html} is not there — render the page first")
-    meta = _read_json(leaf / "meta.json")
-    meta = meta if isinstance(meta, dict) else {}
-    if args.no_media_leaf:
+        raise Problem(f"{leaf} is not a leaf {PLAN_NAME} names; run `plan` first")
+    html_file = leaf / "page.html"
+    if not html_file.is_file():
+        raise Problem(f"{html_file} is not there — render the page first")
+    raw_meta = _read_json(leaf / "meta.json")
+    meta = clean_meta(raw_meta if isinstance(raw_meta, dict) else {})
+    if meta["status"] in (404, 410):
+        raise Problem(
+            f"the source answered {meta['status']} for leaf {leaf.name}: that is not a capture. On a refresh ticket "
+            f"`report --gone`; otherwise `report --missing-leaf error <n>`"
+        )
+    if args.published is not None and not _DAY.match(args.published):
+        raise Problem("--published is YYYY-MM-DD, exactly as the plugin's published_date.py printed it")
+    published = args.published or _line_of(leaf / PUBLISHED_NAME)
+    if published and not _DAY.match(published):
+        print(f"leaves.py: {PUBLISHED_NAME} does not hold a YYYY-MM-DD date; the page carries none", file=sys.stderr)
+        published = None
+    external = _line_of(leaf / EXTERNAL_NAME)
+    if external and safe_url(external) is None:
+        print(f"leaves.py: {EXTERNAL_NAME} does not hold an http(s) url this unit will carry; left out", file=sys.stderr)
+        external = None
+    if args.no_media_leaf or job["refresh"]:
+        # A refresh is of the PAGE: a second stub for a video the wiki already
+        # transcribed would overwrite the transcript with an empty queued page.
         source = None
     elif args.media_file:
         source = Path(args.media_file).resolve()
@@ -541,37 +1045,52 @@ def cmd_page(args) -> int:
         # Before anything is written: a leaf half-made is a leaf `report` would list.
         raise Problem(f"{source} is not a media file the extractor queues ({', '.join(sorted(MEDIA_SUFFIXES))})")
     rules = site_rules(load_sites(args.sites), urlsplit(item).netloc)
-    found_title, md = split_title(convert(html, item, rules))
+    found_title, md = split_title(convert(html_file, item, rules))
     # The site's own title rule outranks the render's guess; with no rule, the
     # render's (rendered h2, then <title>) outranks a bare <title>.
-    title = (found_title if rules.get("title_selector") else None) or meta.get("title") or found_title
-    facts = facts_of(item, meta, published=args.published, external_url=args.external_url)
-    (leaf / BODY_NAME).write_text(render_body(md, item, meta, facts), encoding="utf-8")
-    record = capture_record(slug=job["slug"], item=item, title=title, body=BODY_NAME, content_type="text/markdown", facts=facts)
+    true_title = fold((found_title if rules.get("title_selector") else None) or meta["title"] or found_title)
+    # The FILE is named from `title`, so it is made safe HERE, before `report`
+    # settles namesakes: two titles differing only in a refused character
+    # collide only once both are safe.
+    segment = next((unquote(bit) for bit in reversed(urlsplit(item).path.split("/")) if bit), "")
+    title = safe_title(true_title or segment)
+    facts = facts_of(item, meta, published=published, external_url=external,
+                     source_title=true_title if true_title and true_title != title else None)
+    # The render's own time, else the rendered file's: `page` may run long after.
+    fetched_at, fetched_from = (meta["fetched_at"], "meta.json") if meta["fetched_at"] else (_iso(html_file.stat().st_mtime), "page.html mtime")
+    (leaf / BODY_NAME).write_text(render_body(md, item, meta, facts, true_title or title), encoding="utf-8")
+    record = capture_record(slug=job["slug"], item=item, title=title, body=BODY_NAME, content_type="text/markdown", facts=facts, fetched_at=fetched_at)
     _write_json(leaf / CAPTURE_NAME, record)
-    out = [{"item": item, "dir": str(leaf.relative_to(root)), "title": title}]
+    out = [{"item": item, "dir": str(leaf.relative_to(root)), "title": title, "fetched_at_from": fetched_from}]
 
     if source is not None:
-        media_item = meta.get("stream_url") or f"{item}#video"
+        media_item = meta["stream_url"] or f"{item}#video"
         rel = media_leaf_dir(str(leaf.relative_to(root)), media_item)
         media_leaf = root / rel
         media_leaf.mkdir(parents=True, exist_ok=True)
         body = f"media{source.suffix.lower()}"
         _place(source, media_leaf / body)
-        media_title = f"{title or leaf.name} (video)"
+        media_title = f"{title} (video)"  # off the SAFE page title
         _write_json(media_leaf / CAPTURE_NAME, capture_record(
             slug=job["slug"], item=media_item, title=media_title, body=body,
             content_type=mimetypes.guess_type(body)[0] or "application/octet-stream",
-            facts={**facts, "page_url": item},
+            facts={**facts, "page_url": item}, fetched_at=fetched_at,
         ))
-        leaves = [one for one in plan.get("leaves") or [] if one.get("dir") != rel]
-        leaves.append({"item": media_item, "dir": rel, "lastmod": None, "media_of": item})
         if plan:
+            # In place, or at the END: a page's index in `leaves[]` never moves.
+            media_row = {"item": media_item, "dir": rel, "lastmod": None, "media_of": item}
+            leaves = list(plan.get("leaves") or [])
+            at = next((n for n, one in enumerate(leaves) if one.get("dir") == rel), None)
+            if at is None:
+                leaves.append(media_row)
+            else:
+                leaves[at] = media_row
             plan["leaves"] = leaves
             _write_json(capture / PLAN_NAME, plan)
         out.append({"item": media_item, "dir": rel, "title": media_title})
-    print(json.dumps(out, indent=1))
-    return 0
+    now = clock(plan)
+    print(json.dumps({"written": out, **now}, indent=1))
+    return STOP if now["stop"] else 0
 
 
 def held(root: Path, leaf: dict) -> dict | None:
@@ -689,57 +1208,157 @@ def settle_titles(root: Path, planned: list[dict]) -> None:
             retitled[leaf["item"]] = final
 
 
+# ------------------------------------------------------------ page names, in bytes
+#
+# NOT part of the shared block above. `safe_title` caps a title at
+# `TITLE_MAX_BYTES`, and then `settle_titles` appends a qualifier and `page`
+# a ` (video)` — which can carry the FILENAME past what a filesystem holds
+# (255 bytes, `.md` included; the host checks no length and the extractor dies
+# `File name too long`). So after the titles are settled, one that is over
+# the cap is cut in its BASE, the qualifier and the suffix kept whole.
+
+FILENAME_TITLE_MAX_BYTES = 240  # + `.md`, and room for the `_versions/<page>.<YYYY-MM-DD>.md` copy a refresh makes
+
+
+def _cut_to_bytes(text: str, budget: int) -> str:
+    while text and len(text.encode("utf-8")) > budget:
+        text = text[:-1]
+    return text
+
+
+def fit_title(final: str, bases, *, unique: str = "") -> str:
+    """`final` within the byte cap: its base — the longest of `bases` it starts
+    with — cut, everything after it (qualifier, ` (video)`) kept. `unique` is
+    worked into the cut base where the plain cut is already another leaf's."""
+    if len(final.encode("utf-8")) <= FILENAME_TITLE_MAX_BYTES:
+        return final
+    base = max((b for b in bases if b and final.startswith(b)), key=len, default=final)
+    suffix = final[len(base):]
+    tail = f"… ({unique})" if unique else "…"
+    budget = FILENAME_TITLE_MAX_BYTES - len(suffix.encode("utf-8")) - len(tail.encode("utf-8"))
+    if budget < 1:  # a suffix that alone is over the cap: nothing left to keep whole
+        return _cut_to_bytes(final, FILENAME_TITLE_MAX_BYTES - 3).rstrip(" .-(") + "…"
+    return _cut_to_bytes(base, budget).rstrip(" .-…") + tail + suffix
+
+
+def titles_on_disk(root: Path, planned: list[dict]) -> dict:
+    found = {}
+    for leaf in planned:
+        record = _read_json(root / leaf["dir"] / CAPTURE_NAME)
+        if held(root, leaf) is not None and isinstance(record.get("title"), str):
+            found[leaf["dir"]] = record["title"]
+    return found
+
+
+def fit_titles(root: Path, planned: list[dict], before: dict) -> None:
+    """Every settled title back under the byte cap. `before` is what each leaf's
+    `capture.json` said BEFORE `settle_titles` ran — the base a qualifier was
+    appended to; a media leaf's base is its page's."""
+    by_item = {leaf["item"]: leaf for leaf in planned if not leaf.get("media_of")}
+    after = titles_on_disk(root, planned)
+    taken = {page_key(title) for title in after.values()}
+    for leaf in planned:
+        final = after.get(leaf["dir"])
+        if final is None or len(final.encode("utf-8")) <= FILENAME_TITLE_MAX_BYTES:
+            continue
+        page = by_item.get(leaf.get("media_of")) or leaf
+        bases = [(before.get(one["dir"]) or "").strip().removesuffix(" (video)") for one in (leaf, page)]
+        fitted = fit_title(final, bases)
+        if page_key(fitted) in taken:
+            fitted = fit_title(final, bases, unique=hashlib.sha1(leaf["dir"].encode("utf-8")).hexdigest()[:8])
+        taken.add(page_key(fitted))
+        record = _read_json(root / leaf["dir"] / CAPTURE_NAME)
+        record["title"] = fitted
+        _write_json(root / leaf["dir"] / CAPTURE_NAME, record)
+
+
 def cmd_report(args) -> int:
-    capture = Path(args.capture_dir).resolve()
-    job = job_facts(capture)
+    capture = _capture_dir(args.capture_dir)
+    # FIRST, before anything here can refuse: a refusal that left the run
+    # before's `ok` report in place is a success `apply` would read.
+    (capture / REPORT_NAME).unlink(missing_ok=True)
+    job = job_facts(capture, args)
     root = wiki_root(capture, job["capture_dir"])
-    plan = _read_json(capture / PLAN_NAME) or {}
+    plan = _plan_of(capture)
     planned = plan.get("leaves") or []
-    settle_titles(root, planned)
-    captured = [row for row in (held(root, leaf) for leaf in planned) if row]
+    if args.gone and not job["refresh"]:
+        raise Problem("--gone is a refresh ticket's answer alone (`ticket.json` carries `refresh: true`)")
     missing = []
-    for why, url in args.missing or []:
-        if why not in WHY:
-            raise Problem(f"--missing {why}: why is one of {', '.join(WHY)}")
+    for why, n in args.missing_leaf or []:
+        if why not in WHY or not n.isdigit():
+            raise Problem(f"--missing-leaf {why} {n}: <why> is one of {', '.join(WHY)}, <n> an index in {PLAN_NAME}")
+        leaf = _leaf_at(plan, int(n))
+        # The page's video where the render resolved one — a Mux host the jail
+        # refused is the usual miss — else the page itself.
+        url = clean_meta(_read_json(root / leaf["dir"] / "meta.json") or {})["stream_url"] if why == "denied" else None
+        url = url or leaf["item"]
         missing.append({"host": urlsplit(url).netloc.lower(), "url": url, "why": why})
+    for why, host in args.missing_host or []:
+        host = host.lower()
+        if why not in WHY or not _HOST.match(host):
+            raise Problem(f"--missing-host {why} <host>: <why> is one of {', '.join(WHY)}, <host> a bare hostname")
+        missing.append({"host": host, "url": f"https://{host}/", "why": why})
+    if not (args.failed or args.gone):
+        before = titles_on_disk(root, planned)
+        settle_titles(root, planned)
+        fit_titles(root, planned, before)
+    captured = [row for row in (held(root, leaf) for leaf in planned) if row]
     report = build_report(ticket=job["ticket"], planned=planned, captured=captured, skipped=plan.get("skipped") or [],
-                          missing=missing, reason=args.reason, failed=args.failed)
+                          missing=missing, reason=fold(args.reason) or None, failed=args.failed, gone=args.gone, job=job)
     _write_json(capture / REPORT_NAME, report)
-    print(json.dumps({"outcome": report["outcome"], "reason": report["reason"], "captured": len(report["captured"])}))
+    print(json.dumps({"outcome": report["outcome"], "reason": report["reason"], "captured": len(report["captured"]), **clock(plan)}))
     return 0 if report["outcome"] != "failed" else 1
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    capture_help = "the ticket's `capture_dir`, verbatim: WIKI-RELATIVE (`run` starts this script at the wiki root)"
 
     p = sub.add_parser("plan", help="filter the enumerated urls and name one capture directory per page")
-    p.add_argument("capture_dir", help="the ticket's capture directory (where ticket.json is)")
-    p.add_argument("--urls", action="append", help="sitemap.xml, a JSON list, or one url per line; `-` is stdin (repeatable)")
-    p.add_argument("--limit", type=int, default=None, help="plan at most N pages this run, newest first")
+    p.add_argument("capture_dir", help=capture_help)
+    p.add_argument("--urls", action="append", help="sitemap.xml, a JSON list, or one url per line, wiki-relative; `-` is stdin (repeatable)")
+    p.add_argument("--limit", type=int, default=None,
+                   help=f"attempt at most N pages this run, newest first (default {DOWNLOAD_LIMIT} where the job downloads, none for `assets: reference`; 0 = none)")
+    p.add_argument("--budget-minutes", type=float, default=BUDGET_MINUTES,
+                   help=f"no new leaf is started this long after the spawn (default {BUDGET_MINUTES}; the slice is killed at 30)")
     p.add_argument("--sites", type=Path, default=None, help="default: this unit's references/sites.json")
     for flag in ("--ticket", "--slug", "--target", "--min-date"):
         p.add_argument(flag, default=None, help="hand run with no ticket.json: the ticket's own value")
     p.add_argument("--scope", choices=["page", "section", "domain"], default=None, help="hand run: harvest.scope")
+    p.add_argument("--assets", choices=["reference", "download", "download-audio"], default=None, help="hand run: harvest.assets")
     p.add_argument("--exclude-url", action="append", default=[], help="hand run: one more harvest.exclude_urls glob")
     p.set_defaults(fn=cmd_plan)
 
+    n = sub.add_parser("next", help="the next page to capture, or stop (exit 5) once the deadline has passed")
+    n.add_argument("capture_dir", help=capture_help)
+    n.set_defaults(fn=cmd_next)
+
+    a = sub.add_parser("assets", help="detect, patch and (by harvest.assets) download one leaf's assets — by argv, never a shell")
+    a.add_argument("capture_dir", help=capture_help)
+    a.add_argument("--leaf", type=int, required=True, help="the page's index in plan.json's leaves[]")
+    a.set_defaults(fn=cmd_assets)
+
     g = sub.add_parser("page", help="page.html -> page.md + capture.json in one leaf")
-    g.add_argument("capture_dir")
-    g.add_argument("leaf_dir")
-    g.add_argument("--url", default=None, help="the page's url, when plan.json does not name this leaf")
-    g.add_argument("--published", default=None, help="YYYY-MM-DD, only as the plugin's published_date.py printed it")
-    g.add_argument("--external-url", default=None, help="a pointer page's payload: the link it exists to give")
-    g.add_argument("--media-file", default=None, help="the downloaded video/audio, when <leaf-dir>/assets.json does not name it")
+    g.add_argument("capture_dir", help=capture_help)
+    g.add_argument("leaf_dir", nargs="?", default=None, help="a hand run: the leaf's directory, in place of --leaf")
+    g.add_argument("--leaf", type=int, default=None, help="the page's index in plan.json's leaves[] — what `next` printed")
+    g.add_argument("--url", default=None, help="a HAND run on a page plan.json does not name; never a url read off a venue")
+    g.add_argument("--published", default=None, help="YYYY-MM-DD; default: the leaf's published.txt")
+    g.add_argument("--media-file", default=None, help="the downloaded video/audio, when the leaf's assets.json does not name it")
     g.add_argument("--no-media-leaf", action="store_true", help="write the page alone, even where the video was downloaded")
     g.add_argument("--sites", type=Path, default=None, help="default: this unit's references/sites.json")
     g.set_defaults(fn=cmd_page)
 
-    r = sub.add_parser("report", help="write report.json — last")
-    r.add_argument("capture_dir")
-    r.add_argument("--missing", nargs=2, action="append", metavar=("WHY", "URL"), help="a url that could not be reached")
+    r = sub.add_parser("report", help="write report.json — after every leaf, and last")
+    r.add_argument("capture_dir", help=capture_help)
+    r.add_argument("--missing-leaf", nargs=2, action="append", metavar=("WHY", "N"), help="a planned page (or, for `denied`, its video) that could not be reached")
+    r.add_argument("--missing-host", nargs=2, action="append", metavar=("WHY", "HOST"), help="a bare hostname the jail refused or that never answered")
     r.add_argument("--reason", default=None)
     r.add_argument("--failed", action="store_true", help="nothing usable landed; say why with --reason")
+    r.add_argument("--gone", action="store_true", help="a refresh ticket whose source answered 404 or 410")
+    for flag in ("--ticket", "--slug", "--target"):
+        r.add_argument(flag, default=None, help="hand run with neither ticket.json nor plan.json: the ticket's own value")
     r.set_defaults(fn=cmd_report)
 
     args = ap.parse_args(argv)

@@ -7,8 +7,9 @@
 
 Platform: HubSpot CMS + HubSpot Video, which is Mux underneath. Not tied to
 any one site — every HubSpot customer runs its own domain, which is why the
-unit declares no `requires.network` host: it is reached by keywords and
-fingerprints, never by a host list.
+unit's `requires.network` names the PLATFORM's fixed hosts (the player, Mux)
+and no site: a site is reached by keywords and fingerprints, and its own host
+is the job's target.
 
 Why this exists: a plain HTTP fetch yields NO player. The video iframe is lazy
 — the markup carries `data-hsv-src`, never `src`, and HubSpot's script swaps it
@@ -30,8 +31,18 @@ Inputs / outputs (default mode, `render`):
   <capture-dir>/meta.json   {title, mux_playback_id, player_url, final_url, ...}
   stdout                    the same meta.json as one JSON object
 
-`<url>` may be omitted where `<capture-dir>/ticket.json` is: the ticket's own
-`item` is then the page. Every other leaf names its url.
+**In a harvest the page is named by `--leaf <n>`, never by its url**: the
+url is the venue's text (a sitemap `<loc>`), and a venue's text typed onto a
+shell line is a command. `--capture-dir` is then the TICKET's capture
+directory, the url and the leaf's own directory are read off
+`<capture-dir>/plan.json` (`leaves.py plan` wrote it, and dropped every url
+outside a conservative character set), and the three files land in that leaf.
+`<url>` is for a hand run; with neither, the `item` of
+`<capture-dir>/ticket.json` is the page.
+
+`meta.json` also carries `status` (the HTTP status the page answered with —
+404/410 is `gone` on a refresh ticket, never a capture) and `fetched_at` (when
+THIS render read the page, which `leaves.py page` writes into `capture.json`).
 
 Second mode, `patch-assets`, applies the platform's manifest rules to a
 manifest produced by the plugin's `assets.py detect`:
@@ -43,16 +54,19 @@ manifest produced by the plugin's `assets.py detect`:
     `leaves.py page` writes into `page.md` as the page's iframe, because a
     bare play.hubspotvideo.com URL refuses to play outside its page
 
-Usage:
+Usage (`<capture_dir>` is the ticket's `capture_dir`, verbatim: it is
+WIKI-RELATIVE, and `run` starts this script at the wiki root):
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/capture_hubspot_video.py \\
-      render <url> --capture-dir <dir>
+      render --capture-dir <capture_dir> --leaf <n>
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/capture_hubspot_video.py \\
-      patch-assets <capture-dir>/assets.json --meta <capture-dir>/meta.json
+      patch-assets <leaf dir>/assets.json --meta <leaf dir>/meta.json
+(`leaves.py assets --leaf <n>` runs `patch-assets` itself, between the
+plugin's detect and download.)
 
-`--capture-dir` is one leaf inside the job's own `_raw/<slug>/` slice: the
-ticket's `capture_dir` for the ticket's own item, and a `dir` out of
-`leaves.py plan`'s `plan.json` for every other page. Never a path made up
-at the call.
+It launches a BROWSER: the Playwright Chromium build has to be on the machine
+already. A slice cannot install one — the floor write-denies
+`~/.cache/ms-playwright` and `~/Library/Caches/ms-playwright`
+(`schedule/runner/floor.py::DENY_WRITE_OUTSIDE`) — see the unit's INSTALL.md.
 
 (The leading `ops/` is the run verb's frozen argument grammar, resolved by
 the front door to wherever this wiki's machinery tree lives.)
@@ -70,14 +84,18 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # The playback id shows up in several shapes; the storyboard request is the
 # most reliable because the player always fetches it, even before play.
+# Anchored on the scheme and the HOST: a request to anywhere else that merely
+# carries `image.mux.com/<id>/` in its query is the venue's text, not Mux.
 MUX_ID_PATTERNS = [
-    re.compile(r"image\.mux\.com/([A-Za-z0-9]{20,})/"),
-    re.compile(r"stream\.mux\.com/([A-Za-z0-9]{20,})[./?]"),
-    re.compile(r"inferred\.litix\.io/.*?playback_id=([A-Za-z0-9]{20,})"),
+    re.compile(r"^https://image\.mux\.com/([A-Za-z0-9]{20,})/"),
+    re.compile(r"^https://stream\.mux\.com/([A-Za-z0-9]{20,})[./?]"),
+    re.compile(r"^https://inferred\.litix\.io/[^#]*?[?&]playback_id=([A-Za-z0-9]{20,})(?:[&#]|$)"),
 ]
 PLAY_SELECTORS = [
     "button[aria-label*='Play']",
@@ -85,7 +103,12 @@ PLAY_SELECTORS = [
     "[data-handle='bigPlayButton']",
     "video",
 ]
-IFRAME_SELECTOR = "iframe[src*='hubspotvideo'], iframe[data-hsv-src*='hubspotvideo']"
+# The player's own origin as a PREFIX, not `hubspotvideo` anywhere in the
+# value: `https://evil.example/?hubspotvideo` is not a player.
+PLAYER_ORIGIN = "https://play.hubspotvideo.com/"
+_PLAYER_PREFIXES = (PLAYER_ORIGIN, PLAYER_ORIGIN.removeprefix("https:"))  # the attribute may be protocol-relative
+IFRAME_SELECTOR = ", ".join(f"iframe[{attr}^='{prefix}']" for attr in ("src", "data-hsv-src") for prefix in _PLAYER_PREFIXES)
+# (Tightened from a substring match on 2026-09-19; unverified against a live site since.)
 
 DROP_URL_MARKERS = ("edgemv.mux.com", "verifi.podscribe.com/tag")
 
@@ -109,15 +132,48 @@ def ticket_item(capture_dir):
     return item if isinstance(item, str) and item.startswith(("http://", "https://")) else None
 
 
+def planned_leaf(capture_dir, n):
+    """`(url, leaf directory)` for `--leaf <n>`, off the ticket's `plan.json`.
+
+    The directory is the plan's wiki-relative `dir` under the wiki root, which
+    is three levels above a capture directory (`_raw/<slug>/<leaf>`)."""
+    cap = Path(capture_dir).resolve()
+    try:
+        leaves = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"]
+        leaf = leaves[n] if 0 <= n < len(leaves) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        leaf = None
+    if not isinstance(leaf, dict) or leaf.get("media_of") or not isinstance(leaf.get("item"), str) or not isinstance(leaf.get("dir"), str):
+        return None
+    parts = Path(leaf["dir"]).parts
+    if len(parts) != 3 or parts[0] != "_raw" or cap.parts[-3:-1] != parts[:2]:
+        return None
+    return leaf["item"], cap.parents[2] / leaf["dir"]
+
+
+def is_player(url):
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.netloc == urlsplit(PLAYER_ORIGIN).netloc and parts.path.startswith("/v/")
+
+
 def render(args):
     # Imported here, not at the top: `patch-assets` is pure JSON and must run
     # where no browser is installed.
     from playwright.sync_api import sync_playwright
 
     cap = Path(args.capture_dir)
+    if args.leaf is not None:
+        found = planned_leaf(cap, args.leaf)
+        if found is None:
+            print(f"--leaf {args.leaf}: {cap}/plan.json names no page at that index — run `leaves.py plan` first, and pass the ticket's capture_dir", file=sys.stderr)
+            return 2
+        args.url, cap = found
     args.url = args.url or ticket_item(cap)
-    if not args.url:
-        print(f"no url given and no ticket.json in {cap} names one", file=sys.stderr)
+    if not args.url or not args.url.startswith(("http://", "https://")):
+        print(f"no http(s) url given and no ticket.json in {cap} names one", file=sys.stderr)
         return 2
     cap.mkdir(parents=True, exist_ok=True)
     reqs = []
@@ -127,7 +183,9 @@ def render(args):
         ctx = browser.new_context(viewport={"width": 1440, "height": 900})
         page = ctx.new_page()
         page.on("request", lambda r: reqs.append({"url": r.url, "type": r.resource_type, "method": r.method}))
-        page.goto(args.url, wait_until="networkidle", timeout=args.timeout)
+        fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        response = page.goto(args.url, wait_until="networkidle", timeout=args.timeout)
+        status = response.status if response is not None else None
 
         # Clicking play is what makes the player request the manifest. The
         # storyboard request usually precedes it, so a failed click is not
@@ -167,7 +225,10 @@ def render(args):
         # iframe; the extractor strips it when the job says `process.embeds:
         # false`, which is why a plain link rides beside it.
         embed_src = page.evaluate(
-            "() => { const f = document.querySelector(\"iframe[src*='hubspotvideo']\"); return f ? f.src : null; }"
+            "(origin) => { const f = Array.from(document.querySelectorAll('iframe')).find(f => {"
+            " try { return new URL(f.src).origin + '/' === origin; } catch (e) { return false; } });"
+            " return f ? f.src : null; }",
+            PLAYER_ORIGIN,
         )
         final_url = page.url
         ctx.close()
@@ -177,10 +238,12 @@ def render(args):
     (cap / "net.json").write_text(json.dumps(reqs, indent=1))
 
     mux_id = find_mux_id(reqs)
-    player = next((r["url"] for r in reqs if "play.hubspotvideo.com/v/" in r["url"]), None)
+    player = next((r["url"] for r in reqs if is_player(r["url"])), None)
     meta = {
         "url": args.url,
         "final_url": final_url,
+        "status": status,
+        "fetched_at": fetched_at,
         "title": h1 or title,
         "page_title": title,
         "mux_playback_id": mux_id,
@@ -237,8 +300,9 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a lesson page and resolve its Mux stream")
-    r.add_argument("url", nargs="?", default=None, help="default: the `item` of <capture-dir>/ticket.json")
-    r.add_argument("--capture-dir", required=True)
+    r.add_argument("url", nargs="?", default=None, help="a HAND run only — never a url read off a venue; default: the `item` of <capture-dir>/ticket.json")
+    r.add_argument("--capture-dir", required=True, help="wiki-relative. With --leaf: the TICKET's capture_dir; else the leaf to write into")
+    r.add_argument("--leaf", type=int, default=None, help="the page's index in <capture-dir>/plan.json's leaves[] — what `leaves.py next` printed")
     r.add_argument("--timeout", type=int, default=90000, help="page.goto timeout (ms)")
     r.add_argument("--settle", type=int, default=9000, help="ms to wait after clicking play, for the manifest request")
     r.add_argument("--headed", action="store_true")
