@@ -18,11 +18,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-substack ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "substack",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "watch": {
     "defaults": {
       "every": "1d",

@@ -13,11 +13,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-notion-tasks ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "notion-tasks",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "watch": {
     "defaults": {
       "every": "1d"
@@ -29,6 +31,6 @@
         "required": true
       }
     },
-    "note": "The connector is session-level on the pulling machine and is named nowhere in this unit — it is an MCP tool whose name depends on which client the machine runs. One watch per workspace."
+    "note": "The connector is session-level on the pulling machine and is named nowhere in this unit \u2014 it is an MCP tool whose name depends on which client the machine runs. One watch per workspace."
   }
 }

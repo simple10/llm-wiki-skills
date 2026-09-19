@@ -21,11 +21,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-youtube ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "youtube",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "watch": {
     "defaults": {
       "every": "once",

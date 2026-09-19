@@ -21,7 +21,6 @@ GONE = {
     r"(?<![\w.-])harvest_apply\.py": "the old host loop — `pipeline intake/dispatch/apply` replaced it",
     r"(?<![\w.-])scaffold\.py": "the old note scaffolder — the extractor writes the page",
     r"(?<![\w.-])(intake|job|watch|drain_pending|credentials)\.py": "old host queue scripts",
-    r"(?<![\w-])--stage\b": "a unit is invoked `/<unit> ticket=<id>`, in every mode",
     r"<job\.[a-z_.]+>": "there is no job object — a worker reads `ticket.json`",
     r"\bassignment\.json\b(?! or)": "the old slice handoff — `ticket.json` replaced it",
 }
@@ -55,16 +54,40 @@ def test_every_copy_of_the_converter_is_the_same_file():
 
 
 @pytest.mark.parametrize("name", CHANNELS)
-def test_a_channel_unit_declares_the_stage_it_documents_and_is_invoked_by_ticket(name):
-    """No process ticket ever reaches a unit — every one is the plugin's
-    extractor's — so `process` on a manifest stamps a name onto the job that
-    nothing runs. And the one invocation is `/<unit> ticket=<id>`."""
-    assert unit_manifest(name)["stages"] == ["harvest"], unit_manifest(name)["stages"]
+def test_a_channel_unit_declares_both_stages_it_documents_and_is_invoked_by_ticket(name):
+    """A channel unit renders its own venue's page, so it holds the pen at
+    process too: the manifest declares both stages, the body documents both,
+    and the one invocation for either is `/<unit> ticket=<id>`."""
+    assert unit_manifest(name)["stages"] == ["harvest", "process"], unit_manifest(name)["stages"]
     skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
     front = skill.split("---", 2)[1]
-    assert re.search(r'^argument-hint:\s*"?ticket=<id>"?\s*$', front, re.M), front
+    assert re.search(r'^argument-hint:\s*"ticket=<id> stage=harvest\|process"\s*$', front, re.M), front
+    assert unit_manifest(name)["usage"] == f"/{name} ticket=<id> stage=harvest|process"
     assert "allowed-tools" not in front and "disable-model-invocation" not in front
     assert re.search(r"^## Stages", skill, re.M) and "report.json" in skill and "ticket.json" in skill
+    assert re.search(r"^### harvest\b", skill, re.M) and re.search(r"^### process\b", skill, re.M), skill[:400]
+
+
+@pytest.mark.parametrize("name", CHANNELS)
+def test_the_step_a_unit_is_in_is_an_argument_not_a_file(name):
+    """One discriminator: the `stage=` the host composes into the prompt. A
+    process ticket's capture dir IS the download ticket's for a single-item
+    job, and `ticket.json` lands there under one name — so a step read off
+    that file can be the other step's, and the prompt cannot be clobbered."""
+    skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+    assert re.search(r"stage=harvest\|process", skill), name
+    assert re.search(r"\$ARGUMENTS", skill), name
+
+
+@pytest.mark.parametrize("name", SKILLS)
+def test_a_unit_is_reachable_by_the_invocation_its_spawner_types(name):
+    """The spawner's whole prompt for a slice is `/<unit> ticket=<id>`. With
+    `user-invocable: false` the harness answers that with no model turn at
+    all — exit 0, no report — so the key that would make a unit undispatchable
+    is refused here, beside the two the authoring contract already names."""
+    front = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1]
+    for refused in ("user-invocable:", "disable-model-invocation:", "allowed-tools:"):
+        assert refused not in front, f"{name}: {refused} makes the unit unreachable by `/{name} ticket=<id>`"
 
 
 @pytest.mark.parametrize("name", CHANNELS)

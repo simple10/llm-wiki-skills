@@ -3,19 +3,20 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Render a YouTube capture into the page body and capture record the generic
-extractor reads — deterministic, so every YouTube page is consistent instead of
-hand-assembled (which flattened transcripts into one paragraph and dumped raw
-descriptions).
+"""Two arms of the `channel-youtube` unit: the capture record harvest leaves,
+and the page process writes — deterministic, so every YouTube page is
+consistent instead of hand-assembled (which flattened transcripts into one
+paragraph and dumped raw descriptions).
 
-  youtube_note.py <wiki> --capture-dir <dir> [--item <url>] [--slug <slug>]
-                  [--tag <tag>]... [--area <area>]... [--format-transcript <path>]
+  youtube_note.py <wiki> --capture-dir <dir> --record
+  youtube_note.py <wiki> --capture-dir <dir> --dest <dest>
+                  [--item <url>] [--slug <slug>] [--tag <tag>]... [--area <area>]...
+                  [--format-transcript <path>]
 
-Run at HARVEST time, because harvest is the only stage that reaches a unit: every
-process ticket goes to the host's generic extractor, which takes a `.md` body
-verbatim and writes the page under the job's `dest` with its own frontmatter
-(`title`, `status`, `resource`, `harvested`). A harvest slice cannot write
-`dest`, so this script writes nothing there.
+`--record` is the HARVEST arm: the bytes are already in the capture dir, and
+it writes `capture.json` for them and nothing else — no page, no summary, no
+`frontmatter` object. `--dest` is the PROCESS arm: it reads those bytes and
+writes the page under the ticket's `dest`.
 
 Reads, in the capture dir: `metadata.json` (`yt-dlp --dump-json`), the subtitle
 file yt-dlp fetched (.vtt or .srt, under `captions/` or beside the metadata),
@@ -26,34 +27,41 @@ mistyped `--capture-dir` is otherwise a page built from the wrong directory.
 The slug then defaults to the capture dir's parent (`_raw/<slug>/<leaf>`).
 
 FIRST, before it reads anything, it removes what an earlier run left in the
-capture dir — `capture.json`, `page.md`, `report.json` — because a capture dir
-is stable across pulls and a respawn that fails must not be read as the
-success the run before it had.
+capture dir — `page.md`, `report.json`, and `capture.json` on the harvest arm —
+because a capture dir is stable across pulls and a respawn that fails must not
+be read as the success the run before it had. The process arm leaves
+`capture.json` alone: that is harvest's answer, not this run's.
 
-Writes, in the capture dir and nowhere else:
-- `page.md` — BODY ONLY, never a `---` block (the extractor prepends its own
-  and a second one corrupts the page): the video's TRUE title as the `# H1`,
-  thumbnail, embed, a compact facts list, the description as a blockquote
-  (bare URLs linkified, the creator's own TIMESTAMPS block turned into a list,
-  hashtag soup collapsed), and the transcript as timestamped, chapter-headed
-  sections, noise-stripped and de-duplicated. No summary placeholder: the
-  summary is the host's process side's to write, not a harvest worker's.
-- `capture.json` — `slug`, `item`, `title`, `body: "page.md"`,
-  `content_type: "text/markdown"`, `fetched_at`, and a `frontmatter` object
-  carrying the video's exact facts (type, channel, channel_url, published,
-  duration, views, likes, video_id, thumbnail, source_host, source_title, tags,
-  areas). `title` is `safe_title(<the video's title>)` — the page's FILE is
-  named from it; `frontmatter.source_title` is the true one, when they differ.
-  Unknown facts are omitted, never emitted empty. It never carries `title`,
-  `resource`, `status` or any other key a host verb owns. The extractor ignores
-  `frontmatter` today, which is why the same facts are also in the body.
+The harvest arm writes, in the capture dir and nowhere else:
+- `capture.json` — `slug`, `item`, `title`, `body: "metadata.json"`,
+  `content_type: "application/json"`, `fetched_at`. Flat. `title` is
+  `safe_title(<the video's title>)`, because the page's FILE is named from it.
+  It never carries `status`, `resource`, `harvested`, `extracted` or any other
+  key a host verb owns, and it carries no `frontmatter` object: the facts reach
+  the page because this unit writes the page.
 
-Everything yt-dlp returns is the venue's text, and `page.md` is the FINAL page
-body, taken verbatim. So: the title and every fact value are folded to one
-line; the id goes into the embed's `src` only when it is shaped like one; a url
-goes into a link only when it is a clean http(s) one; attribute text is
-HTML-escaped; and the description is blockquoted line by line, so nothing in it
-can open a fence or a heading that swallows the rest of the page.
+The process arm writes:
+- `page.md` in the capture dir — the body, kept beside the bytes it was built
+  from so a retried process ticket can see what the run produced.
+- the page under `dest`, through the front door: `page create` with the
+  video's facts as frontmatter keys and the body on stdin, or `page edit` over
+  the page `dest` already holds under that title. The body is the video's TRUE
+  title as the `# H1`, thumbnail, embed, a compact facts list, the description
+  as a blockquote (bare URLs linkified, the creator's own TIMESTAMPS block
+  turned into a list, hashtag soup collapsed), and the transcript as
+  timestamped, chapter-headed sections, noise-stripped and de-duplicated.
+  `frontmatter.source_title` is the true title, when the filename rule made
+  the page's differ from it. `extracted=true` is set, so the stage records
+  that it has been here. Identity and `status` are not this script's to write.
+
+Everything yt-dlp returns is the venue's text, and it reaches both the page
+body and the frontmatter values. So: the title and every fact value are folded
+to one line; the id goes into the embed's `src` only when it is shaped like
+one; a url goes into a link only when it is a clean http(s) one; attribute text
+is HTML-escaped; the description is blockquoted line by line, so nothing in it
+can open a fence or a heading that swallows the rest of the page; and the
+front-door calls take an argv LIST, never a shell line, because a venue that
+can type onto a Bash line can run a command.
 
 `report.json` is NOT this script's: `write_report.py` beside it writes that,
 last.
@@ -84,6 +92,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -285,6 +294,50 @@ def format_transcript(captions, chapters_json, wiki, override):
     return cp.stdout
 
 
+def write_page(wiki, dest, title, front, body, ops=None):
+    """The page under `dest`, through the front door. Returns it, wiki-relative.
+
+    `page create` first, `page edit` on the one refusal that means the title is
+    already a page here. The arguments are an argv LIST and never a shell line:
+    every value on them is venue text — a title, a channel name, a url — and a
+    venue that can type onto a Bash line can run a command.
+    """
+    front_door = list(ops) if ops else [shutil.which(OPS)]
+    if front_door[0] is None:
+        sys.exit(
+            f"youtube_note: `{OPS}` is not on PATH — the front door is how "
+            "this unit writes a page; install the ops plugin on this machine"
+        )
+    where = {"cwd": str(wiki), "env": _front_door_env()}
+    keys = [f"{k}={v}" for k, v in front.items() if k not in HOST_OWNED and not isinstance(v, (list, dict))]
+    keys += [f"{k}={','.join(str(one) for one in v)}" for k, v in front.items() if isinstance(v, list) and v]
+    keys += [f"extracted={EXTRACTED}"]
+    created = subprocess.run(
+        [*front_door, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "--stdin"],
+        input=body, capture_output=True, text=True, **where,
+    )
+    rel = f"{str(dest).rstrip('/')}/{title}.md"
+    if created.returncode == 0:
+        return rel
+    if EXISTS not in (created.stdout or "") + (created.stderr or ""):
+        sys.exit(
+            f"youtube_note: `page create` refused (exit {created.returncode}) — "
+            f"no page was written.\n{((created.stderr or '') + (created.stdout or '')).strip()[-500:]}"
+        )
+    # The one refusal that is not a failure: this job pulled the video before,
+    # and the page under `dest` is the one to replace.
+    edited = subprocess.run(
+        [*front_door, "--json", "page", "edit", rel, *keys, "--stdin"],
+        input=body, capture_output=True, text=True, **where,
+    )
+    if edited.returncode != 0:
+        sys.exit(
+            f"youtube_note: `page edit` refused (exit {edited.returncode}) over "
+            f"{rel} — no page was written.\n{((edited.stderr or '') + (edited.stdout or '')).strip()[-500:]}"
+        )
+    return rel
+
+
 def yt_date(d):
     """yt-dlp's `upload_date` (`YYYYMMDD`) as the protocol's `published`
     shape, or `""` when there is nothing to convert.
@@ -376,18 +429,30 @@ def safe_chapters(meta):
 
 TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
+METADATA_NAME = "metadata.json"
 BODY_NAME = "page.md"
 REPORT_NAME = "report.json"
 # Written for the formatter's one call and removed after it: `metadata.json`'s
 # chapters with their titles made safe to print (`safe_chapters`).
 CHAPTERS_NAME = "chapters.safe.json"
 # What an earlier run over this SAME directory may have left. Removed first.
-STALE = (CAPTURE_NAME, BODY_NAME, REPORT_NAME, CHAPTERS_NAME)
+# `capture.json` is harvest's own answer to "this item landed", so only the
+# harvest arm clears it — a process run that wiped it would throw away the
+# record of the bytes it is standing on.
+STALE = (BODY_NAME, REPORT_NAME, CHAPTERS_NAME)
 
 # Keys a host verb owns on the page. `frontmatter` never carries one: the
 # extractor writes `title`, `status`, `resource` and `harvested` itself, and
 # identity and the `extracted` flag are minted outside any slice.
-HOST_OWNED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource")
+HOST_OWNED = ("status", "document_id", "document_revision", "harvested", "title")
+
+# What `pipeline/pages.py` reads as "a stage has been here": the string, not a
+# boolean — a page still reading `false` is picked up again.
+EXTRACTED = "true"
+
+# `page create`'s one refusal that means "edit it instead". Matched on the
+# tail, which is fixed prose; the head is the path.
+EXISTS = "already exists"
 
 # Tried in order. yt-dlp writes whatever sub format it fetched (suffix is not
 # provenance; .vtt is its common default, .srt still appears). Captions are
@@ -545,10 +610,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wiki", type=Path, help="the wiki root — what binds the front door to this wiki")
     ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off ticket.json")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--record", action="store_true", help="HARVEST: write `capture.json` for the bytes already in the capture dir, and nothing else")
+    mode.add_argument("--dest", default=None, help="PROCESS: the ticket's `dest`, verbatim — the one directory the page may land in")
     ap.add_argument("--item", default=None, help="the video url. Defaults to ticket.json's `item`; REQUIRED where there is no ticket.json (a hand run)")
     ap.add_argument("--slug", default=None, help="the job slug. Defaults to ticket.json's `slug`, then the capture dir's parent")
     ap.add_argument("--tag", action="append", default=[], help="a tag for `frontmatter.tags` (repeatable) — a hand run's; a ticket carries none")
     ap.add_argument("--area", action="append", default=[], help="a knowledge area for `frontmatter.areas` (repeatable) — a hand run's; a ticket carries none")
+    ap.add_argument(
+        "--ops",
+        default=None,
+        metavar="CMD",
+        help="run this `llm-wiki-ops` command line for the page verbs instead of the bare name on PATH "
+             "(tests, and any caller that already has one)",
+    )
     ap.add_argument(
         "--format-transcript",
         default=None,
@@ -576,7 +651,7 @@ def main():
     # what an earlier run left here must not outlive a build that fails.
     # `capture.json` is what says "this item landed", and `report.json` is what
     # `apply` reads — it does not check whose ticket a report answers.
-    for name in STALE:
+    for name in (*STALE, *((CAPTURE_NAME,) if args.record else ())):
         (cap_dir / name).unlink(missing_ok=True)
 
     metadata_path = cap_dir / "metadata.json"
@@ -592,6 +667,20 @@ def main():
 
     slug = fold(args.slug or ticket.get("slug") or cap_dir.resolve().parent.name)
     item = fold(args.item or ticket.get("item")) or None
+
+    if args.record:
+        record = {
+            "slug": slug,
+            "item": item,
+            "title": page_title(meta),
+            "body": METADATA_NAME,
+            "content_type": "application/json",
+            "fetched_at": fetched_at_of(metadata_path),
+        }
+        (cap_dir / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"capture": f"{args.capture_dir.rstrip('/')}/{CAPTURE_NAME}", "title": record["title"]}))
+        return 0
+
     front = frontmatter_for(meta, tags=args.tag, areas=args.area)
 
     captions = find_captions(cap_dir)
@@ -609,24 +698,17 @@ def main():
             chapters_path.unlink(missing_ok=True)
 
     body, has_desc = build_body(meta, front, item, transcript_md)
+    # Kept beside the capture as well as written to the page: a process ticket
+    # can be retried over the same bytes, and this is what the run produced.
     (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")
-    record = {
-        "slug": slug,
-        "item": item,
-        "title": page_title(meta),
-        "body": BODY_NAME,
-        "content_type": "text/markdown",
-        "fetched_at": fetched_at_of(metadata_path),
-        "frontmatter": front,
-    }
-    # Written after the body it names, so a capture record never points at a
-    # page that is not there.
-    (cap_dir / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    if item:
+        front["resource"] = item
+    written = write_page(args.wiki, args.dest, page_title(meta), front, body, ops=shlex.split(args.ops) if args.ops else None)
     print(
         json.dumps(
             {
+                "written": [written],
                 "page": f"{args.capture_dir.rstrip('/')}/{BODY_NAME}",
-                "capture": f"{args.capture_dir.rstrip('/')}/{CAPTURE_NAME}",
                 "has_transcript": bool(captions),
                 "chapters": len(safe_chapters(meta)),
                 "description": has_desc,

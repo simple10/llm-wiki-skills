@@ -18,11 +18,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-frameio ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "frameio",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "watch": {
     "defaults": {
       "every": "once",

@@ -1,11 +1,11 @@
-"""`channel-youtube` on the rebuilt worker contract: what the unit leaves in a
-capture directory at HARVEST is what the host's real extractor turns into the
-page — because no process ticket ever reaches a unit.
+"""`channel-youtube` on the rebuilt worker contract: harvest leaves the bytes
+and a capture record, and this unit's OWN process step writes the page.
 
 Three layers, cheapest first: the pure logic imported in-process (runs
 everywhere), the two scripts run as the subprocesses a worker runs (needs only
-`uv`), and ONE end-to-end case through the real `pipeline extract` (needs the
-ops CLI, and the plugin's transcript formatter named by `LLM_WIKI_OPS_PLUGIN`).
+`uv`, with a stub front door for the page verbs), and end-to-end cases through
+the real `page create` (needs the ops CLI, and the plugin's transcript
+formatter named by `LLM_WIKI_OPS_PLUGIN`).
 
 The scripts are run from the WORKING TREE, never through `run ops/skills/…`:
 the session wiki installs units from git HEAD.
@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,7 +39,12 @@ UNIT = "channel-youtube"
 # ITEM a ticket carries is its own, and is what this file varies.
 JOB_TARGET = "https://www.youtube.com/watch?v=smoke"
 
-# Keys a host verb owns on the page (the port brief's list): never in `frontmatter`.
+# Where a tmp-path case's process arm writes. A real job's is the ticket's.
+DEST = "sources/youtube/yt-job"
+
+# Keys a host verb owns on the page: never in the facts this unit computes.
+# `resource` is the unit's to set at process — the page verb takes it — and
+# `extracted` is added on the command line, not by `frontmatter_for`.
 HOST_OWNED = {"status", "document_id", "document_revision", "harvested", "extracted", "title", "resource"}
 
 
@@ -206,6 +212,45 @@ def _stub_formatter(tmp_path):
     return stub
 
 
+def _stub_ops(tmp_path):
+    """A stand-in for the front door's page verbs, for the cases whose wiki is
+    a bare tmp directory. It writes what the real `page create`/`page edit`
+    would, and refuses a `create` over a title that is already a page."""
+    stub = tmp_path / "ops_stub.py"
+    stub.write_text(
+        "import json, os, pathlib, sys\n"
+        "argv = sys.argv[1:]\n"
+        "verb = [a for a in argv if not a.startswith('--')]\n"
+        "pairs = dict(a.split('=', 1) for a in verb if '=' in a)\n"
+        "rel = pairs['dest'].rstrip('/') + '/' + pairs['title'] + '.md' if verb[1] == 'create' else verb[2]\n"
+        "out = pathlib.Path(os.getcwd()) / rel\n"
+        "if verb[1] == 'create' and out.exists():\n"
+        "    print(json.dumps({'error': rel + ' already exists \\u2014 the filename is the title'}))\n"
+        "    sys.exit(2)\n"
+        "out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "out.write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.getcwd(), 'page-calls.jsonl').open('a').write(json.dumps(argv) + '\\n')\n"
+        "print(json.dumps({'path': rel, 'status': 'draft'}))\n"
+    )
+    return shlex.join(["uv", "run", "-q", str(stub)])
+
+
+def _record(root, cap, *argv, check=True):
+    """The HARVEST arm: the capture record for the bytes already on disk."""
+    return _script(BUILDER, root, cap, "--record", *argv, check=check)
+
+
+def _build(root, cap, *argv, dest=DEST, ops=None, check=True):
+    """The PROCESS arm: the body, and the page under `dest`."""
+    front_door = ops if ops is not None else _stub_ops(root)
+    return _script(BUILDER, root, cap, "--dest", dest, "--ops", front_door, *argv, check=check)
+
+
+def _page_calls(root):
+    path = root / "page-calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
 def _ticketed(tmp_path):
     cap = tmp_path / "_raw" / "yt-job" / "watch--1a2b3c4d"
     cap.mkdir(parents=True)
@@ -216,19 +261,45 @@ def _ticketed(tmp_path):
     return cap
 
 
-def test_the_capture_record_is_the_extractors_whole_agreement(tmp_path):
+def test_harvest_leaves_the_bytes_and_a_flat_capture_record(tmp_path):
+    """Harvest is bytes. The record names the payload as it arrived, and
+    carries no `frontmatter` object and no key a page verb owns — the facts
+    reach the page because this unit writes the page."""
     cap = _ticketed(tmp_path)
-    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+    _record(tmp_path, cap)
     record = json.loads((cap / "capture.json").read_text())
-    assert {k: record[k] for k in ("slug", "item", "title", "body", "content_type")} == {
-        "slug": "yt-job", "item": ITEM, "title": META["title"], "body": "page.md", "content_type": "text/markdown"}
+    assert record == {
+        "slug": "yt-job", "item": ITEM, "title": META["title"], "body": "metadata.json",
+        "content_type": "application/json", "fetched_at": record["fetched_at"]}
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["fetched_at"])
-    # every field the extractor reads as text IS text
-    assert all(isinstance(record[k], str) for k in ("slug", "item", "title", "body", "fetched_at"))
-    assert record["frontmatter"]["type"] == "video" and record["frontmatter"]["published"] == "2026-06-18"
-    assert not HOST_OWNED & set(record["frontmatter"])
-    assert "dest" not in record
+    assert {p for p in tmp_path.rglob("*") if p.is_file()} - before == {cap / "capture.json"}
+
+
+def test_process_writes_the_page_under_dest_through_the_page_verbs(tmp_path):
+    cap = _ticketed(tmp_path)
+    out = json.loads(_build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path))).stdout)
+    assert out["written"] == [f"{DEST}/{META['title']}.md"]
+    assert "stubbed words" in (tmp_path / out["written"][0]).read_text()
     assert "stubbed words" in (cap / "page.md").read_text()
+    (create,) = _page_calls(tmp_path)
+    assert create[:3] == ["--json", "page", "create"] and "--stdin" in create
+    assert f"title={META['title']}" in create and f"dest={DEST}" in create
+    assert "extracted=true" in create and f"resource={ITEM}" in create
+    assert "type=video" in create and "published=2026-06-18" in create
+    assert not [a for a in create if a.split("=")[0] in HOST_OWNED - {"extracted", "resource", "title"}]
+
+
+def test_a_second_pull_edits_the_page_dest_already_holds(tmp_path):
+    """`page create` refuses a title that is already a page, and that refusal
+    is the signal to replace it — not to fail the ticket."""
+    cap = _ticketed(tmp_path)
+    fmt = str(_stub_formatter(tmp_path))
+    _build(tmp_path, cap, "--format-transcript", fmt)
+    _build(tmp_path, cap, "--format-transcript", fmt)
+    verbs = [[a for a in call if not a.startswith("--")][:3] for call in _page_calls(tmp_path)]
+    assert verbs[0][:2] == ["page", "create"], verbs
+    assert verbs[1][:2] == ["page", "edit"] and verbs[1][2] == f"{DEST}/{META['title']}.md", verbs
 
 
 def test_a_rerun_over_the_same_capture_is_byte_identical(tmp_path):
@@ -237,27 +308,31 @@ def test_a_rerun_over_the_same_capture_is_byte_identical(tmp_path):
     not when the builder happened to run."""
     cap = _ticketed(tmp_path)
     fmt = str(_stub_formatter(tmp_path))
-    _script(BUILDER, tmp_path, cap, "--format-transcript", fmt)
+    _record(tmp_path, cap)
+    _build(tmp_path, cap, "--format-transcript", fmt)
     first = ((cap / "page.md").read_bytes(), (cap / "capture.json").read_bytes())
-    _script(BUILDER, tmp_path, cap, "--format-transcript", fmt)
+    _record(tmp_path, cap)
+    _build(tmp_path, cap, "--format-transcript", fmt)
     assert first == ((cap / "page.md").read_bytes(), (cap / "capture.json").read_bytes())
 
 
 def test_no_captions_is_a_page_without_a_transcript_and_says_so(tmp_path):
     cap = _ticketed(tmp_path)
     shutil.rmtree(cap / "captions")
-    out = json.loads(_script(BUILDER, tmp_path, cap).stdout)  # no formatter needed: nothing to format
+    out = json.loads(_build(tmp_path, cap).stdout)  # no formatter needed: nothing to format
     assert out["has_transcript"] is False
     assert "## Transcript" not in (cap / "page.md").read_text()
-    _script(REPORTER, tmp_path, cap, "--outcome", "partial", "--reason", "no_captions")
+    _script(REPORTER, tmp_path, cap, "--outcome", "partial", "--reason", "no_captions",
+            "--written", out["written"][0])
     report = json.loads((cap / "report.json").read_text())
-    assert (report["outcome"], report["reason"], len(report["captured"])) == ("partial", "no_captions", 1)
+    assert (report["outcome"], report["reason"], report["captured"]) == ("partial", "no_captions", [])
+    assert report["written"] == out["written"]
 
 
 def test_no_metadata_is_refused_by_name_and_reported_failed(tmp_path):
     cap = _ticketed(tmp_path)
     (cap / "metadata.json").unlink()
-    cp = _script(BUILDER, tmp_path, cap, check=False)
+    cp = _record(tmp_path, cap, check=False)
     assert cp.returncode != 0 and "metadata.json" in cp.stderr and "Traceback" not in cp.stderr
     # `ok` over a capture that never landed is refused, and writes nothing…
     cp = _script(REPORTER, tmp_path, cap, "--outcome", "ok", check=False)
@@ -272,7 +347,7 @@ def test_no_metadata_is_refused_by_name_and_reported_failed(tmp_path):
 
 def test_the_report_names_the_tickets_own_capture_dir_and_a_hand_run_needs_a_ticket_id(tmp_path):
     cap = _ticketed(tmp_path)
-    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    _record(tmp_path, cap)
     _script(REPORTER, tmp_path, cap, "--outcome", "ok")
     report = json.loads((cap / "report.json").read_text())
     assert set(report) == {"v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"}
@@ -290,38 +365,43 @@ def test_the_report_names_the_tickets_own_capture_dir_and_a_hand_run_needs_a_tic
 
 
 def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
-    """The whole point of the port. A ticketed capture dir holding what yt-dlp
-    leaves (fixtures; no network) → this unit's builder and reporter → the REAL
-    `pipeline extract` → one staged page under the job's `dest`, carrying the
-    venue-specific body verbatim under the extractor's own frontmatter."""
+    """The whole point of the rework. A ticketed capture dir holding what
+    yt-dlp leaves (fixtures; no network) → harvest's capture record → this
+    unit's own process step, through the REAL `page create` → one staged page
+    under the job's `dest`, carrying the venue-specific body and the venue's
+    own facts."""
     formatter = _formatter()
     job = declared_job(ops, env, wiki, UNIT, JOB_TARGET)
     cap = ticket_in(wiki, job, "watch--5e2e0001", unit=UNIT, item=ITEM)
     _fill(cap)
 
-    out = json.loads(_script(BUILDER, wiki, cap, "--format-transcript", str(formatter)).stdout)
-    assert out["has_transcript"] is True and out["chapters"] == 2
+    _record(wiki, cap)
     _script(REPORTER, wiki, cap, "--outcome", "ok")
-    # Read NOW: the extractor leaves its own `report.json` in this directory,
-    # over the harvest worker's, once `apply` has read it.
     harvest_report = json.loads((cap / "report.json").read_text())
     assert harvest_report["ticket"] == "0123456789ab" and harvest_report["outcome"] == "ok"
     assert harvest_report["captured"] == [{"item": ITEM, "dir": f"_raw/{job.slug}/watch--5e2e0001", "title": META["title"]}]
     record = json.loads((cap / "capture.json").read_text())
-    assert record["slug"] == job.slug and record["item"] == ITEM
+    assert record["slug"] == job.slug and record["item"] == ITEM and "frontmatter" not in record
 
-    (page,) = extracted(ops, env, wiki, cap)
+    out = json.loads(_build(wiki, cap, "--format-transcript", str(formatter), dest=job.dest, ops=shlex.join(ops)).stdout)
+    assert out["has_transcript"] is True and out["chapters"] == 2
+    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written", out["written"][0])
+    process_report = json.loads((cap / "report.json").read_text())
+    assert process_report["written"] == out["written"] and process_report["captured"] == []
+
+    page = wiki / out["written"][0]
     text = page.read_text(encoding="utf-8")
     assert page.is_relative_to(wiki / job.dest), page
 
-    # ONE frontmatter block — the extractor's — and the body after it is ours, verbatim.
+    # ONE frontmatter block — the page verb's — and the body after it is ours, verbatim.
     assert text.startswith("---\n")
     _, front, body = text.split("---\n", 2)
     assert "status: draft" in front and ITEM in front and "Progressive Overload, Explained" in front
+    # the facts the unit knows are ON THE PAGE, not re-guessed from the body
+    assert "type: video" in front and "published: '2026-06-18'" in front and "extracted: 'true'" in front
     assert body.strip() == (cap / "page.md").read_text(encoding="utf-8").strip()
-    # CHANGED by the review fix: this was 3 — the description's own opening `---` used to land as a
-    # rule on the page. The description is a blockquote now, so the extractor's two fences are all there are.
-    assert len(re.findall(r"^---$", text, re.M)) == 2, "the two fences of the extractor's one block"
+    # The description is a blockquote, so the page verb's two fences are all there are.
+    assert len(re.findall(r"^---$", text, re.M)) == 2, "the two fences of the one frontmatter block"
     assert body.lstrip().startswith("# Progressive Overload, Explained\n")
 
     # the venue-specific body survived
@@ -503,7 +583,8 @@ def test_a_hostile_video_builds_a_page_whose_structure_is_all_ours(tmp_path):
         "import json, sys\n"
         "for c in json.load(open(sys.argv[sys.argv.index('--chapters') + 1])):\n"
         "    print('#### [00:00] ' + c['title'] + '\\n\\nwords\\n')\n")
-    _script(BUILDER, tmp_path, cap, "--format-transcript", str(fmt))
+    _record(tmp_path, cap)
+    _build(tmp_path, cap, "--format-transcript", str(fmt))
     body = (cap / "page.md").read_text()
     heads = [line for line in body.split("\n") if re.match(r"#{1,6}\s", line)]
     assert [h for h in heads if not h.startswith("# Real title")] == ["## Description", "## Transcript", "#### [00:00] One # Forged chapter"]
@@ -511,7 +592,8 @@ def test_a_hostile_video_builds_a_page_whose_structure_is_all_ours(tmp_path):
     assert not (cap / "chapters.safe.json").exists(), "the formatter's scratch file is not part of a capture"
     record = json.loads((cap / "capture.json").read_text())
     assert record["title"] == "Real title --- # Forged (script)alert(1)(-script) 'quoted' [[Secret]]"
-    assert all("\n" not in v for v in record["frontmatter"].values() if isinstance(v, str))
+    (create,) = _page_calls(tmp_path)
+    assert all("\n" not in arg for arg in create), "no fact value carries a newline onto the command line"
 
 
 # Rule 3 — `llm-wiki-ops run` starts a script at the WIKI ROOT, not in the capture dir.
@@ -527,17 +609,23 @@ def test_both_scripts_run_from_the_wiki_root_with_the_tickets_relative_capture_d
     cap = _ticketed(tmp_path)
     rel = json.loads((cap / "ticket.json").read_text())["capture_dir"]
     before = {p for p in tmp_path.rglob("*") if p.is_file()}
-    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--format-transcript", str(_stub_formatter(tmp_path)))
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--record")
+    assert cp.returncode == 0, cp.stderr
+    assert json.loads(cp.stdout)["capture"] == f"{rel}/capture.json"
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--dest", DEST,
+                      "--ops", _stub_ops(tmp_path), "--format-transcript", str(_stub_formatter(tmp_path)))
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout)["page"] == f"{rel}/page.md"
     cp = _as_run_does(REPORTER, tmp_path, "--capture-dir", rel, "--outcome", "ok")
     assert cp.returncode == 0, cp.stderr
     new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
-    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", tmp_path / "fmt.py"}, new
+    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", tmp_path / "fmt.py",
+                   tmp_path / "ops_stub.py", tmp_path / "page-calls.jsonl",
+                   tmp_path / DEST / f"{META['title']}.md"}, new
     assert json.loads((cap / "report.json").read_text())["captured"][0]["dir"] == rel
 
 
-@pytest.mark.parametrize("script, tail", [(BUILDER, []), (REPORTER, ["--outcome", "failed", "--reason", "r"])])
+@pytest.mark.parametrize("script, tail", [(BUILDER, ["--record"]), (REPORTER, ["--outcome", "failed", "--reason", "r"])])
 def test_a_capture_dir_that_is_not_wiki_relative_is_refused(tmp_path, script, tail):
     cap = _ticketed(tmp_path)
     for bad in (str(cap), "_raw/yt-job/../yt-job/watch--1a2b3c4d", "_raw/yt-job/nope"):
@@ -551,7 +639,7 @@ def test_the_builder_refuses_a_directory_no_spawner_wrote_a_ticket_into(tmp_path
     used to mean under `run` — holds no ticket.json: refused, nothing written."""
     cap = _ticketed(tmp_path)
     shutil.copy(cap / "metadata.json", tmp_path / "metadata.json")
-    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", ".")
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", ".", "--record")
     assert cp.returncode != 0 and "ticket.json" in cp.stderr and "--item" in cp.stderr
     assert not (tmp_path / "page.md").exists() and not (tmp_path / "capture.json").exists()
 
@@ -561,7 +649,7 @@ def test_the_builder_refuses_a_directory_no_spawner_wrote_a_ticket_into(tmp_path
 
 def _an_earlier_run(tmp_path):
     cap = _ticketed(tmp_path)
-    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    _record(tmp_path, cap)
     _script(REPORTER, tmp_path, cap, "--outcome", "ok")
     assert json.loads((cap / "report.json").read_text())["outcome"] == "ok"
     return cap
@@ -585,7 +673,7 @@ def test_a_failed_yt_dlp_on_a_respawn_is_not_reported_as_the_earlier_runs_captur
     cap = _an_earlier_run(tmp_path)
     _respawn(cap)
     (cap / "metadata.json").write_text("")
-    cp = _script(BUILDER, tmp_path, cap, check=False)
+    cp = _record(tmp_path, cap, check=False)
     assert cp.returncode != 0 and "Traceback" not in cp.stderr
     assert "metadata.json" in cp.stderr and "yt-dlp failed" in cp.stderr
     for stale in ("capture.json", "page.md", "report.json"):
@@ -598,7 +686,7 @@ def test_a_failed_yt_dlp_on_a_respawn_is_not_reported_as_the_earlier_runs_captur
 def test_metadata_that_is_not_yt_dlps_object_is_refused_without_a_traceback(tmp_path, junk):
     cap = _ticketed(tmp_path)
     (cap / "metadata.json").write_text(junk)
-    cp = _script(BUILDER, tmp_path, cap, check=False)
+    cp = _record(tmp_path, cap, check=False)
     assert cp.returncode != 0 and "Traceback" not in cp.stderr and not (cap / "capture.json").exists()
 
 
@@ -615,8 +703,8 @@ def test_the_reporter_cannot_say_ok_off_a_capture_older_than_its_ticket(reporter
     _script(REPORTER, tmp_path, cap, "--outcome", "failed", "--reason", "yt-dlp: Video unavailable")
     report = json.loads((cap / "report.json").read_text())
     assert (report["ticket"], report["outcome"], report["captured"]) == ("feedfacecafe", "failed", [])
-    # …and a build AFTER the respawn is this ticket's, and reportable.
-    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    # …and a capture AFTER the respawn is this ticket's, and reportable.
+    _record(tmp_path, cap)
     assert not reporter.is_stale(cap) and not (cap / "report.json").exists()
     _script(REPORTER, tmp_path, cap, "--outcome", "ok")
     assert len(json.loads((cap / "report.json").read_text())["captured"]) == 1
@@ -652,13 +740,16 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
     cap = ticket_in(wiki, job, leaf, unit=UNIT, item=item)
     _fill(cap)
     (cap / "metadata.json").write_text(json.dumps({**META, "title": title}))
-    _script(BUILDER, wiki, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
-    _script(REPORTER, wiki, cap, "--outcome", "ok")
+    _record(wiki, cap)
     record = json.loads((cap / "capture.json").read_text())
-    report = json.loads((cap / "report.json").read_text())
-    assert report["captured"][0]["title"] == record["title"], "the report's title IS the capture's"
 
-    (page,) = extracted(ops, env, wiki, cap)   # FIRST: the refusal this pins is the host's, not an assertion of ours
+    # FIRST: the refusal this pins is `page create`'s own, not an assertion of ours.
+    out = json.loads(_build(wiki, cap, "--format-transcript", str(_stub_formatter(tmp_path)),
+                            dest=job.dest, ops=shlex.join(ops)).stdout)
+    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written", out["written"][0])
+    report = json.loads((cap / "report.json").read_text())
+    assert report["written"] == out["written"]
+    page = wiki / out["written"][0]
     if safe:
         assert record["title"] == safe
     assert page.is_file() and page.name == f"{record['title']}.md"
@@ -666,5 +757,5 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
     _, front, body = text.split("---\n", 2)
     folded = " ".join(title.split())
     assert body.lstrip().startswith(f"# {folded.replace('<', '&lt;')}\n"), "the TRUE title is the H1"
-    assert record["frontmatter"]["source_title"] == folded
+    assert f"source_title: " in front and folded[:20] in front
     assert len(re.findall(r"^---$", text, re.M)) == 2 and "\n# Forged" not in text

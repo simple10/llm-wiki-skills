@@ -18,11 +18,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-circle ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "circle",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "watch": {
     "defaults": {
       "every": "once",

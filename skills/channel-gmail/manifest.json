@@ -16,11 +16,13 @@
     "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-gmail ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "gmail",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "watch": {
     "defaults": {
       "every": "1d"
@@ -32,6 +34,6 @@
         "required": true
       }
     },
-    "note": "One watch per mailbox — the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, and the unit never reads the credential's value: the binding (`llm-wiki-ops credential bind <slug> <name>`) is this machine's per-mailbox switch — until it has one, the claim gate skips the job's harvest here with a `bindings` doctor row, and nothing fails."
+    "note": "One watch per mailbox \u2014 the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, and the unit never reads the credential's value: the binding (`llm-wiki-ops credential bind <slug> <name>`) is this machine's per-mailbox switch \u2014 until it has one, the claim gate skips the job's harvest here with a `bindings` doctor row, and nothing fails."
   }
 }

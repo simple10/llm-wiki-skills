@@ -10,6 +10,7 @@
   write_report.py <wiki> --capture-dir <dir> --outcome skipped --reason "known: already held"
   write_report.py <wiki> --capture-dir <dir> --outcome failed --reason "yt-dlp: Video unavailable" \\
                   [--missing <host> <url> <denied|timeout|auth|error>]... [--ticket <id>]
+  write_report.py <wiki> --capture-dir <dir> --outcome ok --written <page>...
 
 `report.json` is the only thing that travels back out of a harvest slice: the
 foreman's `pipeline apply` reads it, mints one process ticket per `captured[]`
@@ -24,6 +25,12 @@ nothing else:
 What it reads, all in the capture dir: `ticket.json` for the ticket id and the
 host-derived `capture_dir` (`--ticket` stands in for the id where no spawner
 wrote one), and `capture.json` for the item and title of what landed.
+
+`--written` makes it a PROCESS report: the pages go in `written[]`, `captured[]`
+is empty, and the capture rule below does not apply. A process ticket rewrites
+`ticket.json` long after harvest wrote `capture.json`, so the freshness check
+would refuse every honest process report; what a process run must not do is
+claim a page, and `--written` is checked against the pages being there.
 
 `captured[]` is derived, never claimed: an outcome that says something landed
 (`ok`, `partial`, `unchanged`) is REFUSED unless `capture.json` is there, names
@@ -93,7 +100,7 @@ def captured_of(cap_dir, capture_rel):
     return {"item": record.get("item"), "dir": capture_rel, "title": record.get("title")}
 
 
-def build_report(cap_dir, capture_rel, *, ticket, outcome, reason=None, missing=()):
+def build_report(cap_dir, capture_rel, *, ticket, outcome, reason=None, missing=(), written=(), wiki=None):
     """The report as a dict. Raises ValueError on a report that would lie."""
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
@@ -104,8 +111,16 @@ def build_report(cap_dir, capture_rel, *, ticket, outcome, reason=None, missing=
         if why not in WHYS:
             raise ValueError(f"missing: why must be one of {', '.join(WHYS)}, not {why!r}")
         rows.append({"host": host, "url": url, "why": why})
+    pages = []
+    for rel in written:
+        named = str(rel).strip("/")
+        if not named or Path(named).is_absolute() or ".." in Path(named).parts:
+            raise ValueError(f"--written takes a WIKI-RELATIVE page path, not {rel!r}")
+        if wiki is not None and not (Path(wiki) / named).is_file():
+            raise ValueError(f"--written names {named}, which is not a file here — a report never claims a page")
+        pages.append(named)
     captured = []
-    if outcome in LANDED:
+    if outcome in LANDED and not pages:
         if is_stale(cap_dir):
             raise ValueError(
                 f"outcome {outcome!r} says a capture landed, and {capture_rel}/{CAPTURE_NAME} is older than "
@@ -125,7 +140,7 @@ def build_report(cap_dir, capture_rel, *, ticket, outcome, reason=None, missing=
         "outcome": outcome,
         "reason": reason or None,
         "captured": captured,
-        "written": [],
+        "written": pages,
         "missing": rows,
         "discovered": [],
     }
@@ -140,6 +155,11 @@ def main():
     ap.add_argument(
         "--missing", nargs=3, action="append", default=[], metavar=("HOST", "URL", "WHY"),
         help=f"one url that could not be reached (repeatable); WHY is one of {', '.join(WHYS)}",
+    )
+    ap.add_argument(
+        "--written", action="append", default=[], metavar="PAGE",
+        help="a wiki-relative page this PROCESS run wrote (repeatable). Given, the report is a process "
+             "report: `written[]` is these and `captured[]` is empty",
     )
     ap.add_argument("--ticket", default=None, help="the ticket id. Defaults to ticket.json's `ticket`")
     args = ap.parse_args()
@@ -163,12 +183,16 @@ def main():
     (cap_dir / REPORT_NAME).unlink(missing_ok=True)
     try:
         report = build_report(
-            cap_dir, capture_rel, ticket=ticket, outcome=args.outcome, reason=args.reason, missing=args.missing
+            cap_dir, capture_rel, ticket=ticket, outcome=args.outcome, reason=args.reason,
+            missing=args.missing, written=args.written, wiki=args.wiki,
         )
     except ValueError as exc:
         sys.exit(f"write_report: {exc}")
     (cap_dir / REPORT_NAME).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"report": f"{capture_rel}/{REPORT_NAME}", "outcome": args.outcome, "captured": len(report["captured"])}))
+    print(json.dumps({
+        "report": f"{capture_rel}/{REPORT_NAME}", "outcome": args.outcome,
+        "captured": len(report["captured"]), "written": len(report["written"]),
+    }))
     return 0
 
 
