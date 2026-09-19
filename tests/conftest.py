@@ -1,7 +1,7 @@
 """The package harness: every test runs the REAL ops CLI against a throwaway
 wiki, with this checkout served as the package.
 
-    LLM_WIKI_OPS   the CLI to run (a command line; default: `llm-wiki-ops-v1`
+    LLM_WIKI_OPS   the ops CLI to run (a command line; default: `llm-wiki-ops`
                    on PATH). Absent → the install tests skip, saying so.
 
 The checkout is symlinked as `marketplaces/<owner>/<repo>` under a tmp
@@ -38,8 +38,16 @@ def _ops_argv() -> list | None:
     spec = os.environ.get("LLM_WIKI_OPS")
     if spec:
         return shlex.split(spec)
-    exe = shutil.which("llm-wiki-ops-v1")
+    exe = shutil.which("llm-wiki-ops")
     return [exe] if exe else None
+
+
+def _cli(ops: list) -> list:
+    """The machine CLI, out of the same command line. `init` is the one verb
+    outside both scopes — it acts on a directory that is not a wiki yet, so it
+    has no root to be dispatched with — and both scripts ship in one
+    distribution, so only the last word differs."""
+    return [*ops[:-1], "llm-wiki-cli"]
 
 
 @dataclass
@@ -57,7 +65,7 @@ class Result:
 def ops() -> list:
     argv = _ops_argv()
     if not argv:
-        pytest.skip("no ops CLI: set LLM_WIKI_OPS or put llm-wiki-ops-v1 on PATH")
+        pytest.skip("no ops CLI: set LLM_WIKI_OPS or put llm-wiki-ops on PATH")
     return argv
 
 
@@ -70,7 +78,7 @@ def env(tmp_path_factory, ops) -> dict:
     e = dict(os.environ)
     # A suite started from inside a wiki session must not act on THAT wiki:
     # these are what bind one ambiently, ahead of the `cwd=` a `run` case uses.
-    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS_DISPATCHED"):
+    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR"):
         e.pop(ambient, None)
     e.update(
         LLM_WIKI_PACKAGES_HOME=str(home),
@@ -89,11 +97,13 @@ def run(ops: list, env: dict, *args, cwd=None) -> Result:
     return Result(cp.returncode, cp.stdout, cp.stderr)
 
 
-def at(wiki: Path) -> str:
-    """The CLI is root-bound — no verb takes a wiki positional. `wiki=<path>`
-    is the token every verb accepts anywhere among its own; a `run` child owns
-    its whole argv, so that one verb binds by `cwd=` instead."""
-    return f"wiki={wiki}"
+def at(env: dict, wiki: Path) -> dict:
+    """The environment that binds a call to `wiki`. The CLI is root-bound and
+    no verb takes a wiki argument: `LLM_WIKI_ROOT` names the wiki a caller
+    standing outside it means, and it must be ABSOLUTE. A `run` child owns its
+    whole argv, so that one verb binds by `cwd=` instead — and a case that
+    stands inside the wiki may pass both, because they agree."""
+    return {**env, "LLM_WIKI_ROOT": str(Path(wiki).resolve())}
 
 
 @pytest.fixture(scope="session")
@@ -101,16 +111,17 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     """One `init`ed wiki for the session — installs accumulate in it, which
     is what a real wiki does."""
     w = tmp_path_factory.mktemp("wiki") / "w"
-    r = run(ops, env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
+    r = run(_cli(ops), env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
     assert r.returncode == 0, r.stderr
     return w
 
 
 @pytest.fixture(scope="session")
-def tactics_group(ops, env) -> None:
+def tactics_group(ops, env, wiki) -> None:
     """Skips unless the CLI at hand has a `tactics` group. Asked of the CLI
-    rather than assumed, so the cases run again the day it is ported."""
-    if run(ops, env, "tactics", "--help").returncode != 0:
+    rather than assumed, so the cases run again the day it is ported. Asked
+    INSIDE the wiki: a root-bound CLI refuses every argv without one."""
+    if run(ops, at(env, wiki), "tactics", "--help").returncode != 0:
         pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")
 
 
@@ -120,7 +131,7 @@ def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
     that needs the unit asks for it rather than leaning on another having run
     (`-k`, `--lf`, a shuffled or split run)."""
     for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
-        r = run(ops, env, "--json", *verb, at(wiki))
+        r = run(ops, at(env, wiki), "--json", *verb)
         assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -139,9 +150,9 @@ def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extr
     source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
     slug = slug or f"port-{unit}"
-    r = run(ops, env, "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, at(wiki))
+    r = run(ops, at(env, wiki), "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
     assert r.returncode == 0, r.stdout + r.stderr
-    record = run(ops, env, "--json", "pipeline", "show", slug, at(wiki)).data["job"]
+    record = run(ops, at(env, wiki), "--json", "pipeline", "show", slug).data["job"]
     return Job(slug, record["dest"], record)
 
 
@@ -166,7 +177,7 @@ def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) 
 def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
     """The REAL extractor over one capture — the pages it wrote, as paths. The
     whole point of a unit's harvest is that this works on what it left."""
-    r = run(ops, env, "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)), at(wiki))
+    r = run(ops, at(env, wiki), "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)))
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.data["pages"] or r.data["ledgers"], r.data
     return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]

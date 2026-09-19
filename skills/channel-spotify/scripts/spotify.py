@@ -255,16 +255,10 @@ def wiki_root(start=None):
 OPS = "llm-wiki-ops"
 
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. Both names belong to the machine-global bash dispatcher that IS
-# `llm-wiki-ops` on PATH (the llm-wiki-global plugin's `scripts/llm-wiki-ops`),
-# not to the CLI package it hands off to — read there, 2026-09: it sets
-# `LLM_WIKI_OPS_DISPATCHED` as its re-entry guard and refuses (exit 127) a
-# call that already carries it, and it picks the wiki from `CLAUDE_PROJECT_DIR`, when
-# that names one, AHEAD of the cwd. This script runs below that dispatcher, so
-# the guard is still set in here and a nested call is not the loop it guards
-# against; and without dropping the second, `cwd=<root>` would not be what
-# picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 
 def _ops(root, *args, **kw):

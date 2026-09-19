@@ -127,14 +127,10 @@ _FORGES = str.maketrans({"`": "'", "[": "(", "]": ")"})  # `pipeline/extract.py:
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. Both names belong to the machine-global dispatcher that is the bare
-# `llm-wiki-ops` on PATH: it exports `LLM_WIKI_OPS_DISPATCHED=1` before it execs
-# the wiki's shim and refuses (127) any call arriving with it, as a loop. The
-# guard is still set in here — this script is the dispatcher's grandchild — and
-# this call is not a loop. And the dispatcher seeds its walk for the wiki root
-# from `$CLAUDE_PROJECT_DIR` AHEAD of the cwd, so without dropping it the cwd
-# would not be what picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 # `page create`'s one refusal that is not a failure: this day already has a
 # ledger. The TAIL only: the CLI says `<path> already exists — the filename is
 # the title`, and `--json` prints that em dash escaped, so a marker carrying

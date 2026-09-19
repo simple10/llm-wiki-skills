@@ -61,11 +61,10 @@ from urllib.parse import urlsplit
 OPS = "llm-wiki-ops"
 
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. The re-entry guard is still set in here — this script is the front
-# door's grandchild — and a call carrying it is refused (127) as a loop, which
-# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
-# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 
 def _ops(root, *args):

@@ -161,10 +161,10 @@ RAW = "_raw"
 # The front door, by the bare name every SKILL.md runs this script under.
 OPS = "llm-wiki-ops"
 # What a nested front-door call must NOT inherit from the one that ran this
-# script: the machine-global dispatcher's re-entry guard (a call carrying it
-# is refused, 127, as a loop — and this is not one) and the variable it binds
-# a wiki from AHEAD of the cwd.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 # Addresses `run` serves out of the plugin, not paths in this wiki.
 ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
 

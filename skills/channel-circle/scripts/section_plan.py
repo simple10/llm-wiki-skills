@@ -937,11 +937,13 @@ def _plan_and_leaf(args):
 
 
 # The front door, by bare name, for the one plugin script that needs a lesson's
-# url as an argument. Same rule as `capture_lesson.py`'s `_ops`: the re-entry
-# guard and the project binding of the call that ran THIS script are not the
-# nested call's.
+# url as an argument. Same rule as `capture_lesson.py`'s `_ops`.
 OPS = "llm-wiki-ops"
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
 
 

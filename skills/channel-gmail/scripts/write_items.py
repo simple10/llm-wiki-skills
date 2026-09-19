@@ -124,10 +124,11 @@ LINES_NAME = "lines.json"
 BULLET_MAX = 200  # `extract.py::_plain`'s cap, kept so a ledger reads the same from either writer
 LEDGER_TYPE = "ledger"
 OPS = "llm-wiki-ops"
-# The re-entry guard and the project binding of the call that ran THIS script
-# are not a nested call's: `llm-wiki-ops` started under `LLM_WIKI_OPS_DISPATCHED`
-# exits 127 with the re-entry refusal.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 AHEAD_MS = 86_400_000  # how far ahead of this machine's clock an item's own time is still believed: a day of skew
 
 

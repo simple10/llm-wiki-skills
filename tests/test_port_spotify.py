@@ -625,7 +625,7 @@ def front_door(tmp_path: Path, monkeypatch, ops: list) -> None:
     shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(x) for x in ops) + ' "$@"\n')
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}")
-    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS_DISPATCHED"):
+    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR"):
         monkeypatch.delenv(ambient, raising=False)
 
 

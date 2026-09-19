@@ -332,7 +332,7 @@ import json, os, sys
 seen, plan = os.environ["NOTION_SEEN"], json.loads(os.environ["NOTION_PLAN"])
 calls = json.loads(open(seen).read()) if os.path.exists(seen) else []
 calls.append({"argv": sys.argv[1:], "cwd": os.getcwd(), "stdin": sys.stdin.read(),
-              "inherited": sorted(k for k in ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR") if k in os.environ)})
+              "inherited": sorted(k for k in ("CLAUDE_PROJECT_DIR",) if k in os.environ)})
 open(seen, "w").write(json.dumps(calls))
 step = plan[min(len(calls) - 1, len(plan) - 1)]
 sys.stdout.write(json.dumps(step.get("out") or {}))
@@ -353,7 +353,7 @@ def test_the_existing_page_marker_survives_the_clis_json_voice():
 def door(tmp_path):
     """`llm-wiki-ops`, first on PATH, answering a planned list of `(rc, out)`
     and recording every call. The ambient env carries what a hosted script
-    really inherits, so the re-entry guard is there to be dropped."""
+    really inherits, so the harness's project dir is there to be dropped."""
     bin_dir, seen = tmp_path / "front-door", tmp_path / "seen.json"
     bin_dir.mkdir()
     stub = bin_dir / "llm-wiki-ops"
@@ -364,7 +364,7 @@ def door(tmp_path):
         env = dict(os.environ)
         env.update(PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", NOTION_SEEN=str(seen),
                    NOTION_PLAN=json.dumps([{"rc": rc, "out": out} for rc, out in steps]),
-                   LLM_WIKI_OPS_DISPATCHED="1", CLAUDE_PROJECT_DIR=str(tmp_path / "some-other-wiki"))
+                   CLAUDE_PROJECT_DIR=str(tmp_path / "some-other-wiki"))
         return env
 
     plan.calls = lambda: json.loads(seen.read_text(encoding="utf-8"))
@@ -468,11 +468,14 @@ def job(ops, env, wiki):
 @pytest.fixture
 def real_door(tmp_path, ops, env, wiki):
     """The front door this unit writes a page through, bound to the harness
-    wiki — the real CLI, with the `wiki=` token every verb takes."""
+    wiki — the real CLI, rooted the way a caller outside the wiki roots one."""
     bin_dir = tmp_path / "real-door"
     bin_dir.mkdir()
     stub = bin_dir / "llm-wiki-ops"
-    stub.write_text(f'#!/bin/sh\nexec {shlex.join(ops)} "$@" wiki={shlex.quote(str(wiki))}\n')
+    stub.write_text(
+        f'#!/bin/sh\nexport LLM_WIKI_ROOT={shlex.quote(str(Path(wiki).resolve()))}\n'
+        f'exec {shlex.join(ops)} "$@"\n'
+    )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
 

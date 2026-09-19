@@ -523,7 +523,6 @@ def fake_ops(tmp_path: Path, *, create_code: int = 0, edit_code: int = 0) -> tup
         "import json, os, sys\n"
         f"log = {str(log)!r}\n"
         "entry = {'argv': sys.argv[1:], 'body': sys.stdin.read(),\n"
-        "         'dispatched': os.environ.get('LLM_WIKI_OPS_DISPATCHED'),\n"
         "         'project': os.environ.get('CLAUDE_PROJECT_DIR')}\n"
         "open(log, 'a').write(json.dumps(entry) + '\\n')\n"
         f"sys.exit({create_code} if sys.argv[2] == 'create' else {edit_code})\n",
@@ -531,7 +530,7 @@ def fake_ops(tmp_path: Path, *, create_code: int = 0, edit_code: int = 0) -> tup
     )
     shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-           "LLM_WIKI_OPS_DISPATCHED": "1", "CLAUDE_PROJECT_DIR": str(tmp_path)}
+           "CLAUDE_PROJECT_DIR": str(tmp_path)}
     return env, log
 
 
@@ -559,14 +558,14 @@ def test_the_process_step_builds_the_page_as_an_argv_list_with_the_body_on_stdin
     assert call["body"].endswith("discarded: 0 (junk rules)\n")
 
 
-def test_the_nested_front_door_call_is_not_the_dispatched_one(tmp_path):
-    """A script `llm-wiki-ops run` started inherits `LLM_WIKI_OPS_DISPATCHED`,
-    and a nested bare `llm-wiki-ops` under it exits 127 on the re-entry guard."""
+def test_the_nested_front_door_call_does_not_carry_the_harness_project_dir(tmp_path):
+    """The wiki a nested call acts in is the cwd this script was started at,
+    never a directory the harness named."""
     directory = pulled(tmp_path, msg(1))
     env, log = fake_ops(tmp_path)
     assert ledger(directory, [line_for(1)], "--dest", "research/channels/mail", env=env).returncode == 0
     (call,) = calls(log)
-    assert call["dispatched"] is None and call["project"] is None
+    assert call["project"] is None
 
 
 def test_a_second_pull_of_the_day_edits_the_page_the_first_one_left(tmp_path):

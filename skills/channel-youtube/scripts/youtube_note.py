@@ -104,17 +104,10 @@ from pathlib import Path
 OPS = "llm-wiki-ops"
 
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. Both names belong to the MACHINE-GLOBAL bash dispatcher that is the
-# bare `llm-wiki-ops` on PATH (the llm-wiki-global plugin's
-# `plugin/scripts/llm-wiki-ops`) — not to the versioned CLI package, where a
-# search for either finds nothing. That dispatcher exports
-# `LLM_WIKI_OPS_DISPATCHED=1` before it execs the wiki's shim and refuses
-# (127) any call that arrives carrying it, as a loop. The guard is still set in
-# here — this script is the dispatcher's grandchild — and this call is not a
-# loop. And the dispatcher seeds its walk for the wiki root from
-# `$CLAUDE_PROJECT_DIR`, when that names a wiki, AHEAD of the cwd, so without
-# dropping it `cwd=<root>` would not be what picks the wiki.
-NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+# script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
+# root: the `cwd=<root>` this script was handed is what binds the nested call
+# to THIS wiki.
+NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 # An address `run` serves out of the plugin, not a path in this wiki.
 FORMATTER = "skills/process/scripts/format_transcript.py"

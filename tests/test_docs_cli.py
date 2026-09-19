@@ -40,7 +40,7 @@ _WORD = re.compile(r"^[a-z][a-z-]*$")
 _COMMENT = re.compile(r"(^|\s)#\s.*$")  # `# a comment`, never the `#400` inside an argument
 _CHAINED = re.compile(r"\s(?:&&|\|\||;|\|)\s")
 _DOTTED_KEY = re.compile(r"^([a-z_]+)\.([A-Za-z_<>-]+)=")
-_BY_PATH = re.compile(r"\S*/bin/llm-wiki-ops\b")  # the wiki's shim, run by path
+_BY_PATH = re.compile(r"\S*/bin/llm-wiki-ops\b")  # the CLI, named by a path instead of on PATH
 _PLUGIN_ADDRESS = re.compile(r"\brun\s+((?:scripts|skills/[\w-]+/scripts)/[\w/.-]+\.py)")
 # The other half of `run`'s namespace: a UNIT's own script, served out of this
 # wiki's enabled copy. A doc naming one that is not in the package is the same
@@ -81,14 +81,16 @@ def _commands(text: str):
 
 
 @pytest.fixture(scope="session")
-def cli(ops, env):
+def cli(ops, env, wiki):
     """`help_of(*path)` — the CLI's own `--help` for a command path, or None
-    where it has no such command. Asked once per path."""
+    where it has no such command. Asked once per path, inside the wiki: the
+    CLI is root-bound and refuses an argv with no wiki behind it, `--help`
+    among them."""
     seen: dict = {}
 
     def help_of(*path: str):
         if path not in seen:
-            r = run(ops, env, *path, "--help")
+            r = run(ops, at(env, wiki), *path, "--help")
             seen[path] = r.stdout if r.returncode == 0 else None
         return seen[path]
 
@@ -100,9 +102,9 @@ def job_record(ops, env, wiki) -> dict:
     """One real job's record — the sections and keys a dotted `section.key=`
     may name. Asked of the CLI, so a key the schema drops goes red here."""
     slug = "docs-probe"
-    r = run(ops, env, "--json", "pipeline", "add", "https://example.invalid/docs", f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once", at(wiki))
+    r = run(ops, at(env, wiki), "--json", "pipeline", "add", "https://example.invalid/docs", f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once")
     assert r.returncode == 0, r.stdout + r.stderr
-    return run(ops, env, "--json", "pipeline", "show", slug, at(wiki)).data["job"]
+    return run(ops, at(env, wiki), "--json", "pipeline", "show", slug).data["job"]
 
 
 def _subcommands(help_text: str) -> set:
@@ -114,7 +116,7 @@ def _wrong(cli, job_record, text: str, unit: str | None) -> list:
     """Every stale command in one doc's text, each as a line saying why."""
     groups = _subcommands(cli())
     inputs = set((unit_manifest(unit).get("watch") or {}).get("inputs") or {}) if unit else set()
-    wrong = [f"`{hit}` — the wiki's shim, run by path; it is the bare `llm-wiki-ops` now" for hit in _BY_PATH.findall(text)]
+    wrong = [f"`{hit}` — the CLI run by path; it is the bare `llm-wiki-ops`, on PATH" for hit in _BY_PATH.findall(text)]
     for group, second, flags, keys, span in _commands(text):
         if group in RETIRED:
             wrong.append(f"`{span}` — the `{group}` group is retired")
@@ -162,7 +164,7 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
         ("`llm-wiki-ops skills enable x --conf`", "takes no `--conf`"),
         ("`llm-wiki-ops pipeline add u slug=s harvest.maxage=3m`", "no `harvest.maxage`"),
         ("`llm-wiki-ops pipeline add u slug=s option.mailbox=m`", "no `option.mailbox`"),
-        ("`<ops dir>/bin/llm-wiki-ops tactics install x`", "run by path"),
+        ("`<ops dir>/bin/llm-wiki-ops tactics install x`", "run by path"),  # no wiki carries a bin/
         ("```\ncd w && llm-wiki-ops skills find x\n```", "has no `find`"),
         ('```\nllm-wiki-ops skills search "ep #400" --bogus\n```', "takes no `--bogus`"),
     ],

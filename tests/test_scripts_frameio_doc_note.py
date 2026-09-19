@@ -76,7 +76,7 @@ def _front_door(root: Path, monkeypatch, body="print(json.dumps({'ok': True}))")
         "import json, os, sys\n"
         f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
         "    'stdin': sys.stdin.read(),\n"
-        "    'guard': sorted(k for k in ('LLM_WIKI_OPS_DISPATCHED', 'CLAUDE_PROJECT_DIR') if k in os.environ)}) + '\\n')\n"
+        "    'guard': sorted(k for k in ('CLAUDE_PROJECT_DIR',) if k in os.environ)}) + '\\n')\n"
         f"{body}\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
@@ -107,11 +107,10 @@ def _read(root: Path):
 def test_the_page_is_written_by_the_front_door_from_the_wiki_root(tmp_path, monkeypatch, capsys):
     """`page create` with an argv LIST — every value on it is venue text — from
     the wiki root, which is all that binds the front door to THIS wiki, and
-    WITHOUT the re-entry guard the dispatcher sets on its own grandchildren."""
+    WITHOUT the project directory the harness set on this script."""
     root = tmp_path / "wiki"
     _capture(root)
     seen = _front_door(root, monkeypatch)
-    monkeypatch.setenv("LLM_WIKI_OPS_DISPATCHED", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "another-wiki"))
     assert _run(monkeypatch, root) == 0
 

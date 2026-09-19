@@ -57,7 +57,6 @@ def front_door(tmp_path, monkeypatch):
     bin_dir, seen = tmp_path / "stub-bin", tmp_path / "seen.json"
     bin_dir.mkdir()
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("LLM_WIKI_OPS_DISPATCHED", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path / "some-other-wiki"))
 
     def answer(rc: int, json_answer: dict, prose: str = "prose for a person\n", honors_json: bool = True):
@@ -66,7 +65,7 @@ def front_door(tmp_path, monkeypatch):
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'stdin': sys.stdin.read() if not sys.stdin.isatty() else '',\n"
-            f"           'inherited': sorted(k for k in ('LLM_WIKI_OPS_DISPATCHED', 'CLAUDE_PROJECT_DIR') if k in os.environ)}},\n"
+            f"           'inherited': sorted(k for k in ('CLAUDE_PROJECT_DIR',) if k in os.environ)}},\n"
             f"          open({str(seen)!r}, 'w'))\n"
             f"sys.stdout.write({json.dumps(json_answer)!r} if {honors_json!r} and '--json' in sys.argv else {prose!r})\n"
             f"sys.exit({rc})\n"

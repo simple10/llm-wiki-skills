@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import declared_job, ticket_in
+from conftest import at, declared_job, ticket_in
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills/channel-substack/scripts"
@@ -987,8 +987,8 @@ def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env,
             "printf '%s' 'body' | "
             + shlex.join([*ops, "--json", "page", "create"])
             + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
-            + f" 'extracted=true' 'type=article' --stdin 'wiki={wiki}'"
+            + f" 'extracted=true' 'type=article' --stdin"
         )
-        done = subprocess.run(["/bin/sh", "-c", line], env=env, capture_output=True, text=True, check=False)
+        done = subprocess.run(["/bin/sh", "-c", line], env=at(env, wiki), capture_output=True, text=True, check=False)
         assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
         assert (wiki / json.loads(done.stdout)["path"]).is_file()
