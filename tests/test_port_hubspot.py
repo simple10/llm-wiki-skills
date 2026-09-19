@@ -806,7 +806,7 @@ def _stub_front_door(tmp_path: Path) -> tuple[dict, Path]:
         encoding="utf-8",
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": str(stub)}
     return env, seen
 
 

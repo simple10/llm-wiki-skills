@@ -89,6 +89,8 @@ import argparse
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -124,6 +126,22 @@ LINES_NAME = "lines.json"
 BULLET_MAX = 200  # `extract.py::_plain`'s cap, kept so a ledger reads the same from either writer
 LEDGER_TYPE = "ledger"
 OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
 # root: the `cwd=<root>` this script was handed is what binds the nested call
@@ -663,7 +681,7 @@ def _ops(argv, body):
     that ran THIS script are not this call's."""
     env = {key: value for key, value in os.environ.items() if key not in NOT_INHERITED}
     try:
-        return subprocess.run([OPS, *argv], input=body, capture_output=True, text=True, env=env, check=False)
+        return subprocess.run([*(front_door() or [OPS]), *argv], input=body, capture_output=True, text=True, env=env, check=False)
     except OSError as exc:
         return subprocess.CompletedProcess(argv, 127, "", f"could not start {OPS}: {type(exc).__name__}: {exc}")
 

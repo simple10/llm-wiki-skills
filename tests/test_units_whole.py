@@ -141,13 +141,15 @@ def _holders(name: str) -> list:
     return sorted(p for p in (ROOT / "skills").glob("*/scripts/*.py") if _function(p, name))
 
 
-@pytest.mark.parametrize(("name", "at_least"), [("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4)])
+@pytest.mark.parametrize(("name", "at_least"), [("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4), ("front_door", 9)])
 def test_code_the_units_share_by_copying_is_one_piece_of_code(name, at_least):
     """A unit is installed on its own, so what several need is COPIED into
     each — and a copy fixed in one unit and not the rest is a wiki whose pages
     are named by two rules. `safe_title` is what makes a venue's title a name
-    the host's filename rule will hold; the other three are the pass that
-    keeps two leaves with one title from being one page."""
+    the host's filename rule will hold; the next three are the pass that keeps
+    two leaves with one title from being one page; `front_door` is how every
+    unit finds the CLI, and a copy that reads PATH alone is the one that dies
+    in a slice."""
     holders = _holders(name)
     assert len(holders) >= at_least, [str(p.relative_to(ROOT)) for p in holders]
     bodies = {_function(p, name) for p in holders}

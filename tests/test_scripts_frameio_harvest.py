@@ -42,7 +42,7 @@ def _module(path, name=None):
 #: What a unit script may import: the stdlib it uses, its PEP 723
 #: dependencies, and the one sibling module. Nothing of the plugin's.
 ALLOWED_IMPORTS = {
-    "argparse", "fnmatch", "hashlib", "json", "re", "shutil", "subprocess",
+    "argparse", "fnmatch", "hashlib", "json", "re", "shlex", "shutil", "subprocess",
     "sys", "time", "datetime", "pathlib", "urllib",
     # `os`/`signal`: a child with a deadline is killed by process GROUP, and
     # `report.json` is written through `os.replace`. `unicodedata`: stdlib,

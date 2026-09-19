@@ -362,7 +362,7 @@ def door(tmp_path):
 
     def plan(*steps):
         env = dict(os.environ)
-        env.update(PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", NOTION_SEEN=str(seen),
+        env.update(PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", LLM_WIKI_OPS=str(stub), NOTION_SEEN=str(seen),
                    NOTION_PLAN=json.dumps([{"rc": rc, "out": out} for rc, out in steps]),
                    CLAUDE_PROJECT_DIR=str(tmp_path / "some-other-wiki"))
         return env
@@ -477,7 +477,7 @@ def real_door(tmp_path, ops, env, wiki):
         f'exec {shlex.join(ops)} "$@"\n'
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
 
 
 def test_the_two_steps_make_the_days_ledger_out_of_what_the_pull_left(ops, env, wiki, job, real_door):

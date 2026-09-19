@@ -48,6 +48,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 from datetime import datetime, timezone
@@ -62,6 +64,21 @@ META_NAME = "meta.json"
 # The front door, by the bare name every SKILL.md already runs this unit's
 # scripts under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
 
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki

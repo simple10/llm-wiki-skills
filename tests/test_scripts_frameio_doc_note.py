@@ -81,6 +81,7 @@ def _front_door(root: Path, monkeypatch, body="print(json.dumps({'ok': True}))")
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("LLM_WIKI_OPS", str(stub))
     return seen
 
 

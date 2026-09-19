@@ -12,6 +12,7 @@ fails here instead of on a wiki.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -176,3 +177,97 @@ def test_outside_a_wiki_there_is_no_store_to_ask(spotify, front_door):
     front_door(0, {"name": "spotify", "value": json.dumps(STORED), "store": "/s"})
     assert spotify.load_auth(None) == {}
     assert not front_door.seen.exists(), "the front door was run with no wiki to bind it to"
+
+
+# --- every unit reaches the front door a hosted run NAMES ----------------------
+
+
+def _named_only(tmp_path, monkeypatch):
+    """A recording `llm-wiki-ops` reachable ONLY through `LLM_WIKI_OPS`: the
+    bare name is on no PATH the script can see. Returns a reader of the calls."""
+    bin_dir, seen = tmp_path / "named-bin", tmp_path / "named.jsonl"
+    bin_dir.mkdir()
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd()}}) + '\\n')\n"
+        "print('{}')\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-bare-name-here"))
+    monkeypatch.setenv("LLM_WIKI_OPS", str(stub))
+
+    def calls():
+        return [json.loads(line) for line in seen.read_text().splitlines()] if seen.exists() else []
+
+    return calls
+
+
+def _load_spawner(unit: str, script: str):
+    """`_load`, with the unit's own `scripts/` on `sys.path`: a unit ships
+    siblings that import each other."""
+    here = str(SKILLS / unit / "scripts")
+    sys.path.insert(0, here)
+    try:
+        return _load(unit, script, "requests")
+    finally:
+        sys.path.remove(here)
+
+
+def _reach_ops(mod, tmp_path, monkeypatch):
+    mod._ops(tmp_path, "credential", "profile-dir", "example.test")
+
+
+def _reach_section_plan(mod, tmp_path, monkeypatch):
+    leaf = {"url": "https://example.invalid/lesson", "dir": "d"}
+    monkeypatch.setattr(mod, "_plan_and_leaf", lambda args: (tmp_path, {}, leaf))
+    monkeypatch.setattr(mod, "leaf_path", lambda capture_dir, one: tmp_path)
+    mod.cmd_detect(types.SimpleNamespace())
+
+
+def _reach_gmail(mod, tmp_path, monkeypatch):
+    mod._ops(["--json", "page", "create"], "body")
+
+
+def _reach_leaves(mod, tmp_path, monkeypatch):
+    mod._spawn(tmp_path, "run", "skills/harvest/scripts/assets.py")
+
+
+def _reach_notion(mod, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with contextlib.suppress(Exception):
+        mod.write_page("research/channels/tasks", "2026-01-01", {}, "body")
+
+
+def _reach_frameio(mod, tmp_path, monkeypatch):
+    with contextlib.suppress(SystemExit):
+        mod.write_page(tmp_path, "sources/scrapes/x", "Title", [], "body")
+
+
+def _reach_youtube(mod, tmp_path, monkeypatch):
+    with contextlib.suppress(SystemExit):
+        mod.write_page(tmp_path, "sources/youtube/x", "Title", {}, "body")
+
+
+SPAWNERS = [
+    ("channel-circle", "capture_lesson.py", _reach_ops),
+    ("channel-circle", "outage_probe.py", _reach_ops),
+    ("channel-circle", "section_plan.py", _reach_section_plan),
+    ("channel-frameio", "frameio_doc_note.py", _reach_frameio),
+    ("channel-gmail", "write_items.py", _reach_gmail),
+    ("channel-hubspot-video", "leaves.py", _reach_leaves),
+    ("channel-notion-tasks", "write_items.py", _reach_notion),
+    ("channel-spotify", "spotify.py", _reach_ops),
+    ("channel-youtube", "youtube_note.py", _reach_youtube),
+]
+
+
+@pytest.mark.parametrize(("unit", "script", "reach"), SPAWNERS, ids=[f"{u}-{s}" for u, s, _ in SPAWNERS])
+def test_every_unit_reaches_the_front_door_a_hosted_run_names(unit, script, reach, tmp_path, monkeypatch):
+    """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was itself
+    reached by. A jail is not promised the `~/.local/bin` entry the bare name
+    is, so a unit that reads PATH alone is the one that dies in a slice."""
+    calls = _named_only(tmp_path, monkeypatch)
+    mod = _load_spawner(unit, script)
+    reach(mod, tmp_path, monkeypatch)
+    assert calls(), f"{unit}/{script} never reached the front door `LLM_WIKI_OPS` names"

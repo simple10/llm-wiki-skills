@@ -91,6 +91,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -126,6 +127,22 @@ _FORGES = str.maketrans({"`": "'", "[": "(", "]": ")"})  # `pipeline/extract.py:
 # The front door, by the bare name every SKILL.md already runs this script
 # under — never a path into the wiki, which stops carrying a shim.
 OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
 # root: the `cwd=<root>` this script was handed is what binds the nested call
@@ -694,9 +711,9 @@ def write_page(dest, title, front, body):
 
     The wiki is the cwd: `llm-wiki-ops run` starts this script at the wiki
     root, and that is what binds the front door to THIS wiki."""
-    ops = shutil.which(OPS)
-    if ops is None:
-        raise PageRefused(f"`{OPS}` is not on PATH \u2014 the front door is how this unit writes a page; install the ops plugin on this machine")
+    door = front_door()
+    if not door:
+        raise PageRefused(f"`{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing \u2014 the front door is how this unit writes a page; install the ops plugin on this machine")
     where = {"cwd": os.getcwd(), "env": _front_door_env()}
     keys = [f"{key}={value}" for key, value in front.items()]
     # `status=` EMPTY, on create only. A ledger is outside the corpus and the
@@ -705,7 +722,7 @@ def write_page(dest, title, front, body):
     # curate, revise and retire are what move a status) and does not need it:
     # a page created without a status still has none after an edit.
     created = subprocess.run(
-        [ops, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "status=", "--stdin"],
+        [*door, "--json", "page", "create", f"title={title}", f"dest={dest}", *keys, "status=", "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     rel = f"{dest}/{title}.md"
@@ -715,7 +732,7 @@ def write_page(dest, title, front, body):
     if EXISTS not in said:
         raise PageRefused(f"`page create` refused (exit {created.returncode}): {said[-300:]}")
     edited = subprocess.run(
-        [ops, "--json", "page", "edit", rel, *keys, "--stdin"],
+        [*door, "--json", "page", "edit", rel, *keys, "--stdin"],
         input=body, capture_output=True, text=True, **where,
     )
     if edited.returncode != 0:

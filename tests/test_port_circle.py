@@ -685,7 +685,7 @@ def stub_front_door(tmp_path: Path, answer: dict, rc: int = 0) -> tuple[dict, Pa
         f"sys.stdout.write({json.dumps(answer)!r})\nsys.exit({rc})\n")
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-           "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")}
+           "LLM_WIKI_OPS": str(stub), "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")}
     return env, seen
 
 

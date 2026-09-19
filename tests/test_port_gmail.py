@@ -530,7 +530,7 @@ def fake_ops(tmp_path: Path, *, create_code: int = 0, edit_code: int = 0) -> tup
     )
     shim.chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-           "CLAUDE_PROJECT_DIR": str(tmp_path)}
+           "LLM_WIKI_OPS": str(shim), "CLAUDE_PROJECT_DIR": str(tmp_path)}
     return env, log
 
 
@@ -682,7 +682,7 @@ def front_door(ops, env, tmp_path_factory) -> dict:
     shim = bin_dir / "llm-wiki-ops"
     shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in ops) + ' "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.environ['PATH'])}"}
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.environ['PATH'])}", "LLM_WIKI_OPS": str(shim)}
 
 
 def test_one_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, job, front_door):
