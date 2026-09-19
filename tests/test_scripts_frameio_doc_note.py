@@ -75,6 +75,59 @@ def test_the_body_carries_no_yaml_block_of_its_own(tmp_path, monkeypatch):
     assert body.splitlines()[0] == "# --- status: published ---"
 
 
+def test_a_multi_line_title_is_one_line_in_capture_json_too(tmp_path, monkeypatch):
+    """The body was folded; the record was not — and `capture.json`'s title
+    names the page's FILE, where the host refuses a control character."""
+    hostile = "Deck\n---\n# Forged: heading\t?\r\n- [ ] task"
+    body, record = _run(monkeypatch, _leaf(tmp_path, title=hostile, name="Deck\n# Forged.pdf"))
+    assert record["title"] == "Deck --- # Forged - heading - [ ] task"
+    assert "\n" not in record["title"] and not any(ord(c) < 32 for c in record["title"])
+    assert record["frontmatter"]["source_title"] == "Deck --- # Forged: heading ? - [ ] task"
+    assert record["frontmatter"]["original_name"] == "Deck # Forged.pdf"
+    lines = body.splitlines()
+    assert lines[0] == "# Deck --- # Forged: heading ? - [ ] task", "the H1 keeps the venue's own title, on one line"
+    assert [line for line in lines if line.startswith("#")] == [lines[0]] and "---" not in lines
+    assert "- **File:** 'Deck # Forged.pdf' (pdf, 13 bytes)".replace("'", "`") in lines
+
+
+def test_a_title_no_filename_can_hold_is_made_safe_and_the_true_one_kept(tmp_path, monkeypatch):
+    body, record = _run(monkeypatch, _leaf(tmp_path, title='.Lesson 3: "Pricing"? A/B'))
+    assert record["title"] == "Lesson 3 - 'Pricing' A-B"
+    assert record["frontmatter"]["source_title"] == '.Lesson 3: "Pricing"? A/B'
+    assert body.startswith('# .Lesson 3: "Pricing"? A/B\n')
+    _body, plain = _run(monkeypatch, _leaf(tmp_path / "again"))
+    assert "source_title" not in plain["frontmatter"], "only where the two differ"
+
+
+def test_the_real_document_is_preferred_over_a_stray_document_bin(tmp_path, monkeypatch):
+    """`sorted(glob("document.*"))[0]` was `document.bin` whenever a nameless
+    attempt had left one beside the real file."""
+    leaf = _leaf(tmp_path)
+    (leaf / "document.bin").write_bytes(b"half a download")
+    _body, record = _run(monkeypatch, leaf)
+    assert record["frontmatter"]["ext"] == "pdf" and record["frontmatter"]["bytes"] == 13
+
+    mod = _module()
+    docs = [Path("document.bin"), Path("document.pptx"), Path("document.pdf"), Path("document.zzz")]
+    assert mod.pick_document(docs).name == "document.pdf"
+    assert mod.pick_document(docs, "Deck Q3.PPTX").name == "document.pptx", "the asset's own extension wins"
+    assert mod.pick_document(docs[:1]).name == "document.bin" and mod.pick_document([]) is None
+
+
+def test_the_breadcrumb_drops_only_the_folders_every_leaf_carries(tmp_path, monkeypatch):
+    body, _record = _run(monkeypatch, _leaf(tmp_path), "--path=Client A", "--path=--drafts", "--crumb-skip=0")
+    assert "*Client A / --drafts*" in body.splitlines()
+    body, _record = _run(monkeypatch, _leaf(tmp_path / "b"), "--path=Share")
+    assert not any(line.startswith("*") for line in body.splitlines()), "by hand the default is 1: the one shared folder"
+
+
+def test_the_body_never_points_into_raw(tmp_path, monkeypatch):
+    """A committed page never links into `_raw/`: machine-local, prunable. The
+    docs once promised a pointer there; the code rightly never emitted one."""
+    body, _record = _run(monkeypatch, _leaf(tmp_path))
+    assert "_raw" not in body and "document.pdf" not in body
+
+
 def test_the_facts_are_in_the_body_and_in_the_frontmatter_object(tmp_path, monkeypatch):
     """Both, on purpose: the extractor ignores `frontmatter` today, so the
     facts block is what keeps them on the page."""

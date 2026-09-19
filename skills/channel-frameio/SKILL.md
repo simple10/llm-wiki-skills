@@ -36,6 +36,22 @@ the fix — it no longer passes in silence. Check `harvest.scope` in
 `harvest.scope=domain` is this unit's shipped default (`watch.defaults`);
 never override it.
 
+**This unit ALWAYS downloads the asset — video included — whatever
+`harvest.assets` says.** That key is about a page's attachments; on this
+venue the asset IS the item. The pipeline's default, `reference`, would mean
+no video is ever transcribed: the only reference there is to give is a signed
+HLS URL that dies within hours, and only a MEDIA body makes the extractor
+queue a transcript. And the unit cannot honor an operator's explicit
+`harvest.assets=reference` even in principle, because it cannot SEE one: a
+ticket carries the resolved value only, so a deliberate `reference` and the
+default are the same bytes. An operator who truly wants a share's videos left
+alone has two ways, both explicit: list those leaves' view URLs in
+`harvest.exclude_urls` (`harvest_share.py <capture_dir> --plan-only` writes
+every leaf's name and view URL to `plan.json`; a video is the `.mov`/`.mp4`
+name), or do not watch that share with this unit. If a job's ticket says
+`download-audio` or an explicit-looking `reference`, say in your run report
+that video was downloaded regardless, and why.
+
 ## Stages
 
 You are invoked as `/channel-frameio ticket=<id>` — one argument, in every
@@ -89,12 +105,21 @@ mints ONE process ticket per `captured[].dir`.
 | `harvest.scope` | applied by this unit — see above. Must be `domain` |
 | `harvest.exclude_urls` | leaf view URLs never to capture: an entry matches when it equals the URL, is a prefix of it, or (written with a `*`) globs it. The pipeline defines no matching rule for this key, so that reading is this unit's own |
 | `known[]` | pages this job already holds, by `resource` (the leaf's view URL, matched exactly) — skipped, which is also how a share too big for one slice resumes |
+| `refresh`, `resource` | a refresh ticket: re-capture exactly that one leaf viewer — see "A refresh ticket" below |
 
 Not consulted, and why: `harvest.access` (a guest share has no free/paid
-split), `min_date` (a listing card carries no date), `harvest.assets` (on
-this venue the asset IS the item, not an attachment of a page — it is always
-downloaded), `credential` (always null; the link authorizes), and `dest`
-(null on a download ticket; a harvest slice cannot write there).
+split), `min_date` (a listing card carries no date), `harvest.assets` (always
+downloaded — the bold paragraph above), `credential` (always null; the link
+authorizes), and `dest` (null on a download ticket; a harvest slice cannot
+write there).
+
+**`ticket` is NOT what tells one run from the next.** The id is a hash of the
+job's slug and target: identical on every pull, every retry and every respawn
+after a widen, all into the same `capture_dir`, which the spawner only ever
+creates-if-missing — so `plan.json`, `report.json` and every leaf's files from
+the LAST spawn are still there when you start. What is new on every spawn is
+`ticket.json` itself (the spawner rewrites it), and the driver keys everything
+on that: see "It is bounded" below. Never reason from the id.
 
 No `ticket.json` — `llm-wiki-ops whereami` says `spawn: none` — means the
 foreman read the same facts off `llm-wiki-ops pipeline queue show ids=<id>`
@@ -109,7 +134,11 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/enumerate_tree.py <target> -
 
 Walks folders via `data-asset-id` routing (no clicks) and writes a flat
 manifest of every leaf: asset id, display name, folder path, view URL — in
-folder-walk order, which the driver keeps. Skip this step when `target` is
+folder-walk order, which the driver keeps. Folder and leaf URLs are built on
+the ORIGIN of the target you pass (not a fixed `next.frame.io`): your egress
+is `*.frame.io` plus the target's own host, so that is the host certain to be
+granted. A leaf's `path` is the folders walked INTO below the target — `[]`
+for a leaf listed at it, never the share's own name (that is `root_title`). Skip this step when `target` is
 itself a leaf viewer: there is no tree, and the driver needs no manifest.
 The enumerator needs `/share/<share-id>` in the URL; an `f.io` short link
 carries none (and is outside `hosts`) — report it and stop.
@@ -134,18 +163,26 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
   (open the viewer, take the HLS master or the signed document proxy out of
   the network log, download it, write `meta.json`) and then leaves the dir in
   the extractor's shape — see "What a captured leaf holds".
-- **It writes `report.json` last, on EVERY pass** — `captured[]` one entry per
-  landed leaf (`item` the view URL, `dir` the leaf's dir, `title`), `missing[]`
-  one per leaf that failed (`why` is `timeout` or `error`), `discovered: []`.
+- **It writes `report.json` when a pass opens and again after EVERY leaf**,
+  atomically (temp file, then rename) — `captured[]` one entry per landed leaf
+  (`item` the view URL, `dir` the leaf's dir, `title`), `missing[]` one per
+  leaf that failed (`why` is `timeout` or `error`), `discovered: []`. So
+  whatever ends a pass early — the slice's kill, your tool call's own timeout
+  — costs the leaf in flight and nothing else: the report on disk already
+  names everything that landed. A refusal (exit 2) writes no report and
+  REMOVES the one an earlier run left, which `apply` would read as this run's.
 - **It settles the titles before each report.** The extractor files a page
   under its TITLE (`<dest>/<title>.md`, the title stripped of outer whitespace
   and nothing else) and overwrites whatever is there, so `Brief.pdf` in two
   folders would be ONE page, both tickets `ok`. In manifest order the first
   leaf to make a filename keeps its title untouched; a later one is retitled
-  in its own `capture.json` — `Brief.pdf (<folder breadcrumb>)`, the folders
-  below the shared top one joined with ` - ` (a title cannot carry a `/`), or
-  the 8-hex hash of its view URL where the folder is the namesake's too — and
-  `captured[].title` says the same. Titles differing only in case count
+  in its own `capture.json` — `Brief.pdf (<folder breadcrumb>)`, the leaf's
+  folders joined with ` - ` (a title cannot carry a `/`; a top folder EVERY
+  leaf of the share carries is left off, one that differs between leaves is
+  kept), or the 8-hex hash of its view URL where the folder is the namesake's
+  too — and `captured[].title` says the same. A qualified title still has to
+  fit a filename: where it would not, the BASE is cut (`…`) and the qualifier
+  kept. Titles differing only in case count
   as one (a Mac's filesystem folds them); a later pass renames
   nothing twice. A leaf retried AFTER its namesake landed takes the plain
   title back and the namesake is qualified — titles are final at the last
@@ -155,25 +192,56 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
   overwrite a namesake an earlier one landed. The real fix is the host's (a
   collision-safe page name); say so in the run report when a resumed share
   repeats file names.
-- **It is bounded, and you re-run it.** A slice is killed at thirty minutes.
-  One pass stops starting leaves after `--budget-seconds` (default 480, one
-  tool call's worth) and no pass starts one later than `--slice-seconds`
-  (default 1500) after the FIRST pass began. Its stdout summary says
-  `"stop": "budget"` — run the same command again — or `"done"` / `"slice"`
-  — stop. A leaf whose dir already holds its capture is counted, never
-  re-fetched; a leaf this ticket already failed is left alone unless you pass
-  `--retry-failed`.
+- **It is bounded, and you re-run it.** A slice is killed at thirty minutes,
+  measured from the SPAWN — `ticket.json`'s mtime, which is also this spawn's
+  name. One pass stops starting leaves after `--budget-seconds` (default 480,
+  one tool call's worth — run it with your tool's longest timeout) and no pass
+  starts one later than `--slice-seconds` (default 1500) after the spawn. Every
+  child — `capture_job.py`, and under it `capture_asset.py`, yt-dlp and the
+  renderer, each with a slightly shorter deadline — gets what is left of
+  `--kill-seconds` (default 1740) and is killed with everything it started
+  when that runs out: the leaf is recorded `missing`, `why: timeout`, and the
+  report is still written. Its stdout summary says `"stop": "budget"` — run
+  the same command again — or `"done"` / `"slice"` — stop. A leaf whose dir
+  already holds its capture is counted, never re-fetched; a leaf THIS SPAWN
+  already failed is left alone unless you pass `--retry-failed`.
+- **The next spawn starts clean.** A later pull, a retry, a respawn after a
+  widen: same ticket id, same directory, new `ticket.json`. The driver sees
+  the new spawn, takes ITS clock, drops the `report.json` the last spawn left,
+  and owes every leaf that failed last time a fresh attempt — an `error.json`
+  counts only for the spawn that wrote it. (Keyed on the ticket id, which
+  never changes, a second pull inherited a clock already hours "spent",
+  started no leaf and reported `failed` — forever.) Outside any slice — a hand
+  run in a capture dir whose `ticket.json` is old — pass `--slice-seconds 0`.
 - **Outcomes.** `ok`: every planned leaf landed. `partial`: some did — the
-  `reason` counts them, and the rest are taken by the job's next ticket,
-  which is handed the landed pages as `known[]` (unverified: whether an
-  `every: once` job is pulled again after a `partial` is the foreman's call —
-  say so in your run report when a share did not finish). `skipped`: every
+  `reason` counts them, and the rest are taken by the job's next spawn, which
+  is handed the landed pages as `known[]` and retries what failed
+  (unverified: whether an `every: once` job is pulled again after a `partial`
+  is the foreman's call — say so in your run report when a share did not
+  finish). `skipped`: every
   leaf is already a page, or excluded. `failed`: nothing landed, the share
   listed nothing, or scope emptied the plan. Exit 0 for the first three, 1
   for `failed`, 2 when the inputs do not add up and no report was written.
 
 Then say the target, the outcome, the counts and any `missing[]` hosts, and
 exit. Do not retry a `denied` host: a widen is the foreman's call.
+
+**A refresh ticket** (`refresh: true`, `resource: <view URL>`; the host makes
+that URL the ticket's `target` and gives it its own stable capture dir) is
+ONE leaf, re-captured: skip step 2, run step 3. The first pass of the spawn
+drops the `capture.json` the last refresh left there and fetches the asset
+again (`capture_job.py --fresh`, which also drops the old `video.mp4`, or
+yt-dlp would call it downloaded). Report what happened — `ok` when it landed;
+`apply`, not you, hashes the body against the page's stamp and decides
+`unchanged`. Why re-read rather than answer "unsupported": whether an asset
+can change under one view URL is unverified (a version stack may), and
+re-reading is right either way. Never report `gone` — a removed asset and a
+viewer this unit no longer understands look the same from here (no HLS master,
+no document proxy): that is `failed`. Unverified: whether a re-muxed HLS
+download hashes the same twice; if it does not, a video refresh reads as
+changed and the page is re-extracted — say so when you refresh a video. A
+refresh whose `resource` is not a leaf viewer is reported `failed` with
+`refresh_unsupported:` in the reason.
 
 `--author`/`--group`/`--group-type` are the scoping dimensions, and normally
 you pass NONE of them: the operator declares them once on the job
@@ -203,12 +271,34 @@ today; its page carries the title and the view URL.
 
 **A document's `page.md`** is rendered by `frameio_doc_note.py` (the driver
 runs it; by hand: `llm-wiki-ops run ops/skills/channel-frameio/scripts/frameio_doc_note.py <leaf-dir>`,
-`-h` for its flags): the title, the folder breadcrumb, a compact facts block
-(type, source URL, original filename, extension, size, author/group when
-given, and the wiki-relative path of the captured file), then the document's
-text under a collapsed `Extracted text` callout — pdf, pptx and xlsx; other
-formats get the facts and the pointer. It never opens with a `---` block: the
-extractor prepends its own frontmatter and a second one corrupts the page.
+`-h` for its flags): the venue's own title as the H1, the folder breadcrumb, a
+compact facts block (type, source URL, original filename, extension, size,
+author/group when given), then the document's text under a collapsed
+`Extracted text` callout — pdf, pptx and xlsx; other formats get the facts
+alone. It never opens with a `---` block: the extractor prepends its own
+frontmatter and a second one corrupts the page.
+
+**The page does NOT link to the captured file, on purpose — do not "fix"
+that.** A committed page never points into `_raw/`: that tree is
+machine-local and prunable, so the link is dead on every other clone and on
+this one after a prune. The regression against the old unit is real, so say
+it plainly when it matters: the PDF/PPTX ITSELF stays in
+`_raw/<slug>/<leaf>/` on the capturing machine; only its extracted text
+reaches the page. The host's `bundle_media` copies media files only, not
+documents (plugins issue simple10/llm-wiki-plugins#2117, item 9).
+
+**The title is written twice, differently.** The extractor names the page's
+FILE from `capture.json`'s `title` and refuses the whole process ticket — after
+harvest said `ok` — for a title carrying any of `/ \ : * ? " < > |`, a control
+character or a leading dot; the filesystem refuses one over 255 bytes. Display
+names with a `/` or a `:` are ordinary here. So `capture.json`'s `title` is
+the SAFE form (`capture_record.py::safe_title`, the same rule in every unit:
+`:` → ` -`, `/ \ |` → `-`, `?` and `*` dropped, `"` → `'`, `<>` → `()`, one
+line, 120 characters and 200 bytes at most), while the H1 and the `File:`
+fact keep the venue's own text, folded to one line; where title and H1 differ
+the true title is also `frontmatter.source_title`. Venue text never reaches a
+script as a bare argv item either: `--name=<v>`, never `--name <v>` — a file
+called `-rf.pdf` is an option to argparse otherwise.
 The same facts go in `capture.json`'s `frontmatter` object (scalars and flat
 lists; never `status`, `title`, `resource`, `harvested` or another verb's
 key), so nothing is lost today and nothing needs re-deriving when it is
@@ -283,7 +373,14 @@ and the breadcrumb line is simply absent — not wrong.
   every PDF collides on `document.pdf` — which is why a leaf dir is named
   for the hash of its view URL.
 - A card's display name is venue text and may contain a `/`; it is one name,
-  never a path.
+  never a path — and never a page's filename as it stands: see "The title is
+  written twice" above.
+- A leaf's `path[0]` is the first folder BELOW the enumerated URL, not the
+  share's name. A share whose root lists one folder puts it on every leaf
+  (dropped from breadcrumbs, dir names and title qualifiers); a root listing
+  several makes it the distinction (kept). The driver decides per manifest;
+  which of the two a given share shows is the sharer's doing (unverified
+  beyond the shares harvested so far).
 - Without a `--name` the extension comes off the signed proxy route
   (`.../<kind>_proxy.<ext>?…`), which names what Frame.io CONVERTED the
   asset to rather than what was uploaded. Where the two differ, the
@@ -314,3 +411,12 @@ and the breadcrumb line is simply absent — not wrong.
   now settles titles within the run before every report (the first keeps its
   own; later namesakes get `(<folder breadcrumb>)`, else `(<hash8>)`). Not
   fixed across runs — `known[]` carries no titles; that one is the host's.
+- 2026-09-19 — review of the port: a second pull of a share started NO leaf —
+  resume state was keyed on the ticket id, which never changes, so it
+  inherited a spent slice clock; it is keyed on the spawn (`ticket.json`'s
+  mtime) now. A display name with `/` or `:` failed the process ticket after
+  harvest said ok (titles are made filename-safe, in bytes too). `report.json`
+  after every leaf and a deadline on every child: one long video could outrun
+  the slice's kill and leave no report. A refresh ticket re-captures. A file
+  named `-rf.pdf` exited 2 on every pass (`--name=<v>` everywhere). None of it
+  run against a live share yet.

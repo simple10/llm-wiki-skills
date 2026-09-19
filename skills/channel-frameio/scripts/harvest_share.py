@@ -36,38 +36,70 @@ else applies them:
   where the old host-side filter dropped the leaves in silence.
 - `harvest.access`, `min_date` and `harvest.assets` are not consulted: a
   guest share has no free/paid split, its listing carries no dates, and on
-  this venue the asset IS the item rather than an attachment of a page.
+  this venue the asset IS the item rather than an attachment of a page (a
+  ticket carries the RESOLVED `assets` value, so an operator's explicit
+  `reference` cannot be told from the default — SKILL.md says what to do).
 
 **The run is bounded and resumable.** A slice is killed at thirty minutes,
 and a killed slice that left no report is a failed ticket. So leaves are
 taken in manifest order (stable: folder walk order), a leaf whose dir already
 holds a `capture.json` is counted and not re-fetched, `report.json` is
-rewritten at the end of EVERY pass, and a pass stops starting new leaves once
-`--budget-seconds` (one tool call's worth) or `--slice-seconds` (measured
-from the first pass, recorded in `plan.json`) runs out. Run it again while
-its summary says `"stop": "budget"`; stop when it says `done` or `slice`.
-A report written before every leaf landed says `partial`, with the count in
-its `reason`.
+rewritten (atomically) when a pass opens and again after EVERY leaf, and a
+pass stops starting new leaves once `--budget-seconds` (one tool call's worth)
+or `--slice-seconds` runs out. Every child gets what is left of
+`--kill-seconds` as its deadline and is killed, with everything it started,
+when that passes — the leaf is then recorded as not captured, `why: timeout`.
+Run it again while its summary says `"stop": "budget"`; stop when it says
+`done` or `slice`. A report written before every leaf landed says `partial`,
+with the count in its `reason`.
+
+**All of that state is the SPAWN's, never the ticket id's.** A ticket's id is
+a hash of the job's slug and target: the same on every pull, every
+`queue retry` and every respawn after a widen, into the same capture dir,
+which the spawner only ever `mkdir -p`s. What IS new on every spawn is
+`ticket.json` — the spawner rewrites it — so its mtime is both the slice's
+clock (the kill is measured from the spawn, not from this script's first
+pass, which the enumeration precedes) and the spawn's name: a failure an
+`error.json` recorded, and a `plan.json`, count only when they carry the same
+one. Keyed on the ticket id, a second pull inherited the first one's clock,
+found the slice "spent" before it began, started no leaf, and never retried
+a leaf that had failed once. The first capturing pass of a spawn also removes
+the `report.json` an earlier spawn left: `apply` does not check whose it is.
 
 A target that is itself a leaf viewer (`.../view/<asset-id>`) needs no
 manifest: it is one leaf, captured into the ticket's own capture dir.
 
+**A refresh ticket** (`refresh: true`) names one page's `resource` — a leaf
+viewer — and gets exactly that leaf, RE-captured: the first pass of the spawn
+drops the `capture.json` the last one left in that (stable) dir, so the bytes
+`apply` hashes against the page's stamp are bytes this run read. Whether a
+Frame.io asset can change under one view URL is unverified (a version stack
+may), which is the reason to re-read rather than to answer
+`refresh_unsupported`: re-reading is right either way, and `apply` — not this
+unit — says `unchanged`. Never `gone`: the viewer of a removed asset and a
+viewer this unit no longer understands look the same from here, so that is
+reported `failed`.
+
 Usage:
   uv run harvest_share.py <capture_dir> [--manifest tree.json] [--plan-only]
-      [--budget-seconds N] [--slice-seconds N] [--pause-seconds N]
+      [--budget-seconds N] [--slice-seconds N] [--kill-seconds N] [--pause-seconds N]
       [--retry-failed] [--title-strip S] [--author A] [--group G]
       [--group-type T] [--timeout-ms N]
       [--target URL --slug SLUG --ticket ID]     # no ticket.json: hand run
 
 `<capture_dir>` is the ticket's capture dir — `_raw/<slug>/<one>` from the
 wiki root, which is where the front door's `run` starts a script. The manifest
-defaults to `<capture_dir>/tree.json`.
+defaults to `<capture_dir>/tree.json`. Outside a slice — a hand run in a
+directory whose `ticket.json` is hours old — pass `--slice-seconds 0`: there
+is no kill to stay ahead of, and the old spawn's clock is long spent.
 
 Outputs one JSON summary on stdout: {"outcome", "reason", "planned",
 "captured", "failed", "remaining", "skipped": {"known", "excluded", "scope",
 "duplicate"}, "stop": "done|budget|slice|plan-only", "report"}.
 Exit 0 when the report's outcome is `ok`, `partial` or `skipped`; 1 when it
 is `failed`; 2 when the inputs do not add up and no report could be written.
+A refusal also REMOVES any `report.json` an earlier run left in the capture
+dir: `apply` would read that one as this run's.
 
 History:
   2026-07-14  created — first Frame.io share harvest.
@@ -83,6 +115,14 @@ History:
   2026-09-19  titles are settled before every report: two assets of one share
               with one name landed as one page, the second overwriting the
               first (`capture_record.py::settle_titles`).
+  2026-09-19  review fixes. Resume state is keyed on the SPAWN (`ticket.json`'s
+              mtime), not the ticket id, which never changes: a second pull
+              started no leaf. `report.json` after every leaf, atomically, and
+              every child has a deadline: one long video could outrun the kill
+              and leave no report. A refresh ticket re-captures its leaf. Venue
+              text crosses argv as `--name=<v>`: a file named `-rf.pdf` exited
+              2 on every pass. Breadcrumbs drop the top folder only when every
+              leaf carries it. A leaf URL must be http(s).
 """
 
 import argparse
@@ -97,13 +137,16 @@ from capture_record import (
     CAPTURE_NAME,
     REPORT_NAME,
     TICKET_NAME,
+    TIMED_OUT,
     host_of,
+    inner_deadline,
     leaf_dir_name,
     leaf_ids,
     now_utc,
     read_json,
     run,
     settle_titles,
+    shared_top,
     write_json,
 )
 
@@ -114,14 +157,21 @@ RAW_DIRNAME = "_raw"
 SCOPES = ("page", "section", "domain")
 
 #: One pass stays under a ten-minute tool call; the slice is killed at 1800 s,
-#: so no new leaf starts past 1500 — a video still has to finish downloading.
+#: so no new leaf starts past 1500 — a video still has to finish downloading —
+#: and a child still running at 1740 is killed, which leaves a minute to say so.
 BUDGET_SECONDS = 480
 SLICE_SECONDS = 1500
+KILL_SECONDS = 1740
+SLICE_CAP_SECONDS = 1800  # the host's `schedule/runner/slice.py::SLICE_CAP_SECONDS`
 PAUSE_SECONDS = 2.0
 
 
 class Unusable(Exception):
     """The inputs do not add up — exit 2, nothing fetched, no report."""
+
+
+class NotOurs(Unusable):
+    """The directory named is not the ticket's capture dir: touch nothing in it."""
 
 
 # ------------------------------------------------------------------ the plan
@@ -137,6 +187,9 @@ def leaves_of(manifest):
     for i, leaf in enumerate(leaves):
         if not isinstance(leaf, dict) or not isinstance(leaf.get("view_url"), str) or not leaf["view_url"]:
             raise Unusable(f"leaves[{i}] carries no view_url")
+        # It becomes a page's `resource`, a link in a body and an argv item.
+        if urlsplit(leaf["view_url"]).scheme not in ("http", "https") or any(c.isspace() for c in leaf["view_url"]):
+            raise Unusable(f"leaves[{i}].view_url is not an http(s) URL: {leaf['view_url']!r}")
     return leaves
 
 
@@ -178,9 +231,11 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     """Which leaves this ticket owes, in manifest order, each with its dir.
 
     Pure: a manifest's leaves and a ticket in, `{"leaves": [...], "skipped":
-    {...}}` out. A leaf is `{item, dir, name, path, asset_id}`; `dir` is
-    wiki-relative and exactly `_raw/<slug>/<one component>`, the only shape
-    `apply` mints a process ticket for.
+    {...}}` out. A leaf is `{item, dir, name, path, crumb, asset_id}`; `dir`
+    is wiki-relative and exactly `_raw/<slug>/<one component>`, the only shape
+    `apply` mints a process ticket for. `crumb` is `path` below any top folder
+    EVERY leaf of the manifest carries (`shared_top` — judged over the whole
+    manifest, not the plan, so a leaf's dir does not move as `known[]` grows).
     """
     slug, target = ticket["slug"], ticket["target"]
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
@@ -188,6 +243,8 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     known = known_resources(ticket)
     skipped = {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0}
     planned, seen = [], set()
+    paths = [[p for p in (leaf.get("path") or []) if isinstance(p, str)] for leaf in leaves]
+    skip = shared_top(paths)
     for leaf in leaves:
         url = leaf["view_url"]
         if url in seen:
@@ -203,9 +260,10 @@ def plan_leaves(leaves, ticket: dict) -> dict:
             planned.append(
                 {
                     "item": url,
-                    "dir": f"{RAW_DIRNAME}/{slug}/{leaf_dir_name(url, leaf.get('name'), path_bits)}",
+                    "dir": f"{RAW_DIRNAME}/{slug}/{leaf_dir_name(url, leaf.get('name'), path_bits[skip:])}",
                     "name": leaf.get("name") or None,
                     "path": path_bits,
+                    "crumb": path_bits[skip:],
                     "asset_id": leaf.get("asset_id") or leaf_ids(url)[1],
                 }
             )
@@ -213,9 +271,19 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     return {"scope": scope, "leaves": planned, "skipped": skipped}
 
 
+def refresh_resource(ticket: dict):
+    """What a refresh ticket re-fetches: its `resource`, which the host also
+    makes the ticket's `target`. None when this is no refresh ticket."""
+    if not ticket.get("refresh"):
+        return None
+    resource = ticket.get("resource")
+    return resource if isinstance(resource, str) and resource else ticket["target"]
+
+
 def single_leaf_plan(ticket: dict) -> dict:
-    """A target that IS a leaf viewer: one leaf, in the ticket's own dir."""
-    url = ticket["target"]
+    """A target that IS a leaf viewer: one leaf, in the ticket's own dir. A
+    refresh ticket is always this — exactly the refreshed resource."""
+    url = refresh_resource(ticket) or ticket["target"]
     skipped = {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0}
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
     leaves = []
@@ -224,21 +292,54 @@ def single_leaf_plan(ticket: dict) -> dict:
     elif excluded(url, harvest.get("exclude_urls")):
         skipped["excluded"] = 1
     else:
-        leaves = [{"item": url, "dir": ticket["capture_dir"], "name": None, "path": [], "asset_id": leaf_ids(url)[1]}]
+        leaves = [{"item": url, "dir": ticket["capture_dir"], "name": None, "path": [], "crumb": [], "asset_id": leaf_ids(url)[1]}]
     return {"scope": harvest.get("scope") or "domain", "leaves": leaves, "skipped": skipped}
 
 
 # ---------------------------------------------------------------- the report
 
 
-def leaf_state(root: Path, leaf: dict, ticket_id=None):
+def spawn_of(directory: Path):
+    """This spawn's name: `ticket.json`'s mtime in ns, or None with no ticket.
+
+    The spawner rewrites `ticket.json` on every dispatch — a pull, a retry, a
+    respawn after a widen (`pipeline/dispatch.py::start_slice`, the one spawn
+    path, calls `write_ticket`) — while the ticket's ID is a hash of the job's
+    slug and target and never changes. None is a hand run: one open-ended
+    "spawn", whose recorded failures `--retry-failed` reopens.
+    """
+    try:
+        return (Path(directory) / TICKET_NAME).stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def slice_epoch(spawn, earlier: dict, same_spawn: bool, now: float, cap: float = SLICE_CAP_SECONDS) -> float:
+    """When this slice's thirty minutes began, as a wall-clock epoch.
+
+    The spawn itself where there is a `ticket.json`: the kill is measured from
+    there, and this script's first pass comes after an enumeration that can
+    take minutes. With none (a hand run), the first pass — inherited from
+    `plan.json` only while it could still be the same run: a clock older than
+    the cap belongs to a slice that was killed long ago.
+    """
+    if spawn is not None:
+        return min(spawn / 1e9, now)
+    inherited = earlier.get("slice_epoch") if same_spawn else None
+    if isinstance(inherited, (int, float)) and 0 <= now - inherited <= cap:
+        return float(inherited)
+    return now
+
+
+def leaf_state(root: Path, leaf: dict, spawn=None):
     """`("captured", title)`, `("failed", why)` or `("pending", None)`.
 
     Read off the leaf's own dir, so a second pass — or a second script — sees
     what the first one left. `captured` means a `capture.json` naming a body
     file that is there: exactly what the extractor will ask of it. A recorded
-    failure counts only for the ticket that recorded it — a share's capture
-    dirs outlive a ticket, and a later ticket owes the leaf a fresh attempt.
+    failure counts only for the SPAWN that recorded it (`spawn_of`) — a
+    share's capture dirs outlive a spawn, the ticket id does not change
+    between them, and a later spawn owes the leaf a fresh attempt.
     """
     directory = root / leaf["dir"]
     record = read_json(directory / CAPTURE_NAME)
@@ -246,7 +347,7 @@ def leaf_state(root: Path, leaf: dict, ticket_id=None):
         title = record.get("title")
         return "captured", title if isinstance(title, str) else None
     error = read_json(directory / ERROR_NAME)
-    if error and error.get("ticket") == ticket_id:
+    if error and error.get("spawn", "unrecorded") == spawn:
         return "failed", error.get("why") if error.get("why") in ("denied", "timeout", "auth", "error") else "error"
     return "pending", None
 
@@ -313,7 +414,7 @@ def wiki_root_of(directory: Path, capture_dir: str) -> Path:
         raise Unusable(f"capture_dir {capture_dir!r} is not of the form {RAW_DIRNAME}/<slug>/<one>")
     root = resolved.parents[2]
     if resolved != (root / capture_dir).resolve():
-        raise Unusable(f"{directory} is not the ticket's capture_dir {capture_dir!r}")
+        raise NotOurs(f"{directory} is not the ticket's capture_dir {capture_dir!r}")
     return root
 
 
@@ -333,23 +434,47 @@ def load_ticket(directory: Path, args) -> dict:
     return ticket
 
 
-def capture_cmd(root: Path, ticket: dict, leaf: dict, args) -> list:
+def capture_cmd(root: Path, ticket: dict, leaf: dict, args, *, deadline=None, fresh=False) -> list:
+    """The per-leaf child's argv. Every VALUE rides as `--flag=<value>`: a
+    card's name is venue text, and `--name -rf.pdf` (or a folder called
+    `--help`) as a separate item is an option to argparse, which then exits 2
+    on every pass. The `=` form is taken literally whatever it starts with."""
     cmd = ["uv", "run", str(Path(__file__).resolve().parent / "capture_job.py"), str(root / leaf["dir"])]
-    cmd += ["--root", str(root), "--url", leaf["item"], "--slug", ticket["slug"]]
+    cmd += [f"--root={root}", f"--url={leaf['item']}", f"--slug={ticket['slug']}"]
     if leaf.get("name"):
-        cmd += ["--name", leaf["name"]]
-    for bit in leaf.get("path") or []:
-        cmd += ["--path", bit]
+        cmd.append(f"--name={leaf['name']}")
+    cmd += [f"--path={bit}" for bit in leaf.get("path") or []]
+    crumb = leaf.get("crumb")
+    if isinstance(crumb, list):
+        cmd.append(f"--crumb-skip={len(leaf.get('path') or []) - len(crumb)}")
     for flag, value in (
         ("--title-strip", args.title_strip),
         ("--author", args.author),
         ("--group", args.group),
         ("--group-type", args.group_type),
         ("--timeout-ms", args.timeout_ms),
+        ("--deadline-seconds", None if deadline is None else f"{inner_deadline(deadline):.0f}"),
     ):
         if value is not None:
-            cmd += [flag, str(value)]
+            cmd.append(f"{flag}={value}")
+    if fresh:
+        cmd.append("--fresh")
     return cmd
+
+
+def write_report(root: Path, directory: Path, ticket: dict, plan: dict, spawn) -> tuple:
+    """Settle the titles, read every leaf's state, write `report.json`.
+
+    After EVERY leaf, not once at the end: whatever kills the pass — the
+    slice's cap, a tool call's own timeout — the report on disk already names
+    every leaf that had landed. Titles first: two leaves with one title are
+    ONE page to the extractor, the second overwriting the first.
+    """
+    settle_titles(root, plan["leaves"])
+    states = {leaf["item"]: leaf_state(root, leaf, spawn) for leaf in plan["leaves"]}
+    report = report_of(ticket, plan, states)
+    write_json(directory / REPORT_NAME, report)
+    return states, report
 
 
 def main() -> int:
@@ -358,7 +483,8 @@ def main() -> int:
     ap.add_argument("--manifest", type=Path, default=None, help="tree.json from enumerate_tree.py (default: <capture_dir>/tree.json)")
     ap.add_argument("--plan-only", action="store_true", help="write plan.json and print the summary; fetch nothing, report nothing")
     ap.add_argument("--budget-seconds", type=float, default=BUDGET_SECONDS, help=f"start no new leaf after this long in THIS pass (default {BUDGET_SECONDS})")
-    ap.add_argument("--slice-seconds", type=float, default=SLICE_SECONDS, help=f"start no new leaf this long after the FIRST pass began (default {SLICE_SECONDS}; the slice is killed at 1800)")
+    ap.add_argument("--slice-seconds", type=float, default=SLICE_SECONDS, help=f"start no new leaf this long after the slice was spawned — ticket.json's mtime (default {SLICE_SECONDS}; the slice is killed at {SLICE_CAP_SECONDS}). 0: no slice clock, a hand run outside a slice")
+    ap.add_argument("--kill-seconds", type=float, default=KILL_SECONDS, help=f"kill a child still running this long after the spawn and record its leaf as `timeout` (default {KILL_SECONDS})")
     ap.add_argument("--pause-seconds", type=float, default=PAUSE_SECONDS, help="pause between leaves — one reader, not a crawler")
     ap.add_argument("--retry-failed", action="store_true", help="re-fetch leaves an earlier pass recorded as failed")
     ap.add_argument("--title-strip", default=None, help="share-wide suffix to trim off every captured title")
@@ -378,7 +504,12 @@ def main() -> int:
             raise Unusable(f"{directory} is not a directory — pass the ticket's capture dir")
         ticket = load_ticket(directory, args)
         root = wiki_root_of(directory, ticket["capture_dir"])
-        if leaf_ids(ticket["target"])[1]:
+        refreshing = refresh_resource(ticket)
+        if refreshing is not None and not leaf_ids(refreshing)[1]:
+            # Every page this unit lands has a leaf viewer as its `resource`;
+            # anything else is a page it did not write and cannot re-read.
+            plan = None
+        elif refreshing is not None or leaf_ids(ticket["target"])[1]:
             plan = single_leaf_plan(ticket)
         else:
             manifest_path = args.manifest or directory / "tree.json"
@@ -388,60 +519,100 @@ def main() -> int:
                 raise Unusable(f"{manifest_path} is not readable as JSON — run enumerate_tree.py first ({exc})") from None
             plan = plan_leaves(leaves_of(manifest), ticket)
     except Unusable as exc:
+        # A refusal writes no report — and must not leave an EARLIER run's
+        # `ok` standing where `apply` will read it as this one's.
+        if not args.plan_only and not isinstance(exc, NotOurs) and directory.is_dir():
+            (directory / REPORT_NAME).unlink(missing_ok=True)
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    # `first_pass_epoch` survives across passes OF ONE TICKET: the slice clock
-    # started with the first, and a later pass that reset it would run into
-    # the kill. A plan.json another ticket left in this dir (a share's capture
-    # dir is the same on every pull) says nothing about this slice's clock.
+    # Whose state is on disk? The SPAWN's — see the module docstring. The id
+    # is kept in the files for a reader; nothing is decided by it alone.
     ticket_id = ticket.get("ticket")
+    spawn = spawn_of(directory)
+    now = time.time()
     earlier = read_json(directory / PLAN_NAME) or {}
-    same_ticket = ticket_id is not None and earlier.get("ticket") == ticket_id
-    first_pass_at = earlier.get("first_pass_epoch") if same_ticket else None
-    if not isinstance(first_pass_at, (int, float)):
-        first_pass_at = time.time()
+    same_spawn = earlier.get("spawn", "unrecorded") == spawn and earlier.get("ticket") == ticket_id
+    epoch = slice_epoch(spawn, earlier, same_spawn, now)
+    opened = bool(same_spawn and earlier.get("opened"))
+
+    if plan is None:
+        reason = f"refresh_unsupported: {refreshing} is not a Frame.io leaf viewer (.../share/<share-id>/view/<asset-id>)"
+        report = report_of(ticket, {"scope": None, "leaves": [], "skipped": dict.fromkeys(("known", "excluded", "scope", "duplicate"), 0)}, {})
+        report["reason"] = reason
+        if not args.plan_only:
+            write_json(directory / REPORT_NAME, report)
+        print(json.dumps({"outcome": "failed", "reason": reason, "planned": 0, "stop": "done"}, indent=2))
+        return 1
+
+    if not args.plan_only and not opened:
+        # The first capturing pass of this spawn. What an earlier spawn left
+        # in this (stable) dir is not this one's word: `apply` does not check
+        # whose `report.json` it reads, and on a single-leaf ticket the
+        # extractor's own report lands here too.
+        (directory / REPORT_NAME).unlink(missing_ok=True)
+        if refreshing is not None:
+            # A refresh RE-reads. The capture the last one left would otherwise
+            # be counted as landed and `apply` would hash bytes nobody fetched.
+            for leaf in plan["leaves"]:
+                (root / leaf["dir"] / CAPTURE_NAME).unlink(missing_ok=True)
+        opened = True
     write_json(
         directory / PLAN_NAME,
-        {"ticket": ticket_id, "planned_at": now_utc(), "first_pass_epoch": first_pass_at, **plan},
+        {"ticket": ticket_id, "spawn": spawn, "opened": opened, "planned_at": now_utc(), "slice_epoch": epoch, **plan},
     )
 
+    sliced = args.slice_seconds > 0
     stop = "plan-only" if args.plan_only else "done"
     fetched = 0
-    if not args.plan_only:
+    if args.plan_only:
+        states = {leaf["item"]: leaf_state(root, leaf, spawn) for leaf in plan["leaves"]}
+        report = report_of(ticket, plan, states)
+    else:
+        # Before the first leaf, so a pass killed inside it still leaves a
+        # report — and one that says what is true so far.
+        states, report = write_report(root, directory, ticket, plan, spawn)
         for leaf in plan["leaves"]:
-            state, _ = leaf_state(root, leaf, ticket_id)
+            state, _ = states.get(leaf["item"], ("pending", None))
             if state == "captured" or (state == "failed" and not args.retry_failed):
                 continue
             if time.monotonic() - started > args.budget_seconds:
                 stop = "budget"
                 break
-            if time.time() - first_pass_at > args.slice_seconds:
-                stop = "slice"
-                break
+            deadline = None
+            if sliced:
+                if time.time() - epoch > args.slice_seconds:
+                    stop = "slice"
+                    break
+                deadline = epoch + args.kill_seconds - time.time()
+                if deadline <= 1:
+                    stop = "slice"
+                    break
             if fetched and args.pause_seconds > 0:
                 time.sleep(args.pause_seconds)
             fetched += 1
             leaf_dir = root / leaf["dir"]
             leaf_dir.mkdir(parents=True, exist_ok=True)
             (leaf_dir / ERROR_NAME).unlink(missing_ok=True)
-            rc, out, err = run(capture_cmd(root, ticket, leaf, args))
-            if rc != 0 or leaf_state(root, leaf, ticket_id)[0] != "captured":
+            rc, out, err = run(capture_cmd(root, ticket, leaf, args, deadline=deadline, fresh=refreshing is not None), timeout=deadline)
+            if rc == TIMED_OUT:
+                # Killed mid-write: whatever it left is not a capture.
+                (leaf_dir / CAPTURE_NAME).unlink(missing_ok=True)
+            if rc != 0 or leaf_state(root, leaf, spawn)[0] != "captured":
                 text = (err or out)[-600:]
-                why = "timeout" if "timeout" in text.lower() else "error"
-                write_json(leaf_dir / ERROR_NAME, {"ticket": ticket_id, "item": leaf["item"], "why": why, "exit": rc, "detail": text})
+                why = "timeout" if rc == TIMED_OUT or "timeout" in text.lower() else "error"
+                write_json(
+                    leaf_dir / ERROR_NAME,
+                    {"ticket": ticket_id, "spawn": spawn, "item": leaf["item"], "why": why, "exit": rc, "detail": text},
+                )
             print(f"[{fetched}] {leaf['dir']} exit {rc}", file=sys.stderr)
-
-    if not args.plan_only:
-        # Before the report reads a title: two leaves with one title are ONE
-        # page to the extractor, the second overwriting the first.
-        settle_titles(root, plan["leaves"])
-    states = {leaf["item"]: leaf_state(root, leaf, ticket_id) for leaf in plan["leaves"]}
-    report = report_of(ticket, plan, states)
-    if not args.plan_only:
-        # Last, and on every pass: a slice killed between passes still leaves
-        # a report that tells the truth about what landed.
-        write_json(directory / REPORT_NAME, report)
+            states, report = write_report(root, directory, ticket, plan, spawn)
+        if stop == "slice" and not fetched:
+            print(
+                f"note: the slice clock ({TICKET_NAME}'s mtime) is {time.time() - epoch:.0f}s old, so no leaf was started; "
+                f"outside a slice (a hand run) pass --slice-seconds 0",
+                file=sys.stderr,
+            )
     counts = [s for s, _ in states.values()]
     print(
         json.dumps(

@@ -25,8 +25,14 @@ leaf and leaves the dir in the shape the generic extractor reads (a rendered
 `page.md` for a document, the media file itself as the body for a video).
 
 Usage:
-  uv run capture_asset.py <view-url> --out <dir> --name <asset-name>
-         [--timeout-ms 20000]
+  uv run capture_asset.py <view-url> --out=<dir> --name=<asset-name>
+         [--timeout-ms 20000] [--deadline-seconds N]
+
+`--name=<v>`, never `--name <v>`: the name is venue text, and one that starts
+with `-` is an option to argparse when it rides as its own item.
+`--deadline-seconds` bounds the DOWNLOAD (yt-dlp, or the document stream),
+which is the only open-ended step here; past it the download is killed and
+this exits 3 with `timeout` in stderr.
 
 Outputs into <dir>/:
   - video.mp4   (video assets)
@@ -47,14 +53,19 @@ History:
               only a URL landed every document as `document.bin` without it.
   2026-09-19  docstrings only — ported with the unit to the ticket contract;
               the capture itself is unchanged.
+  2026-09-19  the download has a deadline (`--deadline-seconds`): yt-dlp ran
+              open-ended, and one long video could outlive the slice's kill
+              and take the ticket's report with it.
 """
 
 import argparse
 import json
 import re
-import subprocess
 import sys
+import time
 from pathlib import Path
+
+from capture_record import TIMED_OUT, run
 
 HLS_MASTER_RE = re.compile(r"sahls\.frame\.io/encode-hls/[^\"'\s]+/main\.m3u8")
 DOC_PROXY_RE = re.compile(r"assets\.frame\.io/\w+/[^\"'\s]+_proxy\.\w+\?[^\"'\s]+")
@@ -87,7 +98,15 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="Output capture dir")
     ap.add_argument("--name", default=None, help="Human/original file name (for doc extension + logging)")
     ap.add_argument("--timeout-ms", type=int, default=20000)
+    ap.add_argument("--deadline-seconds", type=float, default=None, help="kill the download after this long (default: none)")
     args = ap.parse_args()
+    began = time.monotonic()
+
+    def left():
+        """Seconds of the deadline still unspent, or None with no deadline."""
+        if args.deadline_seconds is None:
+            return None
+        return max(1.0, args.deadline_seconds - (time.monotonic() - began))
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -112,25 +131,30 @@ def main() -> int:
 
     if hls:
         dest = out / "video.mp4"
-        r = subprocess.run(
-            ["yt-dlp", "--no-warnings", "-o", str(dest), hls],
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode != 0 or not dest.exists():
-            print(r.stdout, file=sys.stderr)
-            print(r.stderr, file=sys.stderr)
+        # `run` kills yt-dlp AND the ffmpeg it may have started when the
+        # deadline passes; the `.part` it leaves is what a retry resumes.
+        rc, ytout, yterr = run(["yt-dlp", "--no-warnings", "-o", str(dest), hls], timeout=left())
+        if rc != 0 or not dest.exists():
+            print(ytout, file=sys.stderr)
+            print(yterr, file=sys.stderr)
+            if rc == TIMED_OUT:
+                print("timeout: the video download outlived its deadline", file=sys.stderr)
             return 3
         kind, resolved, size = "video", hls, dest.stat().st_size
     elif doc:
         dest = out / f"document.{document_ext(args.name, doc)}"
         try:
+            # httpx's timeout is per read, not for the whole stream: a body
+            # that drips never trips it, so the deadline is checked per chunk.
             with httpx.stream("GET", doc, timeout=60.0, follow_redirects=True) as resp:
                 resp.raise_for_status()
                 with open(dest, "wb") as f:
                     for chunk in resp.iter_bytes():
                         f.write(chunk)
+                        if args.deadline_seconds is not None and time.monotonic() - began > args.deadline_seconds:
+                            raise TimeoutError("timeout: the document download outlived its deadline")
         except Exception as e:
+            dest.unlink(missing_ok=True)
             print(f"document download failed: {e}", file=sys.stderr)
             return 3
         kind, resolved, size = "document", doc, dest.stat().st_size

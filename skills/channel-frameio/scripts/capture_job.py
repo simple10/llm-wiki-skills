@@ -35,9 +35,16 @@ and a symlinked component are both refused.
 Usage:
   uv run capture_job.py <leaf-dir> [--root <wiki root>] [--url <view-url>]
       [--slug <slug>]
-      [--name <original filename>] [--path <folder> ...]
+      [--name=<original filename>] [--path=<folder> ...] [--crumb-skip=N]
       [--title-strip S] [--author A] [--group G] [--group-type T]
-      [--timeout-ms N]
+      [--timeout-ms N] [--deadline-seconds N] [--fresh]
+
+Venue text — a filename, a folder — goes in as `--name=<v>`, never as a
+separate item: a file called `-rf.pdf` is an option to argparse otherwise.
+`--deadline-seconds` is what is left of the slice: each child gets a little
+less and is killed, with everything it started, when it runs out (exit 1,
+`timeout` in the error). `--fresh` is a refresh ticket's: the `video.mp4` an
+earlier capture left is dropped first, or yt-dlp would call it downloaded.
 
 `--url` and `--slug` default from a `ticket.json` in `<leaf-dir>` (a ticket
 whose target is itself a leaf viewer); `harvest_share.py` always passes both.
@@ -60,19 +67,26 @@ History:
               job per leaf. Takes the leaf dir and URL directly, writes the
               extractor's `capture.json` (media body for a video), and hands
               documents to `frameio_doc_note.py` for their `page.md`.
+  2026-09-19  review fixes: the title is made filename-safe where it is
+              written (`capture_record()`); children get a deadline; venue
+              text crosses argv as `--name=<v>`; what an earlier attempt left
+              in the leaf dir is cleared before the fetch.
 """
 
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from capture_record import (
     CAPTURE_NAME,
     META_NAME,
     TICKET_NAME,
+    TIMED_OUT,
     asset_facts,
     capture_record,
+    inner_deadline,
     leaf_ids,
     name_stem,
     read_json,
@@ -130,13 +144,16 @@ def main() -> int:
     ap.add_argument("--group", default=None)
     ap.add_argument("--group-type", dest="group_type", default=None)
     ap.add_argument("--timeout-ms", type=int, default=None, help="passed through to capture_asset.py")
+    ap.add_argument("--crumb-skip", type=int, default=None, help="leading --path folders every leaf of the share carries; passed through to frameio_doc_note.py")
+    ap.add_argument("--deadline-seconds", type=float, default=None, help="what is left of the slice: children are killed when it runs out")
+    ap.add_argument("--fresh", action="store_true", help="a refresh: drop the media an earlier capture left, so it is fetched again")
     args = ap.parse_args()
 
     ticket = read_json(args.leaf_dir / TICKET_NAME) or {}
     url = args.url or ticket.get("target")
     slug = args.slug or ticket.get("slug")
-    if not isinstance(url, str) or not leaf_ids(url)[1]:
-        print(f"error: {url!r} is not a leaf viewer URL (.../share/<share-id>/view/<asset-id>)", file=sys.stderr)
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")) or not leaf_ids(url)[1]:
+        print(f"error: {url!r} is not a leaf viewer URL (https://.../share/<share-id>/view/<asset-id>)", file=sys.stderr)
         return 2
     if not isinstance(slug, str) or not slug:
         print(f"error: no --slug and no {TICKET_NAME} in {args.leaf_dir} to read one from", file=sys.stderr)
@@ -152,13 +169,30 @@ def main() -> int:
 
     leaf_dir = args.leaf_dir
     path_bits = list(args.path or [])
-    cmd = ["uv", "run", str(SCRIPTS / "capture_asset.py"), url, "--out", str(leaf_dir)]
+    # What an earlier attempt left is not this one's: a `capture.json` would be
+    # read as landed, and a half-written `document.bin` beside the new
+    # `document.pdf` is the one a glob finds first. A partial `video.mp4.part`
+    # stays — yt-dlp resumes it — unless this is a refresh.
+    stale = [CAPTURE_NAME, "page.md", META_NAME, *(p.name for p in leaf_dir.glob("document.*"))]
+    if args.fresh:
+        stale += [p.name for p in leaf_dir.glob(f"{VIDEO_BODY}*")]
+    for name in stale:
+        (leaf_dir / name).unlink(missing_ok=True)
+
+    began = time.monotonic()
+    inner = inner_deadline(args.deadline_seconds)
+    cmd = ["uv", "run", str(SCRIPTS / "capture_asset.py"), url, f"--out={leaf_dir}"]
     if args.name:
-        cmd += ["--name", args.name]
+        cmd.append(f"--name={args.name}")
     if args.timeout_ms is not None:
-        cmd += ["--timeout-ms", str(args.timeout_ms)]
-    rc, out, err = run(cmd)
+        cmd.append(f"--timeout-ms={args.timeout_ms}")
+    if inner is not None:
+        cmd.append(f"--deadline-seconds={inner_deadline(inner):.0f}")
+    rc, out, err = run(cmd, timeout=inner)
     if rc != 0:
+        if rc == TIMED_OUT:
+            for part in leaf_dir.glob("document.*"):  # killed mid-download
+                part.unlink(missing_ok=True)
         return fail(url, rel, f"capture_asset exit {rc}: {err or out}")
 
     # Everything past the fetch still ends in a JSON answer and an exit code:
@@ -173,11 +207,11 @@ def main() -> int:
             meta = read_json(leaf_dir / META_NAME) or {}
             name = args.name or meta.get("name")
             title = strip_title(result.get("title") or meta.get("title") or "", args.title_strip)
-            title = title or name_stem(name) or leaf_ids(url)[1]
             record = capture_record(
                 slug=slug,
                 item=url,
-                title=title,
+                title=title or name_stem(name),
+                fallback=leaf_ids(url)[1],
                 body=VIDEO_BODY,
                 content_type="video/mp4",
                 frontmatter=asset_facts(
@@ -187,20 +221,21 @@ def main() -> int:
             )
             write_json(leaf_dir / CAPTURE_NAME, record)
         else:
-            note = ["uv", "run", str(SCRIPTS / "frameio_doc_note.py"), str(leaf_dir), "--slug", slug, "--url", url]
+            note = ["uv", "run", str(SCRIPTS / "frameio_doc_note.py"), str(leaf_dir), f"--slug={slug}", f"--url={url}"]
             if args.name:
-                note += ["--name", args.name]
-            for bit in path_bits:
-                note += ["--path", bit]
+                note.append(f"--name={args.name}")
+            note += [f"--path={bit}" for bit in path_bits]
             for flag, value in (
+                ("--crumb-skip", args.crumb_skip),
                 ("--title-strip", args.title_strip),
                 ("--author", args.author),
                 ("--group", args.group),
                 ("--group-type", args.group_type),
             ):
                 if value is not None:
-                    note += [flag, value]
-            nrc, nout, nerr = run(note)
+                    note.append(f"{flag}={value}")
+            left = None if inner is None else max(1.0, inner - (time.monotonic() - began))
+            nrc, nout, nerr = run(note, timeout=left)
             if nrc != 0:
                 raise RuntimeError(f"frameio_doc_note exit {nrc}: {nerr or nout}")
             record = read_json(leaf_dir / CAPTURE_NAME)

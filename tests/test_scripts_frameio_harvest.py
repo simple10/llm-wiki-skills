@@ -44,6 +44,10 @@ def _module(path, name=None):
 ALLOWED_IMPORTS = {
     "argparse", "fnmatch", "hashlib", "json", "re", "shutil", "subprocess",
     "sys", "time", "datetime", "pathlib", "urllib",
+    # `os`/`signal`: a child with a deadline is killed by process GROUP, and
+    # `report.json` is written through `os.replace`. `unicodedata`: stdlib,
+    # for folding a title's Unicode form in the page-name rule (APFS folds it).
+    "os", "signal", "unicodedata",
     "playwright", "httpx", "pptx", "openpyxl", "pypdf",
     "capture_record",
 }
@@ -120,6 +124,23 @@ def test_a_share_id_is_read_off_a_root_a_folder_or_a_leaf_and_nothing_else():
         assert mod.share_id_of(url) == share
     with pytest.raises(SystemExit):
         mod.share_id_of("https://f.io/AbCdEfGh")   # a short link names no share id
+
+
+def test_folder_and_leaf_urls_are_built_on_the_given_urls_own_origin():
+    """Not a hardcoded `next.frame.io`: a slice is granted the manifest's
+    `*.frame.io` plus the TARGET's own host, so that is the host to build on."""
+    mod = _module(SCRIPTS / "enumerate_tree.py", "enumerate_tree_probe")
+    assert mod.origin_of(f"{SHARE}/22222222-2222-2222-2222-222222222222?x=1") == "https://next.frame.io"
+    assert mod.origin_of("https://app.frame.io/share/11111111-1111-1111-1111-111111111111") == "https://app.frame.io"
+    for bad in ("next.frame.io/share/x", "file:///etc/passwd", "javascript:alert(1)"):
+        with pytest.raises(SystemExit):
+            mod.origin_of(bad)
+    # A card's id is venue text on its way into a URL.
+    assert mod.ASSET_ID_RE.match("0a1b2c3d-0000-4000-8000-000000000000")
+    for bad in ("", "../x", "a/b", "a?b", "a b", "x" * 65):
+        assert not mod.ASSET_ID_RE.match(bad), bad
+    source = (SCRIPTS / "enumerate_tree.py").read_text(encoding="utf-8")
+    assert 'f"https://next.frame.io' not in source
 
 
 # --------------------------------------------------------------------------- #

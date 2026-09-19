@@ -11,9 +11,10 @@ capture's `.md` body VERBATIM, so everything this venue knows about a document
 has to be in that body before harvest ends. This is the step that puts it
 there. It runs at HARVEST time, inside the leaf's own capture dir:
 
-  <leaf-dir>/page.md        the body: title, breadcrumb, a compact facts
-                            block, a pointer to the captured file, and the
-                            document's text under a collapsed callout
+  <leaf-dir>/page.md        the body: the venue's own title as the H1, the
+                            folder breadcrumb, a compact facts block naming
+                            the original file, and the document's text under
+                            a collapsed callout
   <leaf-dir>/capture.json   names `page.md` as the body, and carries the same
                             facts as a `frontmatter` object
 
@@ -26,9 +27,24 @@ page.
 
 It writes nothing outside the leaf dir. The old builder copied the file into
 `<dest>/assets/docs/` and wrote a note under `<dest>/pages/`; a harvest slice
-cannot write `dest`, and a download ticket does not even carry it. The file
-stays where it was captured and the body points at it by its wiki-relative
-path.
+cannot write `dest`, and a download ticket does not even carry it.
+
+**The body does NOT point at the captured file, and must not be "fixed" to.**
+It names the original file (the `File:` fact) and carries its text; it links
+nothing under `_raw/`, because a committed page never links into `_raw/` — that
+tree is machine-local and prunable, so the link is dead on every other clone
+and on this one after a prune. The regression against the old builder is real
+and is stated here plainly: the PDF/PPTX ITSELF stays in `_raw/<slug>/<leaf>/`
+on the capturing machine, and only its extracted text reaches the page. The
+host's `bundle_media` copies media files only, not documents (plugins issue
+simple10/llm-wiki-plugins#2117, item 9); until it does, that is the whole of
+what travels.
+
+**The title is written twice, differently.** `capture.json`'s `title` names the
+page's FILE, so it is `safe_title()` of the venue's (`capture_record()` does
+it: no `/`, `:`, `?`…, no leading dot, one line). The H1 keeps the venue's own
+title, folded to one line; where the two differ the true one is also
+`frontmatter.source_title`.
 
 Text is extracted for pdf (pypdf), pptx and xlsx. Extraction is best effort:
 a failure is said in the body, never raised, because the file itself is
@@ -37,7 +53,7 @@ of them runs without them.
 
 Usage:
   uv run frameio_doc_note.py <leaf-dir> [--slug <slug>] [--url <view-url>]
-      [--name <original filename>] [--path <folder> ...]
+      [--name=<original filename>] [--path=<folder> ...] [--crumb-skip=N]
       [--group "<bundle name>"] [--group-type <kind>] [--author NAME]
       [--title-strip "<suffix>"]
 
@@ -45,7 +61,11 @@ Usage:
 `--slug` defaults to the leaf dir's parent name (`_raw/<slug>/<leaf>`).
 `--title-strip` trims a share-wide suffix off the title (share viewers often
 append the share's own name to each asset title); omit it to keep titles as
-captured.
+captured. `--crumb-skip` is how many leading `--path` folders the breadcrumb
+leaves off: the driver passes 1 when every leaf of the share carries the same
+top folder and 0 when the top folder tells leaves apart; by hand it defaults
+to 1. Pass venue text as `--name=<v>`: a name starting with `-` is an option
+to argparse otherwise.
 
 Prints {"dir", "body", "title", "ext", "extracted_chars"}.
 
@@ -60,6 +80,11 @@ History:
               the YAML frontmatter and the TODO-SUMMARY placeholder went with
               the note; `tags`/`areas` went because a ticket carries neither.
               PDFs get their text inlined too, since no agent reads them later.
+  2026-09-19  review fixes: `capture.json`'s title is filename-safe and one
+              line (a display name with a `/` failed the process ticket after
+              harvest said ok); `document.pdf` is preferred over a stray
+              `document.bin`; `--crumb-skip`; the docstring no longer promises
+              a pointer into `_raw/` that the body rightly does not carry.
 """
 
 import argparse
@@ -73,6 +98,7 @@ from capture_record import (
     asset_facts,
     capture_record,
     name_stem,
+    one_line,
     read_json,
     strip_title,
     write_json,
@@ -143,9 +169,29 @@ def extracted_text(path: Path, ext: str) -> str:
     return text
 
 
+#: Extensions a captured document is known to land with, in the order one is
+#: preferred when a leaf dir holds several `document.*`. `bin` is what
+#: `capture_asset.py` names a file it could not type — and it sorts FIRST.
+DOC_EXTS = ("pdf", "pptx", "xlsx", "docx", "ppt", "xls", "doc", "key", "numbers", "pages", "mht", "txt", "csv")
+
+
+def pick_document(docs, name=None):
+    """The one `document.<ext>` to render: the extension the asset's own name
+    carries, else the first known document extension, else by name with
+    `document.bin` last. None when there is none."""
+    wanted = name.rsplit(".", 1)[-1].lower() if isinstance(name, str) and "." in name else None
+
+    def rank(path):
+        ext = path.suffix.lstrip(".").lower()
+        known = DOC_EXTS.index(ext) if ext in DOC_EXTS else len(DOC_EXTS)
+        return (ext != wanted, known, ext == "bin", path.name)
+
+    return min(docs, key=rank, default=None)
+
+
 def _plain(value) -> str:
     """One fact on one line: a captured title is data, never markup."""
-    return " ".join(str(value).split()).replace("`", "'")
+    return one_line(value).replace("`", "'")
 
 
 def render_body(*, title, url, facts, orig_name, breadcrumb, extracted) -> str:
@@ -172,6 +218,7 @@ def main() -> int:
     ap.add_argument("--url", default=None, help="the leaf's view URL (default: meta.json's url)")
     ap.add_argument("--name", default=None, help="the asset's original filename (default: meta.json's name)")
     ap.add_argument("--path", action="append", default=None, help="folder breadcrumb bit, repeatable")
+    ap.add_argument("--crumb-skip", type=int, default=1, help="leading --path folders every leaf of the share carries, left off the breadcrumb (default 1)")
     ap.add_argument("--group", default=None)
     ap.add_argument("--group-type", dest="group_type", default=None)
     ap.add_argument("--author", default=None)
@@ -182,10 +229,9 @@ def main() -> int:
 
     leaf_dir = args.leaf_dir
     meta = read_json(leaf_dir / META_NAME) or {}
-    docs = sorted(p for p in leaf_dir.glob("document.*") if p.is_file())
-    if not docs:
+    src_path = pick_document([p for p in leaf_dir.glob("document.*") if p.is_file()], args.name or meta.get("name"))
+    if src_path is None:
         sys.exit(f"{leaf_dir} holds no document.<ext> — capture_asset.py writes one for a document asset")
-    src_path = docs[0]
     ext = src_path.suffix.lstrip(".").lower()
     url = args.url or meta.get("url")
     if not isinstance(url, str) or not url:
@@ -196,8 +242,10 @@ def main() -> int:
 
     # capture_asset.py names every doc `document.<ext>`; the real filename is
     # the manifest's, carried on meta.json only when the capture was given it.
-    orig_name = args.name or meta.get("name") or src_path.name
-    title = strip_title(meta.get("title") or "", args.title_strip) or name_stem(orig_name)
+    orig_name = one_line(args.name or meta.get("name") or "") or src_path.name
+    # The venue's own title, on ONE line — it is the H1. What names the page's
+    # file is `capture_record()`'s safe form of it.
+    title = one_line(strip_title(meta.get("title") or "", args.title_strip)) or name_stem(orig_name)
 
     facts = asset_facts(
         kind="document",
@@ -211,9 +259,13 @@ def main() -> int:
         group_type=args.group_type,
     )
     extracted = extracted_text(src_path, ext)
-    # path_bits[0] is the shared top folder every leaf of a share carries — it
-    # distinguishes nothing, so the breadcrumb starts below it.
-    breadcrumb = " / ".join(path_bits[1:]) if len(path_bits) > 1 else ""
+    # `path_bits[0]` is the first folder BELOW the enumerated URL — never the
+    # share's own name, which `enumerate_tree.py` keeps apart as `root_title`.
+    # Where every leaf of the share carries the same one it distinguishes
+    # nothing and the breadcrumb starts below it (`--crumb-skip=1`); where the
+    # share's root lists several folders it is exactly what tells two leaves
+    # apart, and the driver — which sees the whole manifest — passes 0.
+    breadcrumb = " / ".join(path_bits[max(0, args.crumb_skip):])
     body = render_body(
         title=title,
         url=url,
@@ -225,18 +277,17 @@ def main() -> int:
     # Body first, record second: a `capture.json` is the claim that the body
     # it names is there.
     (leaf_dir / BODY_NAME).write_text(body, encoding="utf-8")
-    write_json(
-        leaf_dir / CAPTURE_NAME,
-        capture_record(
-            slug=slug, item=url, title=title, body=BODY_NAME, content_type="text/markdown", frontmatter=facts
-        ),
+    record = capture_record(
+        slug=slug, item=url, title=title, body=BODY_NAME, content_type="text/markdown", frontmatter=facts,
+        fallback=facts.get("asset_id") or "Untitled",
     )
+    write_json(leaf_dir / CAPTURE_NAME, record)
     print(
         json.dumps(
             {
                 "dir": f"_raw/{slug}/{resolved.name}",
                 "body": BODY_NAME,
-                "title": title,
+                "title": record["title"],
                 "ext": ext,
                 "extracted_chars": len(extracted),
             }
