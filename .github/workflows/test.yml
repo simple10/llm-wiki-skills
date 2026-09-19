@@ -19,7 +19,7 @@ concurrency:
 # must be green against; a branch may point it at a plugins branch to prove
 # itself against a CLI that has not landed, and sets it back before it lands.
 env:
-  PLUGINS_REF: main
+  PLUGINS_REF: feat/one-cli
 
 jobs:
   harness:
