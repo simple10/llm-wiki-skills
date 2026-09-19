@@ -793,7 +793,7 @@ def _front_door(tmp, ops, env):
         f"os.execve({runner!r}, [{runner!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
 
 
 def _stub_front_door(tmp):
@@ -808,7 +808,7 @@ def _stub_front_door(tmp):
         f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'stdin': sys.stdin.read()}}) + '\\n')\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {"PATH": f"{bin_dir}{os.pathsep}{OFFLINE['PATH']}"}, seen
+    return {"PATH": f"{bin_dir}{os.pathsep}{OFFLINE['PATH']}", "LLM_WIKI_OPS": str(stub)}, seen
 
 
 def _process(wiki, capture_rel, dest, *extra, env, runner=None):

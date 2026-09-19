@@ -15,6 +15,12 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Which llm-wiki-plugins ref the CLI comes from. `main` is what a merge here
+# must be green against; a branch may point it at a plugins branch to prove
+# itself against a CLI that has not landed, and sets it back before it lands.
+env:
+  PLUGINS_REF: main
+
 jobs:
   harness:
     name: harness
@@ -58,13 +64,17 @@ jobs:
           fi
           git config --global url."https://x-access-token:${LLM_WIKI_OPS_INSTALL}@github.com/".insteadOf "https://github.com/"
           plugins="$RUNNER_TEMP/llm-wiki-plugins"
-          # `main`, unpinned, on purpose: the docs and the harness are checked
-          # against the CLI as it IS, so a verb or flag the plugins change turns
-          # this repo red the day it lands rather than the day someone installs.
-          git clone --quiet --depth 1 --branch main https://github.com/simple10/llm-wiki-plugins "$plugins"
+          # Unpinned within the ref on purpose: the docs and the harness are
+          # checked against the CLI as it IS, so a verb or flag the plugins
+          # change turns this repo red the day it lands rather than the day
+          # someone installs.
+          git clone --quiet --depth 1 --branch "$PLUGINS_REF" https://github.com/simple10/llm-wiki-plugins "$plugins"
           project="$plugins/llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1"
-          uv run --project "$project" llm-wiki-ops-v1 --version
-          echo "LLM_WIKI_OPS=uv run --project $project llm-wiki-ops-v1" >> "$GITHUB_ENV"
+          # The machine CLI answers a version anywhere; `llm-wiki-ops` is
+          # `wiki --here`, so it refuses every argv outside a wiki, `--version`
+          # among them. Both are console scripts of this one project.
+          uv run --project "$project" llm-wiki-cli --version
+          echo "LLM_WIKI_OPS=uv run --project $project llm-wiki-ops" >> "$GITHUB_ENV"
           echo "LLM_WIKI_OPS_PLUGIN=$plugins/llm-wiki-ops/v1/plugin" >> "$GITHUB_ENV"
       # Some cases run a unit script the way production does — `uv run --script`, OFFLINE, so a
       # test can never reach a venue — and skip, saying so, when its PEP 723 dependencies are
