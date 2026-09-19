@@ -20,14 +20,18 @@ Subcommands:
   search        resolve a natural request ("lex fridman #400") to entity URLs
   meta          full metadata JSON for any supported entity URL/URI
   resolve-feed  show/episode -> public RSS feed + episode list
-  capture       full capture into --capture-dir: meta.json, items.json,
-                assets.json (pending cover art + audio enclosures), page.md
-                (the rendered page BODY) and capture.json (names page.md as
-                the body, carries the entity's facts under `frontmatter`).
-                Reads the URL, slug, min_date and asset policy off the
+  capture       HARVEST: bytes into --capture-dir — meta.json (the entity as
+                it arrived, items and audio routes planned), items.json,
+                assets.json (pending cover art + audio enclosures) and a flat
+                capture.json naming meta.json as the body. No page, no facts
+                object. Reads the URL, slug, min_date and asset policy off the
                 ticket.json the spawner left in that directory; flags override.
+  process       PROCESS: meta.json -> the page, written under --dest through
+                `llm-wiki-ops page create` (or `page edit` when it is already
+                there), as a subprocess with an argv list. Prints the pages it
+                wrote; the caller passes them to `report --written`.
   report        report.json into --capture-dir, read off what is there — the
-                last thing a harvest worker writes.
+                last thing either worker writes.
 
 Inputs:  entity URL (https://open.spotify.com/<type>/<id>) or spotify:<type>:<id>
 Outputs: JSON on stdout (all subcommands); capture writes files, stdout JSON
@@ -35,11 +39,10 @@ Outputs: JSON on stdout (all subcommands); capture writes files, stdout JSON
          audio was resolvable (all-DRM or no feed match) — metadata-only,
          and still a complete capture (capture.json is written).
 
-The harvest worker is the only stage that reaches this unit: the pipeline's
-generic extractor turns the capture into a page, taking page.md verbatim and
-prepending its own frontmatter. Everything venue-specific is therefore
-rendered here, at harvest time, into the capture directory — never into the
-job's `dest`, which a harvest slice cannot write.
+Two steps, one script. Harvest captures bytes and may not write the job's
+`dest`; process reads those bytes and writes the page. Which step a worker is
+in is the `stage=` argument its prompt carries, never anything in ticket.json:
+a single-item job's two tickets share one capture directory and one file name.
 
 Auth: the `spotify` credential, {"client_id": ..., "client_secret": ...}
       (env SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET override). `auth
@@ -65,9 +68,12 @@ History:
               get|set spotify` via the front door); the token is held in memory
               for the process lifetime, never cached to disk.
   2026-09-19  Ported to the rebuilt worker contract: `capture` reads
-              ticket.json, writes capture.json (body page.md + `frontmatter`
-              facts) and a facts list in page.md; `report` writes report.json;
-              unreachable feed hosts are recorded instead of swallowed.
+              ticket.json and writes capture.json, `report` writes
+              report.json; unreachable feed hosts are recorded instead of
+              swallowed.
+  2026-09-19  The two steps split: `capture` writes bytes only, `process`
+              renders the page and writes it with `page create`/`page edit`,
+              `report --written` names the pages a process run left.
   2026-09-19  Review fixes: the title is filename-safe (`safe_title`), venue
               text cannot forge page structure, URLs are http(s) only, a
               404/410 is `gone`/`failed` instead of a traceback, a page of
@@ -117,10 +123,10 @@ class NotFound(Exception):
 
 # ------------------------------------------------- venue text is data, not structure
 #
-# `page.md` is the FINAL page body, taken verbatim, and `capture.json`'s title
-# names the page's file. Everything below exists so that a name, a description
-# or a URL the venue (or a same-named hostile feed) supplied can never forge a
-# heading, a rule, a fence, a table row, a link scheme or a filename.
+# `capture.json`'s title names the page's file, and the process step renders
+# the page body. Everything below exists so that a name, a description or a URL
+# the venue (or a same-named hostile feed) supplied can never forge a heading,
+# a rule, a fence, a table row, a link scheme or a filename.
 
 # The page's FILE is named from this title, and the host refuses a title its filename rule
 # cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
@@ -128,7 +134,7 @@ class NotFound(Exception):
 _TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "'", "<": "(", ">": ")"}
 TITLE_MAX = 120  # characters
 # UTF-8 bytes: the host checks no length, and a filename is capped in BYTES (255 on ext4/APFS) with `.md`
-# appended — 100 CJK characters is 300 bytes and the REAL extractor dies `OSError: [Errno 36] File name too
+# appended — 100 CJK characters is 300 bytes and the write dies `OSError: [Errno 36] File name too
 # long` (measured, channel-youtube)
 TITLE_MAX_BYTES = 200
 
@@ -681,16 +687,17 @@ def match_episode(feed_items, name, duration_ms, tol_s=150):
 # -------------------------------------------------------------------- capture
 
 
-# What the spawner leaves beside a worker, what the extractor reads, and what
-# travels back out of the slice. The names are the host's; this unit only
+# What the spawner leaves beside a worker, what the process step reads, and
+# what travels back out of the slice. The names are the host's; this unit only
 # reads the first and writes the other two.
 TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
 REPORT_NAME = "report.json"
 
-# Frontmatter keys another verb owns — never offered in `capture.json`'s
-# `frontmatter` object, whatever the entity is called.
-FRONTMATTER_RESERVED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource")
+# Frontmatter keys another verb owns — never among the `key=value` words the
+# process step hands `page create`, whatever the entity is called. `type` is
+# the HOST's page type; this venue's kind of entity rides as `entity_type`.
+FRONTMATTER_RESERVED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource", "type")
 
 ASSET_POLICIES = ("reference", "download", "download-audio")
 
@@ -834,16 +841,16 @@ def plan_capture(ent, *, market="US", min_date=None, no_audio=False):
     return meta, assets
 
 
-def capture_frontmatter(meta):
-    """The entity's exact facts, as the flat object `capture.json` carries
-    under `frontmatter` — scalars only, nothing another verb owns, and no key
-    for a fact the venue did not declare (an absent `published` is absent,
-    never a guess)."""
+def page_frontmatter(meta):
+    """The entity's exact facts, as the flat `key=value` words the process step
+    sets on the page — scalars only, nothing another verb owns, and no key for
+    a fact the venue did not declare (an absent `published` is absent, never a
+    guess)."""
     counts = meta.get("counts") or {}
     items = meta.get("items") or []
     name, show = _one_line(meta.get("name")), items[0].get("show") if meta.get("type") == "episode" and items else None
     facts = {
-        "type": meta.get("type"),
+        "entity_type": meta.get("type"),
         "venue": "spotify",
         "spotify_id": meta.get("id"),
         # The venue's own name, when the filename rule made `title` differ from it.
@@ -861,19 +868,18 @@ def capture_frontmatter(meta):
 
 
 def capture_record(meta, *, slug, item, fetched_at=None):
-    """`capture.json`: the whole agreement with the generic extractor. The body
-    is the markdown page this unit rendered; the extractor takes it verbatim."""
+    """`capture.json`: what harvest leaves for the process step. Flat, and it
+    names the entity JSON as it arrived — harvest renders nothing, so there is
+    no page here and no facts object."""
     return {
-        "v": 1,
         "slug": slug,
         "item": item or meta["url"],
         # Names the page's FILE: the filename-safe form. The venue's own name is
-        # the body's H1, and `frontmatter.source_title` when the two differ.
+        # the body's H1, and `source_title` on the page when the two differ.
         "title": page_title(meta),
-        "body": "page.md",
-        "content_type": "text/markdown",
+        "body": "meta.json",
+        "content_type": "application/json",
         "fetched_at": fetched_at or now_iso(),
-        "frontmatter": capture_frontmatter(meta),
     }
 
 
@@ -882,14 +888,13 @@ def _dump(path, data):
 
 
 def write_capture_dir(cap, meta, assets, *, slug=None, item=None, fetched_at=None):
-    """Every file a capture leaves, `capture.json` last — it names `page.md`,
-    so it is written only once the page is on disk."""
+    """Every file a capture leaves, `capture.json` last — it names `meta.json`,
+    so it is written only once those bytes are on disk."""
     cap = Path(cap)
     cap.mkdir(parents=True, exist_ok=True)
     _dump(cap / "meta.json", meta)
     _dump(cap / "items.json", meta["items"])
     _dump(cap / "assets.json", assets)
-    (cap / "page.md").write_text(render_page_md(meta), encoding="utf-8")
     record = capture_record(meta, slug=slug, item=item, fetched_at=fetched_at)
     _dump(cap / CAPTURE_NAME, record)
     return record
@@ -897,7 +902,7 @@ def write_capture_dir(cap, meta, assets, *, slug=None, item=None, fetched_at=Non
 
 # What this script itself leaves in a capture dir. A single-entity capture dir
 # is STABLE across pulls and respawns, so none of it may answer for a later run.
-OWN_FILES = ("meta.json", "items.json", "assets.json", "page.md")
+OWN_FILES = ("meta.json", "items.json", "assets.json")
 
 
 def cmd_capture(a):
@@ -995,8 +1000,8 @@ def cmd_capture(a):
         "truncated": bool(meta.get("truncated")),
         "credential_unreadable": bool(meta.get("auth")),
         # The venue's native creation timestamp, under the protocol's name
-        # for it — the same value `capture.json`'s `frontmatter.published`
-        # carries. Emitted only at day precision: Spotify's `release_date`
+        # for it — the same value the process step sets as the page's
+        # `published`. Emitted only at day precision: Spotify's `release_date`
         # follows its `release_date_precision`, so an album can legitimately
         # return a bare "1979", which is not a publication DAY.
         "published": _published_day(meta.get("release_date")),
@@ -1004,20 +1009,141 @@ def cmd_capture(a):
         "assets": policy,
         "assets_args": ASSET_ARGS[policy],
         "capture_dir": str(cap),
-        "wrote": ["meta.json", "items.json", "assets.json", "page.md", CAPTURE_NAME],
+        "wrote": ["meta.json", "items.json", "assets.json", CAPTURE_NAME],
     }
     print(json.dumps(summary, indent=1))
     if meta["items"] and counts["audio_resolved"] == 0 and not a.no_audio:
         sys.exit(4)
 
 
+# --------------------------------------------------------------------- process
+
+
+def refiltered(meta, min_date):
+    """The process ticket's own date floor over the captured items — the same
+    rule harvest applies, re-run because a process ticket carries its own."""
+    if not min_date:
+        return meta
+    items = [i for i in meta.get("items") or [] if not i.get("release_date") or i["release_date"] >= min_date]
+    routes = [(i.get("audio") or {}).get("route") for i in items]
+    return {
+        **meta,
+        "items": items,
+        "counts": {
+            "items": len(items),
+            "audio_resolved": routes.count("rss"),
+            "drm_or_unmatched": routes.count("drm") + routes.count("none"),
+        },
+    }
+
+
+def excluded_by(meta, rules):
+    """The first `process.exclude_rules` entry this entity matches, or None.
+
+    `exclude_rules` is a free-form string list in the job record, so what a
+    rule MEANS is the unit's: here, a case-insensitive substring of the
+    entity's name or its URL. One ticket is one entity, so a match means the
+    whole ticket earns no page.
+    """
+    haystack = f"{_one_line(meta.get('name'))}\n{meta.get('url') or ''}".casefold()
+    for rule in rules if isinstance(rules, list) else []:
+        if isinstance(rule, str) and rule.strip() and rule.strip().casefold() in haystack:
+            return rule.strip()
+    return None
+
+
+def write_page(root, *, title, dest, body, keys):
+    """The page, through the front door as a SUBPROCESS with an argv list.
+
+    Never a shell line: every value here is venue text — the entity's name, its
+    creator, its description — and a description on a Bash line is a command.
+    `page create` refuses a title it already holds (exit 2, naming the path it
+    would have written), and the filename is exactly the title, so the second
+    call edits that path rather than inventing a name of its own.
+    """
+    # `key=value` carries text, so a bool is spelled the way YAML reads it and
+    # the host's own `extracted=true` already is — never Python's `False`.
+    pairs = [f"{k}={str(v).lower() if isinstance(v, bool) else v}" for k, v in keys.items()]
+    rc, answer = _ops(root, "page", "create", f"title={title}", f"dest={dest}", *pairs, "--stdin", input=body.encode())
+    said = str(answer.get("error") or "")
+    if rc == 2 and "already exists" in said:
+        path = f"{str(dest).rstrip('/')}/{title}.md"
+        rc, answer = _ops(root, "page", "edit", path, *pairs, "--stdin", input=body.encode())
+        said = str(answer.get("error") or "")
+    if rc != 0 or not answer.get("path"):
+        die(f"the page was not written ({rc}): {said or answer}")
+    return answer["path"]
+
+
+def cmd_process(a):
+    # Same directory rule as `capture`: `llm-wiki-ops run` starts this script in
+    # the WIKI ROOT, so `--capture-dir` and `--dest` are both wiki-relative and
+    # verbatim off the ticket. The STEP is never read here — it is the `stage=`
+    # the prompt carries, and this subcommand is what that argument chose.
+    cap = Path(a.capture_dir)
+    ticket = read_ticket(cap)
+    if not ticket and not a.dest:
+        die(
+            f"{a.capture_dir} holds no {TICKET_NAME}. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
+            f"(this script runs from the wiki root, {Path.cwd()}). A hand run names --dest as well."
+        )
+    dest = a.dest or ticket.get("dest")
+    if not dest:
+        die(f"no dest: pass --dest, or run beside a {TICKET_NAME} that names one")
+    # FIRST, before anything below can refuse: harvest's own report is in this
+    # directory, and `apply` never checks whose ticket a report answers.
+    (cap / REPORT_NAME).unlink(missing_ok=True)
+    try:
+        meta = json.loads((cap / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        die(f"no entity in {a.capture_dir} (harvest leaves meta.json, named by {CAPTURE_NAME}): {e}")
+    if not isinstance(meta, dict) or not meta.get("url"):
+        die(f"{cap / 'meta.json'} is not an entity this unit captured")
+
+    section = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
+
+    def verdict(outcome, reason, code, **said):
+        if ticket:
+            _dump(cap / REPORT_NAME, build_report(cap, ticket, outcome=outcome, reason=reason))
+        print(json.dumps({"url": meta.get("url"), **said, "outcome": outcome, "reason": reason, "dest": dest}, indent=1))
+        sys.exit(code)
+
+    rule = excluded_by(meta, section.get("exclude_rules"))
+    if rule:
+        verdict("skipped", f"excluded by process.exclude_rules: {rule!r}", 0, skipped=True)
+    meta = refiltered(meta, a.min_date or ticket.get("min_date"))
+
+    keys = page_frontmatter(meta)
+    keys["resource"] = ticket.get("item") or meta["url"]  # what `known[]` matches on
+    keys["extracted"] = "true"  # the string the host's pipeline reads as done
+    path = write_page(wiki_root() or Path.cwd(), title=page_title(meta), dest=dest, body=render_page_md(meta), keys=keys)
+    print(
+        json.dumps(
+            {
+                "url": meta["url"],
+                "title": page_title(meta),
+                "dest": dest,
+                "items": meta["counts"]["items"],
+                # `process.on_change` is read and only `replace` is reachable: an archive
+                # verb is not among what a slice may run, so a re-run rewrites the page.
+                "on_change": section.get("on_change") or "replace",
+                "written": [path],
+            },
+            indent=1,
+        )
+    )
+
+
 # --------------------------------------------------------------------- report
 
 
-def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capture_dir=None, extra_missing=()):
-    """`report.json` for one entity capture, read off what is on disk.
+def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capture_dir=None, extra_missing=(), written=()):
+    """`report.json` for one run over this capture dir, read off what is there.
 
-    `captured[]` names the capture dir exactly when `capture.json` is there.
+    `written` makes it a PROCESS report: those pages are what landed, and
+    `captured[]` is empty — the harvest report already named the capture.
+    Otherwise `captured[]` names the capture dir exactly when `capture.json` is
+    there.
     `missing[]` is every failed asset in `assets.json`, every feed lookup the
     capture could not reach (`meta.json` `unreachable`), and whatever the
     caller adds. The outcome, unless the caller names one: `failed` with no
@@ -1041,8 +1167,9 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
     if not isinstance(meta, dict):
         meta = {}
     where = capture_dir or ticket.get("capture_dir") or str(cap)
+    written = [str(w) for w in written]
     captured, missing, why_partial = [], [], []
-    if isinstance(record, dict):
+    if isinstance(record, dict) and not written:
         captured.append({"item": record.get("item"), "dir": where, "title": record.get("title")})
     for m in (meta.get("unreachable") or []) if isinstance(meta, dict) else []:
         if isinstance(m, dict) and m.get("url"):
@@ -1070,7 +1197,7 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
     if meta.get("keyless"):
         why_partial.append("keyless capture: the item list may be truncated")
     if outcome is None:
-        outcome = "failed" if not captured else ("partial" if why_partial else "ok")
+        outcome = "failed" if not (captured or written) else ("partial" if why_partial else "ok")
     if reason is None:
         if outcome == "failed":
             reason = f"no {CAPTURE_NAME} in {where}"
@@ -1082,7 +1209,7 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
         "outcome": outcome,
         "reason": reason,
         "captured": captured,
-        "written": [],
+        "written": written,
         "missing": missing,
         "discovered": [],
     }
@@ -1121,11 +1248,12 @@ def cmd_report(a):
     # not found) and its reason: running `report` after it, as the flow says
     # to, must not flatten that into "no capture.json". The report on disk is
     # this run's only when it carries THIS ticket and no capture landed since —
-    # `capture` removes any earlier report first, and the extractor's own
-    # carries another ticket's id.
+    # `capture` removes any earlier report first, and a report another verb
+    # left carries another ticket's id.
     outcome, reason = a.outcome, a.reason
     if (
         outcome is None
+        and not a.written
         and isinstance(prior, dict)
         and prior.get("ticket") == ticket_id
         and prior.get("outcome") in TERMINAL
@@ -1134,9 +1262,10 @@ def cmd_report(a):
     ):
         outcome, reason = prior["outcome"], reason or prior.get("reason")
     report = build_report(
-        cap, ticket, outcome=outcome, reason=reason, ticket_id=ticket_id, capture_dir=a.dir, extra_missing=extra
+        cap, ticket, outcome=outcome, reason=reason, ticket_id=ticket_id, capture_dir=a.dir,
+        extra_missing=extra, written=a.written or (),
     )
-    if report["outcome"] in ("ok", "partial", "unchanged") and not report["captured"]:
+    if report["outcome"] in ("ok", "partial", "unchanged") and not (report["captured"] or report["written"]):
         # agent-loop: a report claiming a capture with nothing captured fails its
         # ticket anyway — refuse to write the claim rather than let `apply` find it.
         die(f"outcome {report['outcome']!r} with nothing captured: there is no {CAPTURE_NAME} in {a.capture_dir}")
@@ -1192,11 +1321,10 @@ def _drm_ref(it, why):
 
 
 def render_page_md(meta):
-    """The page BODY the generic extractor takes verbatim. Never a `---`
-    frontmatter block: the extractor prepends its own, and a second one
-    corrupts the page. The entity's facts ride as a plain list instead — the
-    same keys `capture.json`'s `frontmatter` object carries — so nothing is
-    lost while the extractor does not merge that object.
+    """The page BODY, handed to `page create`/`page edit` on stdin. Never a
+    `---` frontmatter block: those verbs write the only one the page has, and a
+    second corrupts it. The entity's facts are that block's keys
+    (`page_frontmatter`), so the body does not repeat them.
 
     Every venue string in here is DATA: names and fact values are folded to
     one line, the description is a blockquote, table cells are folded and
@@ -1208,10 +1336,6 @@ def render_page_md(meta):
         L.append(f"By **{_one_line(meta['creator'])}** — Spotify {_one_line(meta['type'])}: {url}")
     else:
         L.append(f"Spotify {_one_line(meta['type'])}: {url}")
-    L.append("")
-    for key, value in capture_frontmatter(meta).items():
-        shown = str(value).lower() if isinstance(value, bool) else _one_line(value)
-        L.append(f"- {key}: {shown}")
     if meta.get("keyless"):
         L.append("")
         L.append(
@@ -1385,7 +1509,7 @@ def main():
 
     c = sub.add_parser(
         "capture",
-        help="capture an entity into --capture-dir: meta.json, items.json, assets.json, page.md, capture.json",
+        help="capture an entity into --capture-dir: meta.json, items.json, assets.json, capture.json",
     )
     c.add_argument("url", nargs="?", help=f"entity URL/URI; default: `item` in <capture-dir>/{TICKET_NAME}")
     c.add_argument(
@@ -1403,6 +1527,18 @@ def main():
     c.add_argument("--entity-json", help="an already-fetched entity (what `meta` prints) instead of calling the API; wiki-relative")
     c.set_defaults(fn=cmd_capture)
 
+    c = sub.add_parser(
+        "process",
+        help="build the page from a capture and write it under --dest (`page create`, or `page edit` when it is there)",
+    )
+    c.add_argument(
+        "--capture-dir", required=True,
+        help=f"the ticket's `capture_dir`, WIKI-RELATIVE and verbatim (holds {TICKET_NAME} and meta.json)",
+    )
+    c.add_argument("--dest", help="the ticket's `dest`, WIKI-RELATIVE; default: the ticket's own")
+    c.add_argument("--min-date", help="drop items released before YYYY-MM-DD; default: the ticket's `min_date`")
+    c.set_defaults(fn=cmd_process)
+
     c = sub.add_parser("report", help=f"write {REPORT_NAME} from what the capture dir holds — run it LAST")
     c.add_argument("--capture-dir", required=True, help="the ticket's `capture_dir`, WIKI-RELATIVE and verbatim")
     c.add_argument("--ticket", help=f"ticket id; default: `ticket` in <capture-dir>/{TICKET_NAME}")
@@ -1410,6 +1546,10 @@ def main():
     c.add_argument("--outcome", choices=OUTCOMES, help="override the outcome read off the capture dir")
     c.add_argument("--reason")
     c.add_argument("--missing", action="append", metavar="URL=WHY", help=f"a url not reached; WHY is {'|'.join(WHYS)}")
+    c.add_argument(
+        "--written", action="append", metavar="PATH",
+        help="a page this process run wrote, wiki-relative; repeatable. Given, the report is a PROCESS report",
+    )
     c.set_defaults(fn=cmd_report)
 
     a = ap.parse_args()

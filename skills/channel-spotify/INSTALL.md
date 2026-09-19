@@ -34,6 +34,8 @@ Customize and set up now, while the operator is present:
    `every=once`, `harvest.scope=page` (the capture enumerates the entity's
    items itself — there is no link crawling), `harvest.assets=download` and a
    `dest` of `sources/podcasts/<slug>`; pass `dest=` to land it elsewhere.
+   One `skill=channel-spotify` covers both stages: this unit renders its own
+   venue's page into `dest`.
    **A show or playlist the operator wants RE-pulled for new episodes needs
    two more keys**: `every=<period> harvest.refresh=<period>`. The container
    URL is the job's one page, so once it is held every later pull is
