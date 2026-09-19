@@ -155,14 +155,21 @@ def test_flags_override_the_ticket_and_stand_in_for_it_on_a_hand_run(tmp_path):
     assert (record["slug"], record["item"]) == ("by-hand", "https://youtu.be/abc123")
 
 
-def test_a_hand_run_with_no_ticket_and_no_flags_reads_the_layout(tmp_path):
-    """No ticket, no flags: the slug is the capture dir's parent — `_raw/<slug>/
-    <leaf>` is the layout by definition — and the item is the metadata's own
-    `webpage_url`, which here is absent, so `item` is null rather than made up."""
+def test_a_hand_run_with_no_ticket_and_no_item_is_refused(tmp_path):
+    """REPLACES `test_a_hand_run_with_no_ticket_and_no_flags_reads_the_layout`
+    (review fix, Rule 3). `llm-wiki-ops run` starts this script at the WIKI
+    ROOT, so a directory no spawner wrote a ticket into is as likely a mistyped
+    `--capture-dir` as a hand run — and the old fallback built a page with a
+    null `item`, which the extractor writes as an empty `resource`. A hand run
+    says what the directory holds with `--item`; the slug may still be read off
+    the layout, `_raw/<slug>/<leaf>` by definition."""
     cap = _capture(tmp_path, ticket=False)
-    _run(tmp_path, cap)
+    cp = _run(tmp_path, cap, formatter=None, check=False)
+    assert cp.returncode != 0 and "ticket.json" in cp.stderr and "--item" in cp.stderr
+    assert not (cap / "page.md").exists() and not (cap / "capture.json").exists()
+    _run(tmp_path, cap, extra_argv=["--item", ITEM])
     record = json.loads((cap / "capture.json").read_text())
-    assert record["slug"] == "yt-somechannel" and record["item"] is None
+    assert (record["slug"], record["item"]) == ("yt-somechannel", ITEM)
 
 
 def test_per_word_cue_markup_never_reaches_the_note(tmp_path):
@@ -193,6 +200,7 @@ def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     run left is gone too, because `capture.json` is what says "this landed"."""
     cap = _capture(tmp_path)
     (cap / "capture.json").write_text(json.dumps({"body": "page.md", "stale": True}))
+    (cap / "report.json").write_text(json.dumps({"outcome": "ok", "stale": True}))
     boom = tmp_path / "boom.py"
     boom.write_text("import sys; sys.exit(9)\n")
     cp = _run(tmp_path, cap, formatter=boom, check=False)
@@ -200,6 +208,7 @@ def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     assert "transcript formatting failed" in cp.stderr
     assert not (cap / "page.md").exists(), "page was written"
     assert not (cap / "capture.json").exists(), "a stale capture record survived a failed build"
+    assert not (cap / "report.json").exists(), "an earlier run's report survived a failed build"
 
 
 def _stub_front_door(tmp_path, body):

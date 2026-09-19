@@ -55,14 +55,19 @@ fields this unit uses:
 - `capture_dir` — `_raw/<slug>/<YYYY-MM-DD>`, the job's DAY directory (UTC,
   the day the ticket was minted — the PULL's day, not a message's). Never
   compose it. Sub-daily pulls land in the same one, and their items
-  accumulate under its `items/`.
+  accumulate under its `items/`. **It is WIKI-RELATIVE, and you are standing
+  in it.** A file you write goes to `./<name>`; the script is handed the
+  value verbatim, because `llm-wiki-ops run` starts a script at the WIKI
+  ROOT, not where you stand — so `.` is wrong for the script, and
+  `<capture_dir>/<name>` is wrong for you (it lands nested, at
+  `_raw/<slug>/<day>/_raw/<slug>/<day>/<name>`, inside your grant, where
+  nothing will look).
 - `options.mailbox` — the one mailbox. None → report `failed` and stop.
 - `credential` — the NAME the operator bound to this job on this machine
-  (`credential bind <slug> <name>`), or null. It is never the value. Connector
-  auth is session-level, so this unit has no step that reads the secret;
-  what the name tells you is which login the operator meant
-  (unverified: whether any client needs `llm-wiki-ops credential get <name>`
-  to reach its connector).
+  (`credential bind <slug> <name>`). It is never the value, and this unit
+  NEVER reads the value: connector auth is the session's, and no step here
+  runs `credential get`. The binding is a switch, not a secret — see "The
+  binding" below. Do nothing with the name but say it in your report.
 - `min_date` — a floor from the job's `harvest.max_age`, or null. Nothing
   older is kept.
 - `target` is the job's bare channel name and `item` is null: there is no
@@ -76,16 +81,32 @@ fields this unit uses:
 
 No `ticket.json` (`whereami` says `spawn: none`) → the foreman read the same
 facts off `llm-wiki-ops pipeline queue show ids=<id>`; hand the script
-`--ticket <id>` and `--mailbox <who>`.
+`--ticket <id>`, `--mailbox <who>` and, where the ticket carries one,
+`--min-date <YYYY-MM-DD>` on BOTH commands below. The script refuses a
+directory with no `ticket.json` unless `--ticket` says it is such a run.
+This is the mode the unit is expected to work in today — see "The
+connector".
 
-#### 2. Where the pull starts
+#### 2. Where the pull starts — FIRST, before anything else
 
 ```sh
 llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py since <capture_dir> --lookback-days 7
 ```
 
+`<capture_dir>` is the ticket's value, verbatim (wiki-relative — above).
+
+**It removes a stale `report.json` before it answers, which is why it runs
+first.** The day directory is the same for every pull of the day, every pull
+of a job carries the same ticket id, `apply` checks neither, and the
+extractor writes its own `report.json` into this same directory. A run that
+died before its last step would otherwise leave an old `ok` for `apply` to
+land as this run's.
+
 It answers JSON: `mailbox`, `since` (epoch milliseconds — Gmail's
-`internalDate` clock), `since_day`, `first_pull`. The cursor is
+`internalDate` clock), `since_day`, `first_pull`, and `cursor_ignored` —
+null, or why a cursor file that was unreadable or AHEAD of the clock was set
+aside and the lookback used instead (say it in your report; the next good
+`write` replaces the file). The cursor is
 `_raw/<slug>/.cursor.json` —
 `{"newest_internal_date": <epoch-ms>, "newest_id": "<msg-id>"}` — beside the
 day directories, inside the job's own slice, which a harvest slice is
@@ -139,9 +160,10 @@ A junked message is recorded as its id and the rule's name and NOTHING of its
 content; the host counts it into the ledger's `discarded: N (junk rules)`
 line and never renders it.
 
-#### 5. Write the items, the cursor and the report — one command, last
+#### 5. Write the items, the report and the cursor — ONE command, last
 
-Write the pull as a JSON list to `<capture_dir>/pull.json`:
+Write the pull as a JSON list to `./pull.json` — you are standing in the
+capture directory, so that IS `<capture_dir>/pull.json`:
 
 ```json
 [{"id": "<msg-id>", "internal_date": 1789000000000, "thread": "<thread-id>",
@@ -150,35 +172,76 @@ Write the pull as a JSON list to `<capture_dir>/pull.json`:
   "body": "<plain text>", "summary": "<your one line>", "junk": null}]
 ```
 
+Then run EXACTLY ONE of the three commands below — they are alternatives,
+not a sequence. `--from pull.json` is a bare name, which the script looks for
+INSIDE `<capture_dir>`; `<capture_dir>` itself is the ticket's value,
+verbatim.
+
+**The normal case** — the pull ran to its end:
+
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --from <capture_dir>/pull.json --cap 200 --exclude-label CATEGORY_PROMOTIONS --exclude-label CATEGORY_SOCIAL --exclude-label SPAM --exclude-label TRASH
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --from <capture_dir>/pull.json --partial "<why it stopped early>"
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --from pull.json --cap 200 --exclude-label CATEGORY_PROMOTIONS --exclude-label CATEGORY_SOCIAL --exclude-label SPAM --exclude-label TRASH
+```
+
+**Capped or partial** — you stopped reading early (the clock, a connector
+error part-way); the SAME filters, plus the reason:
+
+```sh
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --from pull.json --partial "<why it stopped early>" --cap 200 --exclude-label CATEGORY_PROMOTIONS --exclude-label CATEGORY_SOCIAL --exclude-label SPAM --exclude-label TRASH
+```
+
+**The pull failed** — nothing was read; there is no `pull.json`:
+
+```sh
 llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --failed "<why>" --missing <host> <url> <denied|timeout|auth|error>
 ```
 
 `-h` after the path for its options. It does, in order and with no judgment
-of its own: keeps the oldest `--cap`; drops what is behind the cursor, older
-than `min_date`, or caught by `--exclude-label` / `--exclude-sender` (an
-address, or `@domain`); writes one file per message under
-`<capture_dir>/items/` — `<internal-date>--<msg-id>.json` for a kept one,
-the same name dot-prefixed for a junked one; consumes `pull.json`; moves the
-cursor (never backwards, never on `--failed`); and LAST writes `report.json`.
-A message handed over twice is dropped behind the cursor, or rewrites its
-one file — an overlap is never a second bullet, on this day or the next.
+of its own: keeps the oldest `--cap` (at least 1); drops what is behind the
+cursor, older than `min_date`, or caught by `--exclude-label` /
+`--exclude-sender` (an address, or `@domain`); writes one file per message
+under `<capture_dir>/items/` — `<internal-date>--<msg-id>.json` for a kept
+one, the same name dot-prefixed for a junked one; writes `report.json`; and
+only THEN moves the cursor (never backwards, never past this machine's
+clock, never on `--failed`) and consumes `pull.json`. A message handed over
+twice is dropped behind the cursor, or rewrites its one file — an overlap is
+never a second bullet, on this day or the next.
+
+A message whose `internal_date` cannot be believed — absent, not a number,
+or more than a day ahead of the clock, which is what one seconds/ms/µs slip
+looks like — is KEPT, filed under the pull's own clock, marked
+`time_untrusted`, counted as `bad_time` and named in the report's reason. It
+never moves the cursor. (Kept rather than dropped: the day directory is the
+PULL's day anyway, so all it loses is its place in the day's order, where a
+dropped message is gone for good once the cursor passes its true time. The
+cost: it can be handed over and filed once more on the NEXT day.) `bad_time`
+above zero means you transcribed a clock wrong — `internalDate` is epoch
+MILLISECONDS, 13 digits.
+
+Exit 2 and NO `report.json` means the script refused its arguments — the
+directory is not the ticket's `capture_dir` (wiki-relative, never `.`), it
+holds no `ticket.json`, or `--cap` is below 1. Read stderr, fix the command,
+run it again. A `failed` naming a nested `pull.json` means you wrote it to
+`<capture_dir>/pull.json` from inside the capture directory: move it to
+`./pull.json` and run the command again.
 
 `report.json` is the only thing that leaves the slice. `captured[]` names the
-day directory — `{"item": …, "dir": "<capture_dir>", "title": null}` — when
-this run wrote at least one file, and `apply` mints that day's extraction
-from it; when nothing was new it is `outcome: ok` with `captured: []` and a
-reason, and no extraction is due. `partial` when capped or stopped early.
-A connector this session cannot reach is `--failed`, with the host in
-`--missing` if you know one: fail and report, never improvise another source.
-Say the mailbox, the script's counts and the outcome, and stop. You never
-touch a queue.
+day directory — `{"item": …, "dir": "<capture_dir>", "title": null}` —
+whenever the day's `items/` holds a file, whether or not THIS command wrote
+it, and `apply` mints that day's extraction from it: a rerun that finds
+nothing new still names a day whose items have no ledger yet, and the
+extractor regenerates the ledger whole, so naming it twice costs nothing.
+Only a day with no items at all is `outcome: ok` with `captured: []`.
+`partial` when capped or stopped early. A second `write` on the same ticket
+never downgrades a report that carries captures: a later failure turns it
+`partial` and says why. A connector this session cannot reach is `--failed`
+— the exact words are under "The connector": fail and report, never
+improvise another source. Say the mailbox, the binding's name, the script's
+counts and the outcome, and stop. You never touch a queue.
 
 **Mechanical filters (this wiki's, for every mailbox)** — they are the flags
-on the `write` line above and the `--lookback-days` on the `since` line; edit
-them THERE:
+on the two `write` commands above that read `pull.json` (keep the two the
+same) and the `--lookback-days` on the `since` line; edit them THERE:
 
 - lookback (first pull): 7d
 - per-run cap: 200 messages
@@ -210,7 +273,14 @@ writes a summarised message with NO `subject` key — the sender's line is
 kept as `venue_subject`, which the host never reads — so the bullet is your
 line, not theirs. With no `summary` it falls back to `subject`, and the
 bullet is the sender's own words as neutralized above: safe to read, not a
-summary. The pointer is `gmail:<msg-id>`.
+summary. The pointer is `gmail:<msg-id>`, built from the id alone.
+
+What the host's folding leaves live, the script swaps for look-alikes in
+that one host-read line — `summary` and the `subject` fallback alike: `<`
+`>` (raw HTML), `—` (the host's own bullet puts ` — ` before the pointer, so
+a subject carrying ` — gmail:<id>` would forge one), `://` and `www.` (a
+bare url a renderer autolinks), `*` and `|`. The record keeps the sender's
+line untouched under `venue_subject`.
 
 What this unit can no longer do, because the host's bullet is one capped
 plain line: entity `[[wikilinks]]` in the ledger, a multi-line entry, any
@@ -228,25 +298,68 @@ read.
 **It is named nowhere in this unit, and could not be.** The gmail connector
 is an MCP tool whose name depends on which client this machine
 authenticated, so a pattern written here would match nothing while looking
-correct.
-Connector access is session-level on the pulling machine, PER MAILBOX
-(`/llm-wiki:add` says so when it wires the job up); a pull that cannot
-reach it should fail and report, never improvise a different source.
-Unverified: that a session-level connector is reachable from inside a
-spawned slice, whose egress is the unit's `requires.network` and nothing
-else — no run has confirmed it, and a connector's own endpoint is not
-necessarily `mail.google.com`.
+correct. Connector access is session-level on the pulling machine, PER
+MAILBOX; a pull that cannot reach it fails and reports, never improvises a
+different source.
 
-The manifest declares `requires.credential: true`, which says a binding is
-needed and not which one. Which login a machine spends on which mailbox is
-that machine's own binding, made by its operator — see this unit's
-INSTALL.md.
+**Expect this unit to work only where `llm-wiki-ops whereami` reports
+`spawn: none`** — the foreman runs the worker in its OWN session, which is
+the one holding the connector — until the plugin grants a slice a connector.
+Read off the plugin's source, not confirmed by a run (unverified end to
+end):
+
+- A spawned slice is deny-read on `~/.claude.json`, `~/.claude/.claude.json`
+  and `~/.claude/claude.json` — the files that carry every configured MCP
+  server — and on `~/.claude/.credentials.json`
+  (`schedule/runner/floor.py`, `DENY_READ_OUTSIDE`). A session that cannot
+  read its MCP configuration starts with no connector.
+- A slice's egress is this unit's `requires.network` and nothing else, and
+  that is `mail.google.com` — a host no step of this flow fetches. A
+  connector's own endpoint is not that host, and this unit does not know
+  what it is; no host was invented to stand in for it.
+
+**In a slice with no connector** (no Gmail tool in your tool list, or every
+call to it refused): do not look for another way to the mailbox — no
+browser, no IMAP, no url. Run the "pull failed" command with these words:
+
+```sh
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --failed "no gmail connector in this session: a spawned slice holds none (it cannot read the MCP configuration, and its egress is mail.google.com only) — this job pulls where whereami reports spawn: none" --missing connector mcp:gmail denied
+```
+
+`connector` there is a label, not a hostname: there is nothing to widen to,
+and the foreman should not try. If you DO know the host a connector call was
+refused on — the runtime named it — put that host in `--missing` instead.
+
+## The binding
+
+The manifest declares `requires.credential: true`, and **the value of that
+credential is never read** — not by this unit, not by its script. What the
+declaration buys is the claim gate (`pipeline/claims.py`,
+`unbound_credential`): a machine with no binding for THIS job is incapable
+of its harvest and skips it with a `bindings` doctor row; and a binding goes
+`stale` — the machine stops claiming — when a peer's commit changes what the
+job fetches, `options.mailbox` included. So `credential bind <slug> <name>`
+is the operator's per-machine, per-mailbox consent: "this machine, whose
+session is signed into THIS mailbox, pulls this job". Without it every
+capable machine with the unit enabled would claim every mailbox's job, and a
+machine signed into another mailbox would be asked to pull one it should
+never see. `channel-notion-tasks` declares `false` for the same connector
+model, and for a stated reason: a credentialed slice that reaches no host is
+REFUSED at spawn (`pipeline/dispatch.py`), and that unit has no host it can
+truthfully declare; its switch is `skills enable` and the job's
+`harvest.machine` pin. What to `credential set`: this unit's INSTALL.md.
 
 This copy is wiki-owned, and **customized is the intended state**: the
 filters and junk rules above are the wiki's to write.
 
 ## Quirks log
 
+- 2026-09-19 — review fixes: `since` removes a stale `report.json` first;
+  `captured[]` names the day whenever it holds items and a second `write`
+  never downgrades it (the three `write` lines were ONE `sh` block, and run
+  top to bottom they clobbered the report); the report is written before the
+  cursor moves; a far-future `internal_date` no longer becomes the cursor; a
+  bare `--from` is found inside the capture dir.
 - 2026-09-19 — ported to the ticket contract: harvest only, `ticket=<id>`;
   items are JSON under `<day>/items/` written by `scripts/write_items.py`
   with the cursor and `report.json`; junk rules and the own-words line moved

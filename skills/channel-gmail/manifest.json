@@ -32,6 +32,6 @@
         "required": true
       }
     },
-    "note": "One watch per mailbox — the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, so this machine must be bound to a credential before intake will queue it."
+    "note": "One watch per mailbox — the mailbox IS the identity, and the watch's slug is what ties its credential binding, its `_raw` slice and its ledgers together. Connector auth is session-level on the pulling machine, per mailbox, and the unit never reads the credential's value: the binding (`llm-wiki-ops credential bind <slug> <name>`) is this machine's per-mailbox switch — until it has one, the claim gate skips the job's harvest here with a `bindings` doctor row, and nothing fails."
   }
 }

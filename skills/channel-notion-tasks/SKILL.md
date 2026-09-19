@@ -52,12 +52,18 @@ fields this unit uses:
 - `capture_dir` — `_raw/<slug>/<YYYY-MM-DD>`, the job's DAY directory (UTC,
   the day the ticket was minted — the PULL's day, not a task's). Never compose
   it. Sub-daily pulls land in the same one, and their items accumulate under
-  its `items/`.
+  its `items/`. **It is WIKI-RELATIVE, and you are standing in it.** A file
+  you write goes to `./<name>`; the script is handed the value verbatim,
+  because `llm-wiki-ops run` starts a script at the WIKI ROOT, not where you
+  stand — so `.` is wrong for the script, and `<capture_dir>/<name>` is wrong
+  for you (it lands nested, at `_raw/<slug>/<day>/_raw/<slug>/<day>/<name>`,
+  inside your grant, where nothing will look).
 - `options.workspace` — the one workspace. None → report `failed` and stop.
 - `min_date` — a floor from the job's `harvest.max_age`, or null. Nothing
   edited before it is kept.
 - `credential` is null: this unit declares `requires.credential: false`, and
-  connector auth is session-level.
+  connector auth is session-level — see "The binding this unit does not
+  have" below.
 - `target` is the channel's bare name (`notion-tasks`) and `item` is null:
   there is no url. `known[]` is EMPTY on this route — it lists pages under
   `dest` that carry a `resource` and a `harvested` stamp, and a ledger
@@ -67,16 +73,32 @@ fields this unit uses:
 
 No `ticket.json` (`whereami` says `spawn: none`) → the foreman read the same
 facts off `llm-wiki-ops pipeline queue show ids=<id>`; hand the script
-`--ticket <id>` and `--workspace <name>`.
+`--ticket <id>`, `--workspace <name>` and, where the ticket carries one,
+`--min-date <YYYY-MM-DD>` on BOTH commands below. The script refuses a
+directory with no `ticket.json` unless `--ticket` says it is such a run.
+This is the mode the unit is expected to work in today — see "The
+connector".
 
-#### 2. Where the pull starts
+#### 2. Where the pull starts — FIRST, before anything else
 
 ```sh
 llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py since <capture_dir> --lookback-days 14
 ```
 
+`<capture_dir>` is the ticket's value, verbatim (wiki-relative — above).
+
+**It removes a stale `report.json` before it answers, which is why it runs
+first.** The day directory is the same for every pull of the day, every pull
+of a job carries the same ticket id, `apply` checks neither, and the
+extractor writes its own `report.json` into this same directory. A run that
+died before its last step would otherwise leave an old `ok` for `apply` to
+land as this run's.
+
 It answers JSON: `workspace`, `since` (ISO-8601, UTC), `since_day`,
-`first_pull`. The cursor is `_raw/<slug>/.cursor.json` —
+`first_pull`, and `cursor_ignored` — null, or why a watermark file that was
+unreadable or AHEAD of the clock was set aside and the lookback used instead
+(say it in your report; the next good `write` replaces the file). The cursor
+is `_raw/<slug>/.cursor.json` —
 `{"last_edited_watermark": "<ISO-8601>"}` — beside the day directories,
 inside the job's own slice, which a harvest slice is write-granted whole. It
 is machine-local like the rest of `_raw/`. Missing → first pull: now minus
@@ -125,9 +147,10 @@ A junked task is recorded as its pointer and the rule's name and NOTHING of
 its content; the host counts it into the ledger's `discarded: N (junk
 rules)` line and never renders it.
 
-#### 5. Write the items, the watermark and the report — one command, last
+#### 5. Write the items, the report and the watermark — ONE command, last
 
-Write the pull as a JSON list to `<capture_dir>/pull.json`:
+Write the pull as a JSON list to `./pull.json` — you are standing in the
+capture directory, so that IS `<capture_dir>/pull.json`:
 
 ```json
 [{"id": "<task-id>", "last_edited": "2026-09-18T10:06:00.000Z", "database": "<id>",
@@ -136,37 +159,79 @@ Write the pull as a JSON list to `<capture_dir>/pull.json`:
   "summary": "<your one line>", "junk": null}]
 ```
 
+Then run EXACTLY ONE of the three commands below — they are alternatives,
+not a sequence. `--from pull.json` is a bare name, which the script looks for
+INSIDE `<capture_dir>`; `<capture_dir>` itself is the ticket's value,
+verbatim.
+
+**The normal case** — the pull ran to its end:
+
 ```sh
-llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --from <capture_dir>/pull.json --exclude-status Archived
-llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --from <capture_dir>/pull.json --partial "<why it stopped early>"
+llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --from pull.json --exclude-status Archived
+```
+
+**Capped or partial** — you stopped reading early (the clock, a connector
+error part-way); the SAME filters, plus the reason:
+
+```sh
+llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --from pull.json --partial "<why it stopped early>" --exclude-status Archived
+```
+
+**The pull failed** — nothing was read; there is no `pull.json`:
+
+```sh
 llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --failed "<why>" --missing <host> <url> <denied|timeout|auth|error>
 ```
 
 `-h` after the path for its options. It does, in order and with no judgment
-of its own: keeps the oldest `--cap` when one is given; drops what is behind
-the watermark, older than `min_date`, outside `--database` (repeatable; none
-named is all) or in an `--exclude-status`; writes one file per task under
-`<capture_dir>/items/` — `<last-edited>--<task-id>.json` for a kept one, the
-same name dot-prefixed for a junked one — replacing any earlier file for the
-same task in this day, so a task edited twice today is one bullet; consumes
-`pull.json`; moves the watermark (never backwards, never on `--failed`); and
-LAST writes `report.json`.
+of its own: keeps the oldest `--cap` when one is given (at least 1; none
+given is no cap); drops what is behind the watermark, older than `min_date`,
+outside `--database` (repeatable; none named is all) or in an
+`--exclude-status`; writes one file per task under `<capture_dir>/items/` —
+`<last-edited>--<task-id>.json` for a kept one, the same name dot-prefixed
+for a junked one — replacing any earlier file for EXACTLY that task in this
+day, so a task edited twice today is one bullet; writes `report.json`; and
+only THEN moves the watermark (never backwards, never past this machine's
+clock, never on `--failed`) and consumes `pull.json`.
+
+A task whose `last_edited` cannot be believed — absent, not ISO-8601, or
+more than a day ahead of the clock — is KEPT, filed under the pull's own
+clock, marked `time_untrusted`, counted as `bad_time` and named in the
+report's reason. It never moves the watermark. (Kept rather than dropped:
+the day directory is the PULL's day anyway, so all it loses is its place in
+the day's order, where a dropped task is gone until somebody edits it again.
+The cost: it can be handed over and filed once more on the NEXT day.)
+`bad_time` above zero means you transcribed a time wrong — hand over
+Notion's own `last_edited_time` string, untouched.
+
+Exit 2 and NO `report.json` means the script refused its arguments — the
+directory is not the ticket's `capture_dir` (wiki-relative, never `.`), it
+holds no `ticket.json`, or `--cap` is below 1. Read stderr, fix the command,
+run it again. A `failed` naming a nested `pull.json` means you wrote it to
+`<capture_dir>/pull.json` from inside the capture directory: move it to
+`./pull.json` and run the command again.
 
 `report.json` is the only thing that leaves the slice. `captured[]` names the
-day directory — `{"item": …, "dir": "<capture_dir>", "title": null}` — when
-this run wrote at least one file, and `apply` mints that day's extraction
-from it; when nothing was new it is `outcome: ok` with `captured: []` and a
-reason, and no extraction is due. `partial` when capped or stopped early. A
-connector this session cannot reach is `--failed`: fail and report, never
+day directory — `{"item": …, "dir": "<capture_dir>", "title": null}` —
+whenever the day's `items/` holds a file, whether or not THIS command wrote
+it, and `apply` mints that day's extraction from it: a rerun that finds
+nothing new still names a day whose items have no ledger yet, and the
+extractor regenerates the ledger whole, so naming it twice costs nothing.
+Only a day with no items at all is `outcome: ok` with `captured: []`.
+`partial` when capped or stopped early. A second `write` on the same ticket
+never downgrades a report that carries captures: a later failure turns it
+`partial` and says why. A connector this session cannot reach is `--failed`
+— the exact words are under "The connector": fail and report, never
 improvise another source. Say the workspace, the script's counts and the
 outcome, and stop. You never touch a queue.
 
-**Mechanical filters (wiki customizes)** — they are the flags on the `write`
-line above and the `--lookback-days` on the `since` line; edit them THERE:
+**Mechanical filters (wiki customizes)** — they are the flags on the two
+`write` commands above that read `pull.json` (keep the two the same) and the
+`--lookback-days` on the `since` line; edit them THERE:
 
 - lookback (first pull): 14d
 - databases: (record database ids/names here on first add, and as
-  `--database <id>` on the `write` line)
+  `--database <id>` on both of those `write` commands)
 - exclude statuses: (e.g. Archived, as `--exclude-status`)
 
 ### What the ledger will say (the host writes it, not this unit)
@@ -189,9 +254,21 @@ writes a summarised task with NO `title` key — the task's own title is kept
 as `venue_title`, which the host never reads — so the bullet is your line,
 not the task's. With no `summary` it falls back to `title`, and the bullet
 is the task's own title as neutralized above: safe to read, not a summary.
-The pointer is the task's url when it is an `https` one on `notion.so`, else
-`notion:<task-id>`; a Notion url carries the title in its path, so the
-pointer is folded and capped by the host like the line is.
+The pointer is built from the task's ID, never taken from the venue's url:
+a Notion url is `…/<the task's title>-<id>`, and at the host's 200-character
+cap a long title cost the pointer its id — the one part that points — while
+putting the task's own words in the half of the bullet that reads as ours. A
+page id (32 hex, dashed or not) becomes `https://www.notion.so/<id>`
+(unverified: that the short form resolves — no run of this port reached the
+venue); any other id is `notion:<task-id>`. The venue's url is kept in the
+item file, under `url`, which the host never reads.
+
+What the host's folding leaves live, the script swaps for look-alikes in
+that one host-read line — `summary` and the `title` fallback alike: `<` `>`
+(raw HTML), `—` (the host's own bullet puts ` — ` before the pointer, so a
+title carrying ` — notion:<id>` would forge one), `://` and `www.` (a bare
+url a renderer autolinks), `*` and `|`. The record keeps the task's own
+title untouched under `venue_title`.
 
 What this unit can no longer do, because the host's bullet is one capped
 plain line: owner `[[wikilinks]]` in the ledger, a multi-line entry, any
@@ -208,13 +285,53 @@ read a sibling's SKILL.md and improvise its behavior from what you read.
 **The connector is named nowhere in this unit, and could not be.** The
 notion-tasks connector is an MCP tool whose name depends on which client this
 machine authenticated, so a pattern written here would match nothing while
-looking correct. Connector access is session-level on the pulling machine
-(`/llm-wiki:add` says so when it wires the channel up); a pull that cannot
-reach it should fail and report, never improvise a different source.
-Unverified: that a session-level connector is reachable from inside a
-spawned slice. This unit's manifest declares no `requires.network`, and a
-slice minted with no hosts has its network blocked outright — no run has
-confirmed a pull from inside one.
+looking correct. Connector access is session-level on the pulling machine; a
+pull that cannot reach it fails and reports, never improvises a different
+source.
+
+**Expect this unit to work only where `llm-wiki-ops whereami` reports
+`spawn: none`** — the foreman runs the worker in its OWN session, which is
+the one holding the connector — until the plugin grants a slice a connector.
+Read off the plugin's source, not confirmed by a run (unverified end to
+end):
+
+- A spawned slice is deny-read on `~/.claude.json`, `~/.claude/.claude.json`
+  and `~/.claude/claude.json` — the files that carry every configured MCP
+  server — and on `~/.claude/.credentials.json`
+  (`schedule/runner/floor.py`, `DENY_READ_OUTSIDE`). A session that cannot
+  read its MCP configuration starts with no connector.
+- This unit declares no `requires.network` and its target is a channel
+  name, not a url, so its slice is minted with NO hosts
+  (`pipeline/dispatch.py`, `hosts_for`) and a slice with no hosts has its
+  network blocked outright (`schedule/runner/slice.py`: `{"block": true}`).
+  A connector's own endpoint is not known to this unit, and no host was
+  invented to stand in for it.
+
+**In a slice with no connector** (no Notion tool in your tool list, or every
+call to it refused): do not look for another way to the workspace — no
+browser, no url. Run the "pull failed" command with these words:
+
+```sh
+llm-wiki-ops run ops/skills/channel-notion-tasks/scripts/write_items.py write <capture_dir> --failed "no notion connector in this session: a spawned slice holds none (it cannot read the MCP configuration, and its network is blocked) — this job pulls where whereami reports spawn: none" --missing connector mcp:notion denied
+```
+
+`connector` there is a label, not a hostname: there is nothing to widen to,
+and the foreman should not try.
+
+## The binding this unit does not have
+
+The manifest declares `requires.credential: false`, where `channel-gmail` —
+the same connector model — declares `true`. Neither unit reads a secret: the
+declaration is only ever a claim-gate switch (`pipeline/claims.py`,
+`unbound_credential` — a machine with no binding for the job skips it). This
+unit cannot use that switch: a credentialed slice that would reach no host
+is REFUSED at spawn (`pipeline/dispatch.py` — "a credential with no `hosts`
+is refused"), and this unit has no host it can truthfully declare. So which
+machine pulls a workspace is said the other two ways: the unit is ENABLED
+only on the machine whose session holds the connector
+(`llm-wiki-ops skills enable channel-notion-tasks`), and a wiki with more
+than one such machine pins the job — `harvest.machine=<id>` on
+`llm-wiki-ops pipeline edit <slug>`.
 
 This copy is wiki-owned, and **customized is the intended state**: installing
 the unit writes the operator's database ids, lookback, and filters straight
@@ -227,6 +344,13 @@ boundary. Keep it verbatim when editing anything else here.
 
 ## Quirks log
 
+- 2026-09-19 — review fixes: `since` removes a stale `report.json` first;
+  `captured[]` names the day whenever it holds items and a second `write`
+  never downgrades it (the three `write` lines were ONE `sh` block, and run
+  top to bottom they clobbered the report); the report is written before the
+  watermark moves; a far-future `last_edited` no longer becomes the
+  watermark; a bare `--from` is found inside the capture dir; the pointer is
+  built from the task's id, not its url.
 - 2026-09-19 — ported to the ticket contract: harvest only, `ticket=<id>`;
   items are JSON under `<day>/items/` written by `scripts/write_items.py`
   with the watermark and `report.json`; junk rules and the own-words line

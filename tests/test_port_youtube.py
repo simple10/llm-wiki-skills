@@ -96,10 +96,10 @@ def test_published_is_omitted_when_the_upload_date_is_not_known(builder, upload_
 
 
 def test_an_unknown_fact_is_omitted_never_emitted_empty(builder):
-    front = builder.frontmatter_for({"id": "x", "title": "T"})
-    assert front == {"type": "video", "video_id": "x", "source_host": ["www.youtube.com", "youtube.com"]}
+    front = builder.frontmatter_for({"id": "abc_123-XYZ", "title": "T"})
+    assert front == {"type": "video", "video_id": "abc_123-XYZ", "source_host": ["www.youtube.com", "youtube.com"]}
     # …while a true zero is a fact, not an absence.
-    assert builder.frontmatter_for({"id": "x", "like_count": 0})["likes"] == 0
+    assert builder.frontmatter_for({"id": "abc_123-XYZ", "like_count": 0})["likes"] == 0
 
 
 def test_the_facts_block_repeats_the_frontmatter_in_the_body(builder):
@@ -114,18 +114,20 @@ def test_the_facts_block_repeats_the_frontmatter_in_the_body(builder):
         "- **Video ID**: `dQw4fixture`",
         f"- **Source**: <{ITEM}>",
     ]
-    assert builder.facts_block(builder.frontmatter_for({"id": "x"}), None) == "- **Video ID**: `x`"
+    assert builder.facts_block(builder.frontmatter_for({"id": "abc_123-XYZ"}), None) == "- **Video ID**: `abc_123-XYZ`"
 
 
 def test_the_body_never_opens_with_a_frontmatter_fence_and_has_no_summary_placeholder(builder):
-    """The fixture description OPENS with `---`. With no thumbnail and no id
-    above it, the description is the first block — and it still sits under its
-    heading, so the extractor's own frontmatter is the page's only one."""
+    """The fixture description OPENS with `---`. The body opens with the H1
+    (CHANGED by the review fix: the true title is the body's H1 now), and the
+    description is a blockquote, so its `---` is no line of the page's own —
+    the extractor's frontmatter is the page's only fence, and there is no rule."""
     bare = {"title": "T", "description": META["description"]}
     body, has_desc = builder.build_body(bare, builder.frontmatter_for(bare), None, "")
-    assert has_desc and body.startswith("- **") is False and body.startswith("## Description\n")
+    assert has_desc and body.startswith("# T\n\n## Description\n\n> \\---\n> Why adding")
     full, _ = builder.build_body(META, builder.frontmatter_for(META), ITEM, "#### [00:00] x\n\nwords\n")
-    assert not full.lstrip().startswith("---")
+    assert full.startswith("# Progressive Overload, Explained\n")
+    assert not re.search(r"^\s*---\s*$", full, re.M)
     assert "[!summary]" not in full and "TODO-SUMMARY" not in full
     assert full.index("![thumbnail]") < full.index("<iframe") < full.index("- **Channel**") < full.index("## Description") < full.index("## Transcript")
     # the description's own conversions survived the port
@@ -317,7 +319,10 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
     _, front, body = text.split("---\n", 2)
     assert "status: draft" in front and ITEM in front and "Progressive Overload, Explained" in front
     assert body.strip() == (cap / "page.md").read_text(encoding="utf-8").strip()
-    assert len(re.findall(r"^---$", text, re.M)) == 3, "the two fences of the one block, plus the description's own rule"
+    # CHANGED by the review fix: this was 3 — the description's own opening `---` used to land as a
+    # rule on the page. The description is a blockquote now, so the extractor's two fences are all there are.
+    assert len(re.findall(r"^---$", text, re.M)) == 2, "the two fences of the extractor's one block"
+    assert body.lstrip().startswith("# Progressive Overload, Explained\n")
 
     # the venue-specific body survived
     assert "![thumbnail](https://i.ytimg.com/vi/dQw4fixture/maxresdefault.jpg)" in body
@@ -329,3 +334,337 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
     assert body.count("Progressive overload means doing") == 1
     assert "<c>" not in body and "[Music]" not in body
     assert "[!summary]" not in body
+
+
+# ================================================================== review fixes
+# Rule 1 — the page's FILE is named from `capture.json`'s title, and the host
+# refuses a title its filename rule cannot hold.
+
+# `llm_wiki_ops/commands/page/note.py`: ILLEGAL, and what `filename_for` refuses.
+ILLEGAL = '/\\:*?"<>|'
+
+
+def _host_would_name(title):
+    """`filename_for`'s own refusals, restated — plus the filesystem's byte cap,
+    which the host does not check and the write then fails on."""
+    name = title.strip()
+    return (
+        bool(name) and name == title and not name.startswith(".")
+        and not any(ch in ILLEGAL or ord(ch) < 32 for ch in name)
+        and len(f"{name}.md".encode()) <= 255
+    )
+
+
+@pytest.mark.parametrize("venue, safe", [
+    ("Lesson 3: Pricing", "Lesson 3 - Pricing"),
+    ("What is X?", "What is X"),
+    ("A/B testing", "A-B testing"),
+    ('He said "no" <twice> | a\\b * c', "He said 'no' (twice) - a-b c"),
+    (".hidden: what?", "hidden - what"),
+    ("  ...  trailing dots and spaces . . ", "trailing dots and spaces"),
+    ("line one\n---\n# Forged\ttabbed\x00nul\x7fdel", "line one --- # Forged tabbed nul del"),
+    ("Plain, legal title", "Plain, legal title"),
+])
+def test_safe_title_makes_a_title_the_host_will_name_a_file_from(builder, venue, safe):
+    assert builder.safe_title(venue) == safe
+    assert _host_would_name(builder.safe_title(venue))
+
+
+@pytest.mark.parametrize("venue", [None, "", "   ", "...", "?*", "\n\t"])
+def test_safe_title_falls_back_when_nothing_legal_is_left(builder, venue):
+    assert builder.safe_title(venue) == "Untitled"
+    assert builder.safe_title(venue, fallback="YouTube video abc") == "YouTube video abc"
+
+
+def test_safe_title_caps_characters_and_bytes(builder):
+    long = builder.safe_title("word " * 60)
+    assert len(long) <= builder.TITLE_MAX + 1 and long.endswith("…") and not long[:-1].endswith(" ")
+    # 100 CJK characters is a legal YouTube title and 300 bytes: under the character cap, over a filename's.
+    cjk = builder.safe_title("漢" * 100)
+    assert cjk.endswith("…") and _host_would_name(cjk), len(f"{cjk}.md".encode())
+    assert builder.safe_title("漢" * 60) == "漢" * 60, "a title that fits is not cut"
+
+
+def test_the_record_title_is_safe_and_the_true_title_stays_on_the_page(builder):
+    meta = {**META, "title": 'Lesson 3: Pricing? A/B "testing"'}
+    assert builder.page_title(meta) == "Lesson 3 - Pricing A-B 'testing'"
+    front = builder.frontmatter_for(meta)
+    assert front["source_title"] == 'Lesson 3: Pricing? A/B "testing"'
+    body, _ = builder.build_body(meta, front, ITEM, "")
+    assert body.startswith('# Lesson 3: Pricing? A/B "testing"\n')
+    # a title that was legal already says so by carrying no `source_title`
+    assert "source_title" not in builder.frontmatter_for(META)
+    # no title at all: named after the video, never after `page.md`
+    assert builder.page_title({"id": "dQw4fixture"}) == "YouTube video dQw4fixture"
+    assert builder.page_title({"title": 7}) == "Untitled video"
+
+
+# Rule 2 — venue text never forges structure in `page.md`.
+
+HOSTILE = {
+    **META,
+    "id": 'x" onload="alert(1)',
+    "title": 'Real title\n---\n# Forged\n<script>alert(1)</script> "quoted" [[Secret]]',
+    "uploader": "Chan]nel\n# Forged channel [[Link]]",
+    "channel_url": "javascript:alert(1)",
+    "thumbnail": "https://i.ytimg.com/x.jpg) ![x](https://evil.example/y.png",
+    "upload_date": "20269999",
+    "duration_string": "3:07\n# Forged duration",
+    "view_count": "12\n# Forged views",
+    "like_count": True,
+    "description": (
+        "# Forged heading\n```\nfence that would swallow the page\n~~~\n\n---\nSetext forged\n===\n"
+        "> [!danger] callout\n[!note] callout\n<iframe src=https://evil.example></iframe> ![[Secret page]] %% hidden\n"
+        "[click](javascript:alert(1)) and [fine](https://example.com/ok)\r\n"
+        "TIMESTAMPS\n0:00 Intro <b>bold</b> [[Link]]\n1:30 Next\n\nafter https://example.com/a<b>x"
+    ),
+    "chapters": [{"start_time": 0, "end_time": 9, "title": "One\n# Forged chapter"}, {"start_time": "x", "title": "dropped"}],
+}
+
+
+def test_a_hostile_id_never_reaches_the_embed_or_the_facts(builder):
+    front = builder.frontmatter_for(HOSTILE)
+    assert "video_id" not in front
+    body, _ = builder.build_body(HOSTILE, front, ITEM, "")
+    assert "<iframe" not in body and "onload" not in body and "Video ID" not in body
+    for bad in ("short", "a" * 21, "has space1", "semi;colon", 12345678901, None):
+        assert "video_id" not in builder.frontmatter_for({"id": bad}), bad
+    assert builder.frontmatter_for({"id": "dQw4w9WgXcQ"})["video_id"] == "dQw4w9WgXcQ"
+
+
+def test_a_hostile_title_is_one_line_and_escaped_in_the_attribute(builder):
+    meta = {**HOSTILE, "id": "dQw4fixture"}
+    front = builder.frontmatter_for(meta)
+    body, _ = builder.build_body(meta, front, ITEM, "")
+    lines = body.split("\n")
+    assert lines[0] == '# Real title --- # Forged &lt;script>alert(1)&lt;/script> "quoted" \\[\\[Secret]]'
+    assert "# Forged" not in lines[1:] and not any(re.fullmatch(r"\s*---\s*", line) for line in lines)
+    (iframe,) = [line for line in lines if line.startswith("<iframe")]
+    assert 'title="Real title --- # Forged &lt;script&gt;alert(1)&lt;/script&gt; &quot;quoted&quot; [[Secret]]"' in iframe
+    assert iframe.count('"') == 10, "five quoted attributes, and not one quote more"
+    assert "\n" not in front["source_title"] and "\n" not in builder.page_title(meta)
+
+
+def test_hostile_fact_values_are_folded_validated_or_dropped(builder):
+    front = builder.frontmatter_for(HOSTILE)
+    assert front["channel"] == "Chan]nel # Forged channel [[Link]]"
+    for dropped in ("channel_url", "thumbnail", "published", "views", "likes"):
+        assert dropped not in front, dropped
+    assert front["duration"] == "03:07", "the numeric `duration` stands in for a `duration_string` that is not one"
+    body, _ = builder.build_body(HOSTILE, front, "https://x.example/a> <script>", "")
+    assert "- **Channel**: Chan\\]nel # Forged channel \\[\\[Link\\]\\]" in body
+    assert "![thumbnail]" not in body and "evil.example/y.png" not in body and "**Source**" not in body
+    assert not [line for line in body.split("\n") if line.startswith("# ")][1:], "one H1, the title's"
+
+
+@pytest.mark.parametrize("upload_date, published", [
+    ("20260618", "2026-06-18"), ("20260230", None), ("20269999", None), (20260618, None), ("2026-06-18", None),
+])
+def test_published_is_a_day_that_exists_or_absent(builder, upload_date, published):
+    assert builder.frontmatter_for({"upload_date": upload_date}).get("published") == published
+
+
+def test_a_hostile_description_cannot_open_a_block_of_the_pages_own(builder):
+    md = builder.description_to_md(HOSTILE["description"])
+    lines = md.split("\n")
+    # THE guarantee: every line is inside the quote, so none is a top-level heading, fence or rule.
+    assert all(line == ">" or line.startswith("> ") for line in lines), md
+    inner = [line[2:] for line in lines]
+    # …and inside it nothing opens a block either, so a fence cannot swallow the rest of the description.
+    assert not [x for x in inner if re.match(r"\s*(#{1,6}\s|```|~~~|>|\[!|=+\s*$|-+\s*$)", x)], inner
+    assert "\\# Forged heading" in inner and "\\```" in inner and "\\~~~" in inner and "\\---" in inner and "\\===" in inner
+    assert "\\> [!danger] callout" in inner and "\\[!note] callout" in inner
+    assert "<iframe" not in md and "![[" not in md and "[[" not in md.replace("\\[\\[", "") and "%%" not in md.replace("\\%\\%", "")
+    assert "[click]\\(javascript:alert(1))" in md and "[fine](https://example.com/ok)" in md
+    # the creator's TIMESTAMPS list still works — `\r\n` and all — and its labels are neutralised too
+    assert "- `0:00` Intro &lt;b>bold&lt;/b> \\[\\[Link]]" in inner and "- `1:30` Next" in inner
+    assert "**Timestamps**" in inner
+    assert "after <https://example.com/a>&lt;b>x" in inner, "a url stops at `<`: nothing rides inside the autolink"
+    assert builder.description_to_md(None) == "" and builder.description_to_md(" \n ") == "" and builder.description_to_md(7) == ""
+
+
+def test_chapter_titles_are_folded_before_the_formatter_prints_them_as_headings(builder):
+    assert builder.safe_chapters(HOSTILE) == [{"start_time": 0, "title": "One # Forged chapter", "end_time": 9}]
+    assert builder.safe_chapters({"chapters": "junk"}) == [] and builder.safe_chapters({}) == []
+
+
+def test_caption_text_cannot_open_a_fence_in_the_transcript(builder):
+    md = "#### [00:00] Chapter\n\n```\n# not a heading of ours\nwords\n"
+    assert builder.guard_transcript(md) == "#### [00:00] Chapter\n\n\\```\n\\# not a heading of ours\nwords\n"
+
+
+def test_a_hostile_video_builds_a_page_whose_structure_is_all_ours(tmp_path):
+    """The whole script over the hostile metadata: exit 0, and the only headings
+    on the page are the title's H1 and this unit's own two sections."""
+    cap = _ticketed(tmp_path)
+    (cap / "metadata.json").write_text(json.dumps(HOSTILE))
+    fmt = tmp_path / "echo_chapters.py"   # prints the chapter titles it was handed, the way the real one does
+    fmt.write_text(
+        "import json, sys\n"
+        "for c in json.load(open(sys.argv[sys.argv.index('--chapters') + 1])):\n"
+        "    print('#### [00:00] ' + c['title'] + '\\n\\nwords\\n')\n")
+    _script(BUILDER, tmp_path, cap, "--format-transcript", str(fmt))
+    body = (cap / "page.md").read_text()
+    heads = [line for line in body.split("\n") if re.match(r"#{1,6}\s", line)]
+    assert [h for h in heads if not h.startswith("# Real title")] == ["## Description", "## Transcript", "#### [00:00] One # Forged chapter"]
+    assert not re.search(r"^\s*(---|```|~~~)\s*$", body, re.M) and "<script" not in body and "onload" not in body
+    assert not (cap / "chapters.safe.json").exists(), "the formatter's scratch file is not part of a capture"
+    record = json.loads((cap / "capture.json").read_text())
+    assert record["title"] == "Real title --- # Forged (script)alert(1)(-script) 'quoted' [[Secret]]"
+    assert all("\n" not in v for v in record["frontmatter"].values() if isinstance(v, str))
+
+
+# Rule 3 — `llm-wiki-ops run` starts a script at the WIKI ROOT, not in the capture dir.
+
+
+def _as_run_does(script, root, *argv):
+    """THE DOCUMENTED WAY: cwd is the wiki root, the wiki is `.`, and the
+    capture dir is the ticket's wiki-relative value — no absolute path anywhere."""
+    return subprocess.run(["uv", "run", "-q", str(script), ".", *argv], cwd=root, capture_output=True, text=True, check=False)
+
+
+def test_both_scripts_run_from_the_wiki_root_with_the_tickets_relative_capture_dir(tmp_path):
+    cap = _ticketed(tmp_path)
+    rel = json.loads((cap / "ticket.json").read_text())["capture_dir"]
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--format-transcript", str(_stub_formatter(tmp_path)))
+    assert cp.returncode == 0, cp.stderr
+    assert json.loads(cp.stdout)["page"] == f"{rel}/page.md"
+    cp = _as_run_does(REPORTER, tmp_path, "--capture-dir", rel, "--outcome", "ok")
+    assert cp.returncode == 0, cp.stderr
+    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
+    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", tmp_path / "fmt.py"}, new
+    assert json.loads((cap / "report.json").read_text())["captured"][0]["dir"] == rel
+
+
+@pytest.mark.parametrize("script, tail", [(BUILDER, []), (REPORTER, ["--outcome", "failed", "--reason", "r"])])
+def test_a_capture_dir_that_is_not_wiki_relative_is_refused(tmp_path, script, tail):
+    cap = _ticketed(tmp_path)
+    for bad in (str(cap), "_raw/yt-job/../yt-job/watch--1a2b3c4d", "_raw/yt-job/nope"):
+        cp = _as_run_does(script, tmp_path, "--capture-dir", bad, *tail)
+        assert cp.returncode != 0 and "Traceback" not in cp.stderr, (bad, cp.stderr)
+    assert not (cap / "report.json").exists() and not (tmp_path / "report.json").exists()
+
+
+def test_the_builder_refuses_a_directory_no_spawner_wrote_a_ticket_into(tmp_path):
+    """`.` — the wiki root itself, which is what a capture-dir default of `.`
+    used to mean under `run` — holds no ticket.json: refused, nothing written."""
+    cap = _ticketed(tmp_path)
+    shutil.copy(cap / "metadata.json", tmp_path / "metadata.json")
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", ".")
+    assert cp.returncode != 0 and "ticket.json" in cp.stderr and "--item" in cp.stderr
+    assert not (tmp_path / "page.md").exists() and not (tmp_path / "capture.json").exists()
+
+
+# Rule 4 — a respawn must never be read as a success it did not have.
+
+
+def _an_earlier_run(tmp_path):
+    cap = _ticketed(tmp_path)
+    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    _script(REPORTER, tmp_path, cap, "--outcome", "ok")
+    assert json.loads((cap / "report.json").read_text())["outcome"] == "ok"
+    return cap
+
+
+def _respawn(cap):
+    """What the spawner does on every dispatch: rewrite ticket.json."""
+    ticket = json.loads((cap / "ticket.json").read_text())
+    (cap / "ticket.json").write_text(json.dumps({**ticket, "ticket": "feedfacecafe"}))
+    stamp = (cap / "ticket.json").stat().st_mtime_ns
+    for name in ("capture.json", "page.md", "report.json"):   # make "earlier" unmistakable on a coarse clock
+        if (cap / name).exists():
+            os.utime(cap / name, ns=(stamp - 10**9, stamp - 10**9))
+
+
+def test_a_failed_yt_dlp_on_a_respawn_is_not_reported_as_the_earlier_runs_capture(tmp_path):
+    """`yt-dlp … > metadata.json` leaves an EMPTY file when yt-dlp fails. The
+    builder used to traceback on it BEFORE removing the old capture.json, and
+    `write_report --outcome ok` then said `captured: 1` for a video this run
+    never captured."""
+    cap = _an_earlier_run(tmp_path)
+    _respawn(cap)
+    (cap / "metadata.json").write_text("")
+    cp = _script(BUILDER, tmp_path, cap, check=False)
+    assert cp.returncode != 0 and "Traceback" not in cp.stderr
+    assert "metadata.json" in cp.stderr and "yt-dlp failed" in cp.stderr
+    for stale in ("capture.json", "page.md", "report.json"):
+        assert not (cap / stale).exists(), f"{stale} survived a failed build"
+    cp = _script(REPORTER, tmp_path, cap, "--outcome", "ok", check=False)
+    assert cp.returncode != 0 and not (cap / "report.json").exists()
+
+
+@pytest.mark.parametrize("junk", ["[1, 2]", '"text"', "{not json"])
+def test_metadata_that_is_not_yt_dlps_object_is_refused_without_a_traceback(tmp_path, junk):
+    cap = _ticketed(tmp_path)
+    (cap / "metadata.json").write_text(junk)
+    cp = _script(BUILDER, tmp_path, cap, check=False)
+    assert cp.returncode != 0 and "Traceback" not in cp.stderr and not (cap / "capture.json").exists()
+
+
+def test_the_reporter_cannot_say_ok_off_a_capture_older_than_its_ticket(reporter, tmp_path):
+    """The worker that never ran the builder at all (yt-dlp failed, it skipped
+    to the report, and said `ok`): the capture on disk is the run before's."""
+    cap = _an_earlier_run(tmp_path)
+    _respawn(cap)
+    assert reporter.is_stale(cap)
+    for outcome in ("ok", "partial", "unchanged"):
+        cp = _script(REPORTER, tmp_path, cap, "--outcome", outcome, "--reason", "r", check=False)
+        assert cp.returncode != 0 and "EARLIER run" in cp.stderr, cp.stderr
+        assert not (cap / "report.json").exists(), "a refusal leaves no report — not even the earlier run's"
+    _script(REPORTER, tmp_path, cap, "--outcome", "failed", "--reason", "yt-dlp: Video unavailable")
+    report = json.loads((cap / "report.json").read_text())
+    assert (report["ticket"], report["outcome"], report["captured"]) == ("feedfacecafe", "failed", [])
+    # …and a build AFTER the respawn is this ticket's, and reportable.
+    _script(BUILDER, tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    assert not reporter.is_stale(cap) and not (cap / "report.json").exists()
+    _script(REPORTER, tmp_path, cap, "--outcome", "ok")
+    assert len(json.loads((cap / "report.json").read_text())["captured"]) == 1
+
+
+def test_a_written_report_exits_zero_whatever_it_says_and_a_refusal_does_not(tmp_path):
+    """The status answers "was a report written", which is what a worker that
+    must always leave one needs to know. `skipped` is step 1's `known[]` case."""
+    cap = _ticketed(tmp_path)
+    for outcome in ("failed", "skipped", "gone"):
+        cp = _script(REPORTER, tmp_path, cap, "--outcome", outcome, "--reason", "known: already held", check=False)
+        assert cp.returncode == 0 and json.loads(cp.stdout)["captured"] == 0
+        report = json.loads((cap / "report.json").read_text())
+        assert (report["outcome"], report["reason"], report["captured"]) == (outcome, "known: already held", [])
+    cp = _script(REPORTER, tmp_path, cap, "--outcome", "skipped", check=False)
+    assert cp.returncode != 0 and "must say why" in cp.stderr and not (cap / "report.json").exists()
+
+
+# Rule 1, end to end — the page LANDS.
+
+
+@pytest.mark.parametrize("leaf, title, safe", [
+    ("hostile--5e2e0002", 'Lesson 3: Pricing? A/B "testing"', "Lesson 3 - Pricing A-B 'testing'"),
+    ("hostile--5e2e0003", ".hidden: what is <X> | Y?\n---\n# Forged", "hidden - what is (X) - Y --- # Forged"),
+    ("hostile--5e2e0004", "漢" * 100, None),
+])
+def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_path, leaf, title, safe):
+    """Through the REAL extractor, which names the page's file from the capture's
+    title and refuses the whole process ticket over `:` `?` `/` `"` or a leading
+    dot — after harvest said ok."""
+    job = declared_job(ops, env, wiki, UNIT, JOB_TARGET)
+    item = f"https://www.youtube.com/watch?v={leaf[-8:]}xyz"
+    cap = ticket_in(wiki, job, leaf, unit=UNIT, item=item)
+    _fill(cap)
+    (cap / "metadata.json").write_text(json.dumps({**META, "title": title}))
+    _script(BUILDER, wiki, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    _script(REPORTER, wiki, cap, "--outcome", "ok")
+    record = json.loads((cap / "capture.json").read_text())
+    report = json.loads((cap / "report.json").read_text())
+    assert report["captured"][0]["title"] == record["title"], "the report's title IS the capture's"
+
+    (page,) = extracted(ops, env, wiki, cap)   # FIRST: the refusal this pins is the host's, not an assertion of ours
+    if safe:
+        assert record["title"] == safe
+    assert page.is_file() and page.name == f"{record['title']}.md"
+    text = page.read_text(encoding="utf-8")
+    _, front, body = text.split("---\n", 2)
+    folded = " ".join(title.split())
+    assert body.lstrip().startswith(f"# {folded.replace('<', '&lt;')}\n"), "the TRUE title is the H1"
+    assert record["frontmatter"]["source_title"] == folded
+    assert len(re.findall(r"^---$", text, re.M)) == 2 and "\n# Forged" not in text

@@ -16,7 +16,7 @@ frontmatter of its own — `title`, `status: draft`, `resource` (the capture's
 {
   "slug": "<job slug>",
   "item": "https://www.youtube.com/watch?v=<id>",
-  "title": "Video Title",
+  "title": "Video Title - made a legal filename",
   "body": "page.md",
   "content_type": "text/markdown",
   "fetched_at": "2026-09-19T03:09:15Z",
@@ -30,6 +30,7 @@ frontmatter of its own — `title`, `status: draft`, `resource` (the capture's
     "likes": 16124,
     "video_id": "<id>",
     "thumbnail": "https://i.ytimg.com/vi/<id>/maxresdefault.jpg",
+    "source_title": "Video Title: the true one, only when it differs",
     "source_host": ["www.youtube.com", "youtube.com"],
     "tags": ["youtube", "video"],
     "areas": ["[[Fitness]]"]
@@ -38,14 +39,30 @@ frontmatter of its own — `title`, `status: draft`, `resource` (the capture's
 ```
 
 `slug` and `item` come from `ticket.json` beside the capture (`--slug`/`--item`
-on a hand run); `title` is the video's; `fetched_at` is when yt-dlp wrote
-`metadata.json`.
+on a hand run — `--item` is required where there is no ticket); `fetched_at` is
+when yt-dlp wrote `metadata.json`.
+
+`title` is the video's title **made a legal filename** (`safe_title`): the
+extractor names the page's FILE from it and refuses the whole process ticket
+over any of `/ \ : * ? " < > |`, a control character or a leading dot. The
+swaps are `:` → ` -`; `/` `\` `|` → `-`; `?` `*` dropped; `"` → `'`; `<` `>` →
+`(` `)`; whitespace and control characters folded to single spaces; leading
+dots and trailing dots/spaces trimmed; capped at 120 characters and 200 bytes
+with a `…`; and `YouTube video <id>` when nothing is left. The TRUE title is
+the body's H1, and `frontmatter.source_title` when the two differ.
 
 `frontmatter` is the video's exact facts, scalars and flat lists only. **The
 extractor ignores it today** — it is accepted, not merged — so every fact in it
 is ALSO in the body's facts list, and nothing is lost in the meantime. It never
 carries a key a host verb owns: `title`, `resource`, `status`, `harvested`,
 `extracted`, `document_id`, `document_revision`.
+
+**Every value is the venue's text, and is treated as such.** Strings are folded
+to one line. `video_id` is kept only when it matches `^[A-Za-z0-9_-]{6,20}$`;
+`channel_url` and `thumbnail` only when they are clean http(s) urls; `views`
+and `likes` only when they are non-negative integers; `duration` only when it
+is shaped `h:mm:ss`; `published` only when it is a day that exists. A value
+that fails its shape is unknown — omitted, not passed through.
 
 **A fact that is not known is omitted, never emitted empty.** `published` is a
 **protocol well-known field** (the note-format contract's well-known set), not
@@ -66,11 +83,23 @@ job's own onto the page.
 ## `page.md`
 
 Body only. **Never a `---` block**: the extractor prepends its own, and a
-second one corrupts the page. Every block opens with markup of its own or sits
-under a heading, so the body cannot open with a `---` line even when a
-creator's description does.
+second one corrupts the page. The body opens with the H1 and the description
+is a blockquote, so no line of the page is a bare `---` even when a creator's
+description opens with one.
+
+The extractor takes this file VERBATIM, so nothing the venue wrote may forge
+structure in it: the H1 is the true title folded to one line; the embed exists
+only for a validated id, with its `title` attribute HTML-escaped; links and the
+thumbnail take clean http(s) urls only; and every description line is quoted
+(`> `), with anything that would open a block inside the quote — a heading, a
+code fence, a rule or setext underline, a nested quote, a callout — backslash-
+escaped, raw HTML's `<` written `&lt;`, and `[[`, `%%`, `$$` and non-http link
+targets escaped. It all still READS as the creator typed it. Chapter titles are
+folded the same way before the plugin formatter prints them as headings.
 
 ```markdown
+# Video Title: the true one
+
 ![thumbnail](<thumbnail-url>)
 
 <iframe ... src="https://www.youtube.com/embed/<id>" ...></iframe>
@@ -84,9 +113,9 @@ creator's description does.
 
 ## Description
 
-(creator's description, converted to markdown: bare URLs linkified,
-the creator's own TIMESTAMPS turned into a `- \`m:ss\` label` list,
-trailing hashtag pile removed)
+> (creator's description, quoted line by line: bare URLs linkified,
+> the creator's own TIMESTAMPS turned into a `- \`m:ss\` label` list,
+> trailing hashtag pile removed)
 
 ## Transcript
 

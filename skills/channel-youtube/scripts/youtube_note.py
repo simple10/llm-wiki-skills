@@ -20,25 +20,40 @@ verbatim and writes the page under the job's `dest` with its own frontmatter
 Reads, in the capture dir: `metadata.json` (`yt-dlp --dump-json`), the subtitle
 file yt-dlp fetched (.vtt or .srt, under `captions/` or beside the metadata),
 and `ticket.json` when the spawner left one (`slug`, `item`). `--slug`/`--item`
-override it, and stand in for it on a hand run; with neither, the slug is the
-capture dir's parent (`_raw/<slug>/<leaf>`) and the item is the metadata's
-`webpage_url`.
+override it. A directory with NO `ticket.json` is refused unless `--item` says
+what it holds (a hand run): `run` starts this script at the wiki root, so a
+mistyped `--capture-dir` is otherwise a page built from the wrong directory.
+The slug then defaults to the capture dir's parent (`_raw/<slug>/<leaf>`).
+
+FIRST, before it reads anything, it removes what an earlier run left in the
+capture dir — `capture.json`, `page.md`, `report.json` — because a capture dir
+is stable across pulls and a respawn that fails must not be read as the
+success the run before it had.
 
 Writes, in the capture dir and nowhere else:
 - `page.md` — BODY ONLY, never a `---` block (the extractor prepends its own
-  and a second one corrupts the page): thumbnail, embed, a compact facts list,
-  the description converted to markdown (bare URLs linkified, the creator's own
-  TIMESTAMPS block turned into a list, hashtag soup collapsed), and the
-  transcript as timestamped, chapter-headed sections, noise-stripped and
-  de-duplicated. No summary placeholder: the summary is the host's process
-  side's to write, not a harvest worker's.
+  and a second one corrupts the page): the video's TRUE title as the `# H1`,
+  thumbnail, embed, a compact facts list, the description as a blockquote
+  (bare URLs linkified, the creator's own TIMESTAMPS block turned into a list,
+  hashtag soup collapsed), and the transcript as timestamped, chapter-headed
+  sections, noise-stripped and de-duplicated. No summary placeholder: the
+  summary is the host's process side's to write, not a harvest worker's.
 - `capture.json` — `slug`, `item`, `title`, `body: "page.md"`,
   `content_type: "text/markdown"`, `fetched_at`, and a `frontmatter` object
   carrying the video's exact facts (type, channel, channel_url, published,
-  duration, views, likes, video_id, thumbnail, source_host, tags, areas).
+  duration, views, likes, video_id, thumbnail, source_host, source_title, tags,
+  areas). `title` is `safe_title(<the video's title>)` — the page's FILE is
+  named from it; `frontmatter.source_title` is the true one, when they differ.
   Unknown facts are omitted, never emitted empty. It never carries `title`,
   `resource`, `status` or any other key a host verb owns. The extractor ignores
   `frontmatter` today, which is why the same facts are also in the body.
+
+Everything yt-dlp returns is the venue's text, and `page.md` is the FINAL page
+body, taken verbatim. So: the title and every fact value are folded to one
+line; the id goes into the embed's `src` only when it is shaped like one; a url
+goes into a link only when it is a clean http(s) one; attribute text is
+HTML-escaped; and the description is blockquoted line by line, so nothing in it
+can open a fence or a heading that swallows the rest of the page.
 
 `report.json` is NOT this script's: `write_report.py` beside it writes that,
 last.
@@ -65,6 +80,7 @@ exact failure this script exists to prevent.
 """
 
 import argparse
+import html
 import json
 import os
 import re
@@ -79,10 +95,16 @@ from pathlib import Path
 OPS = "llm-wiki-ops"
 
 # What a nested front-door call must NOT inherit from the one that ran this
-# script. The re-entry guard is still set in here — this script is the front
-# door's grandchild — and a call carrying it is refused (127) as a loop, which
-# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
-# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
+# script. Both names belong to the MACHINE-GLOBAL bash dispatcher that is the
+# bare `llm-wiki-ops` on PATH (the llm-wiki-global plugin's
+# `plugin/scripts/llm-wiki-ops`) — not to the versioned CLI package, where a
+# search for either finds nothing. That dispatcher exports
+# `LLM_WIKI_OPS_DISPATCHED=1` before it execs the wiki's shim and refuses
+# (127) any call that arrives carrying it, as a loop. The guard is still set in
+# here — this script is the dispatcher's grandchild — and this call is not a
+# loop. And the dispatcher seeds its walk for the wiki root from
+# `$CLAUDE_PROJECT_DIR`, when that names a wiki, AHEAD of the cwd, so without
+# dropping it `cwd=<root>` would not be what picks the wiki.
 NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
 
 # An address `run` serves out of the plugin, not a path in this wiki.
@@ -92,9 +114,104 @@ FORMATTER = "skills/process/scripts/format_transcript.py"
 def _front_door_env():
     return {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
 
-URL_RE = re.compile(r"(?<![\(\]])\bhttps?://[^\s)]+")
+URL_RE = re.compile(r"(?<![\(\]])\bhttps?://[^\s)<>]+")
 TS_LINE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—:]?\s*(.+)$")
 HASHTAGS = re.compile(r"(?:(?:^|\s)#[\w]+){2,}\s*$")
+
+
+# The page's FILE is named from this title, and the host refuses a title its filename rule
+# cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
+# leading dot) — failing the process ticket after harvest said ok. keep-in-sync: every unit's safe_title.
+_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "'", "<": "(", ">": ")"}
+TITLE_MAX = 120   # characters
+# …and a filename is capped in BYTES by the filesystem (255 on ext4/APFS), with `.md` appended:
+# 120 characters of CJK is 360 bytes, which `filename_for` lets through and the write then fails on.
+TITLE_MAX_BYTES = 200
+
+
+def safe_title(text, fallback="Untitled"):
+    text = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))   # control chars, newlines, tabs
+    for bad, good in _TITLE_SWAPS.items():
+        text = text.replace(bad, good)
+    text = " ".join(text.split()).lstrip(". ").rstrip(" .")
+    cut = text[:TITLE_MAX]
+    while len(cut.encode("utf-8")) > TITLE_MAX_BYTES:
+        cut = cut[:-1]
+    if cut != text:
+        text = cut.rstrip(" .-") + "…"
+    return text or fallback
+
+
+def fold(text):
+    """Venue text as ONE line: newlines, tabs and control characters become a
+    space. What every title and fact value passes through before it reaches
+    `page.md` or `capture.json`, so none of them can start a line of its own."""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in str(text or "")).split())
+
+
+# Inline markup venue prose must not get to write: raw HTML, a wikilink or
+# `![[embed]]` (a graph edge, or another page transcluded, that nobody here
+# wrote), and the two Obsidian spans that hide everything after them when left
+# unclosed (`%%` comment, `$$` math). Escaped, so each still READS as typed.
+_INLINE = (("<", "&lt;"), ("[[", "\\[\\["), ("%%", "\\%\\%"), ("$$", "\\$\\$"))
+# A markdown link whose target is not http(s) — `[x](javascript:…)`.
+_BAD_LINK = re.compile(r"\]\((?!https?://)")
+# What would open a block at the start of a line: an ATX heading, a code fence,
+# a nested quote, a callout, a setext underline / rule made of `=` or `-`.
+_LEADING = re.compile(r"^\s*(?:#{1,6}(?=\s|$)|```|~~~|>|\[!|(?:=+|-+)\s*$)")
+# A clean http(s) url: nothing that ends a markdown link, an autolink or an
+# HTML attribute early. YouTube's own urls never carry any of these.
+_URL_OK = re.compile(r"^https?://[^\s<>\"'()\[\]\\`]+$")
+VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
+_DURATION = re.compile(r"^\d{1,4}(?::\d{2}){0,2}$")
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def plain(text, brackets=False):
+    """One run of venue prose with its inline markup neutralised. `brackets`
+    also escapes `[` and `]`, for text that is going INSIDE a link's label."""
+    text = str(text or "")
+    if brackets:
+        text = text.replace("[", "\\[").replace("]", "\\]")
+    for bad, good in _INLINE:
+        text = text.replace(bad, good)
+    return _BAD_LINK.sub(r"]\\(", text)
+
+
+def unblocked(line):
+    """A line that cannot open a block: a leading heading / fence / quote /
+    callout / underline marker is backslash-escaped, so it reads as typed."""
+    return "\\" + line.lstrip() if _LEADING.match(line) else line
+
+
+def clean_url(value):
+    """`value` when it is a clean http(s) url, else None — what may go into a
+    link, an image or `frontmatter`."""
+    return value if isinstance(value, str) and _URL_OK.match(value) else None
+
+
+def video_id_of(meta):
+    """The id, only when it is shaped like one: it is interpolated into the
+    embed's `src`, and `x" onload="…` is a metadata value like any other."""
+    vid = meta.get("id")
+    return vid if isinstance(vid, str) and VIDEO_ID.match(vid) else None
+
+
+def count_of(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def published_of(meta):
+    """`yt_date`'s answer, kept only when it is a day that exists."""
+    raw = meta.get("upload_date")
+    day = yt_date(raw) if isinstance(raw, str) else ""
+    if not _DAY.match(day):
+        return ""
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return day
 
 
 def source_hosts_for(host: str) -> list:
@@ -175,15 +292,32 @@ def yt_date(d):
     return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if d and d.isdigit() and len(d) == 8 else ""
 
 
+def _linkified(line):
+    """Bare urls as autolinks, the prose between them neutralised."""
+    out, at = [], 0
+    for mo in URL_RE.finditer(line):
+        out += [plain(line[at:mo.start()]), f"<{mo.group(0)}>"]
+        at = mo.end()
+    return "".join(out) + plain(line[at:])
+
+
 def description_to_md(desc):
     """Linkify bare URLs, turn a TIMESTAMPS block into a list, collapse the
-    trailing hashtag pile. Keep the creator's own words otherwise."""
-    if not desc:
+    trailing hashtag pile. Keep the creator's own words otherwise.
+
+    The words are the VENUE's and the page is taken verbatim, so the result is
+    a BLOCKQUOTE, every line of it: a line that starts with `> ` cannot be a
+    top-level heading, rule or frontmatter fence, and a code fence opened in a
+    quote ends with the quote — so nothing in a description swallows the
+    transcript below it. Inside the quote the same markers are escaped as well
+    (`unblocked`, `plain`), so a stray fence does not swallow the rest of the
+    DESCRIPTION either, and the words read as typed."""
+    if not isinstance(desc, str) or not desc.strip():
         return ""
-    lines = desc.replace("\r\n", "\n").split("\n")
+    lines = re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", desc)
     out, in_ts = [], False
     for raw in lines:
-        line = raw.rstrip()
+        line = "".join(ch if ch.isprintable() else " " for ch in raw).rstrip()   # tabs, control characters
         if re.match(r"^\s*(timestamps|chapters)\s*:?\s*$", line, re.I):
             out.append("**Timestamps**")
             out.append("")
@@ -191,7 +325,7 @@ def description_to_md(desc):
             continue
         m = TS_LINE.match(line)
         if in_ts and m:
-            out.append(f"- `{m.group(1)}` {m.group(2).strip()}")
+            out.append(f"- `{m.group(1)}` {plain(m.group(2).strip())}")
             continue
         if in_ts and not line.strip():
             in_ts = False
@@ -204,15 +338,47 @@ def description_to_md(desc):
         # collapse a trailing wall of hashtags
         if HASHTAGS.search(line) and len(line.split()) > 3:
             continue
-        line = URL_RE.sub(lambda mo: f"<{mo.group(0)}>", line)
-        out.append(line)
-    text = "\n".join(out)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+        out.append(unblocked(_linkified(line)))
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.split("\n"))
+
+
+# The plugin formatter's own section heads: `#### [mm:ss] Chapter title`.
+_SECTION_HEAD = re.compile(r"^#{1,6} \[\d")
+
+
+def guard_transcript(md):
+    """The formatter's markdown with caption TEXT kept from opening a block:
+    a manual caption track is the creator's typing, and a cue that is a code
+    fence would swallow the rest of the transcript. The formatter's own section
+    heads are left alone."""
+    return "\n".join(line if _SECTION_HEAD.match(line) else unblocked(line) for line in md.split("\n"))
+
+
+def safe_chapters(meta):
+    """The chapter list with each title folded to one line and neutralised —
+    the plugin formatter writes a title straight into a `####` heading — or
+    `[]`. Rows without a numeric start are dropped."""
+    rows = []
+    for ch in meta.get("chapters") or []:
+        if not isinstance(ch, dict) or not isinstance(ch.get("start_time"), (int, float)):
+            continue
+        row = {"start_time": ch["start_time"], "title": plain(fold(ch.get("title")))}
+        if isinstance(ch.get("end_time"), (int, float)):
+            row["end_time"] = ch["end_time"]
+        rows.append(row)
+    return rows
 
 
 TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
 BODY_NAME = "page.md"
+REPORT_NAME = "report.json"
+# Written for the formatter's one call and removed after it: `metadata.json`'s
+# chapters with their titles made safe to print (`safe_chapters`).
+CHAPTERS_NAME = "chapters.safe.json"
+# What an earlier run over this SAME directory may have left. Removed first.
+STALE = (CAPTURE_NAME, BODY_NAME, REPORT_NAME, CHAPTERS_NAME)
 
 # Keys a host verb owns on the page. `frontmatter` never carries one: the
 # extractor writes `title`, `status`, `resource` and `harvested` itself, and
@@ -258,7 +424,22 @@ def find_captions(cap_dir):
 
 
 def duration_of(meta):
-    return meta.get("duration_string") or (mmss(meta["duration"]) if meta.get("duration") else "")
+    given = meta.get("duration_string")
+    if isinstance(given, str) and _DURATION.match(given):
+        return given
+    seconds = meta.get("duration")
+    return mmss(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds > 0 else ""
+
+
+def true_title(meta):
+    """The video's own title, folded to one line — or `""`."""
+    return fold(meta.get("title")) if isinstance(meta.get("title"), str) else ""
+
+
+def page_title(meta):
+    """`capture.json`'s `title`: the true one made a legal filename."""
+    vid = video_id_of(meta)
+    return safe_title(true_title(meta), fallback=f"YouTube video {vid}" if vid else "Untitled video")
 
 
 def frontmatter_for(meta, tags=(), areas=()):
@@ -268,17 +449,25 @@ def frontmatter_for(meta, tags=(), areas=()):
     `published` is protocol-well-known and optional, so it is emitted only when
     the upload date is actually known — never as an empty key, which would read
     as a malformed date to lint and as absent to everything else. The same rule
-    is applied to every other fact here."""
+    is applied to every other fact here — and a fact whose value is not
+    shaped like one (an id that is not an id, a url that is not a clean
+    http(s) url, a count that is not a number) is unknown, not passed through.
+
+    `source_title` is the video's TRUE title, present only when the filename
+    rule made `capture.json`'s `title` differ from it."""
+    channel = meta.get("uploader") or meta.get("channel")
+    title = true_title(meta)
     facts = {
         "type": "video",
-        "channel": meta.get("uploader") or meta.get("channel"),
-        "channel_url": meta.get("channel_url"),
-        "published": yt_date(meta.get("upload_date")),
+        "channel": fold(channel) if isinstance(channel, str) else None,
+        "channel_url": clean_url(meta.get("channel_url")),
+        "published": published_of(meta),
         "duration": duration_of(meta),
-        "views": meta.get("view_count"),
-        "likes": meta.get("like_count"),
-        "video_id": meta.get("id"),
-        "thumbnail": meta.get("thumbnail"),
+        "views": count_of(meta.get("view_count")),
+        "likes": count_of(meta.get("like_count")),
+        "video_id": video_id_of(meta),
+        "thumbnail": clean_url(meta.get("thumbnail")),
+        "source_title": title if title and title != page_title(meta) else None,
         "source_host": source_hosts_for("www.youtube.com"),
         "tags": normalize_tags(tags),
         "areas": [f"[[{a}]]" for a in areas if a],
@@ -289,9 +478,10 @@ def frontmatter_for(meta, tags=(), areas=()):
 def facts_block(front, item):
     """The same facts as a compact list for the page body — the extractor
     ignores `frontmatter` today, so this is what keeps them on the page."""
-    channel = front.get("channel")
+    channel = plain(front.get("channel"), brackets=True)
     if channel and front.get("channel_url"):
         channel = f"[{channel}]({front['channel_url']})"
+    item = clean_url(item)
     counts = " · ".join(
         f"**{label}**: {front[key]}" for label, key in (("Views", "views"), ("Likes", "likes")) if key in front
     )
@@ -308,18 +498,21 @@ def facts_block(front, item):
 
 
 def build_body(meta, front, item, transcript_md):
-    """`page.md`: body only. Every block either opens with markup of its own or
-    sits under a heading, so the body can never open with a `---` line."""
-    title = meta.get("title") or "Untitled"
-    vid = meta.get("id", "")
-    parts = []
-    if meta.get("thumbnail"):
-        parts.append(f"![thumbnail]({meta['thumbnail']})\n")
+    """`page.md`: body only. It opens with the `# H1` — the video's TRUE title,
+    which the filename rule may have kept out of `capture.json`'s — and every
+    block after it opens with markup of its own, so the body can never open
+    with a `---` line. `front` is where the validated id and urls come from:
+    nothing is interpolated into the embed or a link straight off `meta`."""
+    title = true_title(meta) or page_title(meta)
+    vid = front.get("video_id")
+    parts = [f"# {plain(title)}\n"]
+    if front.get("thumbnail"):
+        parts.append(f"![thumbnail]({front['thumbnail']})\n")
     if vid:
         parts.append(
             f'<iframe width="560" height="315" '
             f'src="https://www.youtube.com/embed/{vid}" '
-            f'title="{title.replace(chr(34), " ")}" frameborder="0" '
+            f'title="{html.escape(title, quote=True)}" frameborder="0" '
             f'allowfullscreen></iframe>\n'
         )
     facts = facts_block(front, item)
@@ -332,7 +525,7 @@ def build_body(meta, front, item, transcript_md):
         parts.append(
             "## Transcript\n\n*Auto-generated captions, cleaned "
             "(sound tags removed, rolling overlap de-duplicated) and "
-            "split by chapter. Not manually corrected.*\n\n" + transcript_md
+            "split by chapter. Not manually corrected.*\n\n" + guard_transcript(transcript_md)
         )
     return "\n".join(parts).rstrip() + "\n", bool(desc)
 
@@ -348,7 +541,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wiki", type=Path, help="the wiki root — what binds the front door to this wiki")
     ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off ticket.json")
-    ap.add_argument("--item", default=None, help="the video url. Defaults to ticket.json's `item`, then the metadata's `webpage_url`")
+    ap.add_argument("--item", default=None, help="the video url. Defaults to ticket.json's `item`; REQUIRED where there is no ticket.json (a hand run)")
     ap.add_argument("--slug", default=None, help="the job slug. Defaults to ticket.json's `slug`, then the capture dir's parent")
     ap.add_argument("--tag", action="append", default=[], help="a tag for `frontmatter.tags` (repeatable) — a hand run's; a ticket carries none")
     ap.add_argument("--area", action="append", default=[], help="a knowledge area for `frontmatter.areas` (repeatable) — a hand run's; a ticket carries none")
@@ -356,38 +549,67 @@ def main():
         "--format-transcript",
         default=None,
         metavar="PATH",
-        help="run this format_transcript.py directly instead of reaching the plugin's copy through the front door",
+        help="run this format_transcript.py directly instead of reaching the plugin's copy through the front door "
+             "(tests, hand runs). The one path here NOT read against the capture dir: absolute, or relative to the "
+             "cwd — which under `llm-wiki-ops run` is the wiki root",
     )
     args = ap.parse_args()
 
-    cap_dir = args.wiki / args.capture_dir
+    given = Path(args.capture_dir)
+    if given.is_absolute() or ".." in given.parts:
+        sys.exit(f"youtube_note: --capture-dir is WIKI-RELATIVE (ticket.json's `capture_dir`, verbatim), not {args.capture_dir!r}")
+    cap_dir = args.wiki / given
+    if not cap_dir.is_dir():
+        sys.exit(f"youtube_note: {cap_dir} is not a directory — --capture-dir is relative to the wiki root, {args.wiki}")
+    ticket = read_ticket(cap_dir)
+    if not ticket and not args.item:
+        sys.exit(
+            f"youtube_note: no {TICKET_NAME} in {cap_dir} — not a spawned capture directory. "
+            "For a hand run say what it holds: --item <video url> (and --slug)"
+        )
+
+    # FIRST, before anything can fail: a capture dir is stable across pulls, so
+    # what an earlier run left here must not outlive a build that fails.
+    # `capture.json` is what says "this item landed", and `report.json` is what
+    # `apply` reads — it does not check whose ticket a report answers.
+    for name in STALE:
+        (cap_dir / name).unlink(missing_ok=True)
+
     metadata_path = cap_dir / "metadata.json"
     if not metadata_path.is_file():
         sys.exit(f"youtube_note: {metadata_path} is not there — run `yt-dlp --dump-json --no-download <url>` into it first")
-    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-    ticket = read_ticket(cap_dir)
+    # `yt-dlp … > metadata.json` leaves an EMPTY file when yt-dlp fails.
+    try:
+        meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        sys.exit(f"youtube_note: {metadata_path} is not yt-dlp's JSON ({exc}) — yt-dlp failed; nothing was captured")
+    if not isinstance(meta, dict):
+        sys.exit(f"youtube_note: {metadata_path} is not yt-dlp's JSON (not an object) — nothing was captured")
 
-    # A capture record left by an earlier run must not outlive a build that
-    # fails: `capture.json` is what says "this item landed".
-    (cap_dir / CAPTURE_NAME).unlink(missing_ok=True)
-
-    slug = args.slug or ticket.get("slug") or cap_dir.resolve().parent.name
-    item = args.item or ticket.get("item") or meta.get("webpage_url") or meta.get("original_url")
+    slug = fold(args.slug or ticket.get("slug") or cap_dir.resolve().parent.name)
+    item = fold(args.item or ticket.get("item")) or None
     front = frontmatter_for(meta, tags=args.tag, areas=args.area)
 
     captions = find_captions(cap_dir)
     transcript_md = ""
     if captions:
-        transcript_md = format_transcript(
-            captions, metadata_path if meta.get("chapters") else None, args.wiki, args.format_transcript
-        )
+        chapters = safe_chapters(meta)
+        chapters_path = cap_dir / CHAPTERS_NAME
+        try:
+            if chapters:
+                chapters_path.write_text(json.dumps(chapters), encoding="utf-8")
+            transcript_md = format_transcript(
+                captions, chapters_path if chapters else None, args.wiki, args.format_transcript
+            )
+        finally:
+            chapters_path.unlink(missing_ok=True)
 
     body, has_desc = build_body(meta, front, item, transcript_md)
     (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")
     record = {
         "slug": slug,
         "item": item,
-        "title": meta.get("title") or None,
+        "title": page_title(meta),
         "body": BODY_NAME,
         "content_type": "text/markdown",
         "fetched_at": fetched_at_of(metadata_path),
@@ -402,7 +624,7 @@ def main():
                 "page": f"{args.capture_dir.rstrip('/')}/{BODY_NAME}",
                 "capture": f"{args.capture_dir.rstrip('/')}/{CAPTURE_NAME}",
                 "has_transcript": bool(captions),
-                "chapters": len(meta.get("chapters") or []),
+                "chapters": len(safe_chapters(meta)),
                 "description": has_desc,
             }
         )

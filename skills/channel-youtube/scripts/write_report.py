@@ -7,6 +7,7 @@
 
   write_report.py <wiki> --capture-dir <dir> --outcome ok
   write_report.py <wiki> --capture-dir <dir> --outcome partial --reason no_captions
+  write_report.py <wiki> --capture-dir <dir> --outcome skipped --reason "known: already held"
   write_report.py <wiki> --capture-dir <dir> --outcome failed --reason "yt-dlp: Video unavailable" \\
                   [--missing <host> <url> <denied|timeout|auth|error>]... [--ticket <id>]
 
@@ -25,10 +26,23 @@ host-derived `capture_dir` (`--ticket` stands in for the id where no spawner
 wrote one), and `capture.json` for the item and title of what landed.
 
 `captured[]` is derived, never claimed: an outcome that says something landed
-(`ok`, `partial`, `unchanged`) is REFUSED unless `capture.json` is there and
-names a body file that is there — so a build that aborted cannot be reported
-as a capture. `skipped`, `gone` and `failed` carry an empty `captured[]`, and
-every outcome but `ok` must say why.
+(`ok`, `partial`, `unchanged`) is REFUSED unless `capture.json` is there, names
+a body file that is there, and — where the spawner left a `ticket.json` — is
+NEWER than it. The spawner rewrites `ticket.json` on every dispatch
+(`pipeline/dispatch.py::start_slice` → `write_ticket`) and a capture dir is
+stable across pulls, so a `capture.json` older than the ticket is an EARLIER
+run's: this run captured nothing, whatever the worker believes. So neither an
+aborted build nor a respawn can be reported as a capture. `title` is copied
+from `capture.json`, so the two are always equal. `skipped`, `gone` and
+`failed` carry an empty `captured[]`, and every outcome but `ok` must say why.
+
+Exit status says whether A REPORT WAS WRITTEN, not what the report says: 0 for
+every outcome written, `failed` included; non-zero only when this script
+refused and left NO `report.json`. A worker must always leave a report, so the
+one thing it needs from the status is "did that happen" — a `failed` that
+exited 1 would read the same as a refusal, and send the worker round again
+over a report that is already correct. (Other units' writers exit 1 on
+`failed`; this one deliberately does not.)
 
 Wiki-owned, stdlib only, imports nothing from the plugin.
 """
@@ -57,6 +71,19 @@ def _read_json(path):
     return found if isinstance(found, dict) else {}
 
 
+def is_stale(cap_dir):
+    """True when `capture.json` is OLDER than the `ticket.json` beside it — an
+    earlier run's. A hand run has no ticket, and nothing to be stale against."""
+    try:
+        ticket_at = (Path(cap_dir) / TICKET_NAME).stat().st_mtime_ns
+    except OSError:
+        return False
+    try:
+        return (Path(cap_dir) / CAPTURE_NAME).stat().st_mtime_ns < ticket_at
+    except OSError:
+        return False
+
+
 def captured_of(cap_dir, capture_rel):
     """The one `captured[]` entry this capture dir supports, or None."""
     record = _read_json(Path(cap_dir) / CAPTURE_NAME)
@@ -79,6 +106,12 @@ def build_report(cap_dir, capture_rel, *, ticket, outcome, reason=None, missing=
         rows.append({"host": host, "url": url, "why": why})
     captured = []
     if outcome in LANDED:
+        if is_stale(cap_dir):
+            raise ValueError(
+                f"outcome {outcome!r} says a capture landed, and {capture_rel}/{CAPTURE_NAME} is older than "
+                f"the {TICKET_NAME} beside it — an EARLIER run's capture, not this ticket's. Nothing was "
+                "captured this run: report `failed` with the reason instead"
+            )
         entry = captured_of(cap_dir, capture_rel)
         if entry is None:
             raise ValueError(
@@ -111,9 +144,12 @@ def main():
     ap.add_argument("--ticket", default=None, help="the ticket id. Defaults to ticket.json's `ticket`")
     args = ap.parse_args()
 
-    cap_dir = args.wiki / args.capture_dir
+    given = Path(args.capture_dir)
+    if given.is_absolute() or ".." in given.parts:
+        sys.exit(f"write_report: --capture-dir is WIKI-RELATIVE (ticket.json's `capture_dir`, verbatim), not {args.capture_dir!r}")
+    cap_dir = args.wiki / given
     if not cap_dir.is_dir():
-        sys.exit(f"write_report: {cap_dir} is not a directory")
+        sys.exit(f"write_report: {cap_dir} is not a directory — --capture-dir is relative to the wiki root, {args.wiki}")
     spawned = _read_json(cap_dir / TICKET_NAME)
     ticket = args.ticket or spawned.get("ticket")
     if not isinstance(ticket, str) or not ticket:
@@ -122,6 +158,9 @@ def main():
     # as a wiki-relative path of the shape `_raw/<slug>/<leaf>`.
     capture_rel = spawned.get("capture_dir") if isinstance(spawned.get("capture_dir"), str) else None
     capture_rel = capture_rel or args.capture_dir.strip("/")
+    # Whatever is here is an earlier run's, or the extractor's own: gone before
+    # this can refuse, so a refusal really does leave NO report behind.
+    (cap_dir / REPORT_NAME).unlink(missing_ok=True)
     try:
         report = build_report(
             cap_dir, capture_rel, ticket=ticket, outcome=args.outcome, reason=args.reason, missing=args.missing
