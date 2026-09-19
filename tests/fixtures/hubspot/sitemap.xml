@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.example-hubspot.invalid/</loc><lastmod>2026-08-01</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn</loc><lastmod>2026-06-01</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/lesson-one</loc><lastmod>2026-07-01T10:00:00Z</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/lesson-one?hsLang=en</loc><lastmod>2026-07-01</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/lesson-two/</loc><lastmod>2026-07-15</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/lesson-three</loc><lastmod>2025-01-10</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/legacy/old-lesson</loc><lastmod>2026-07-20</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learning-is-not-learn</loc><lastmod>2026-07-21</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/blog/a-post</loc><lastmod>2026-07-22</lastmod></url>
+  <url><loc>https://other.example.invalid/learn/elsewhere</loc><lastmod>2026-07-23</lastmod></url>
+  <url><loc>https://www.example-hubspot.invalid/learn/offers/x;$(touch${IFS}PWNED)</loc><lastmod>2026-07-24</lastmod></url>
+  <url><loc>javascript:alert(1)</loc><lastmod>2026-07-25</lastmod></url>
+</urlset>

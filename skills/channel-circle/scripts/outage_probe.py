@@ -23,9 +23,14 @@ per-domain profile that earned cf_clearance; created by the plugin's
 and measures the wrapper's rendered size.
 
 Usage:
-  uv run outage_probe.py <root> <course-url> [--headed] [--timeout-ms 45000]
+  llm-wiki-ops run ops/skills/channel-circle/scripts/outage_probe.py \
+         <root> --ticket-dir <capture_dir> [--headed] [--settle-ms 8000]
+         <root> <course-url> …                       # HAND RUNS ONLY
 
-`<root>` is the wiki root. Always exits 0 (it's a probe, not a gate).
+`<root>` is the wiki root (`.` under `llm-wiki-ops run`). With `--ticket-dir`
+(wiki-relative: resolved against `<root>`) the url probed is the `target` of
+that directory's `ticket.json` — a worker never types a venue url onto a
+command line. Always exits 0 (it's a probe, not a gate).
 Prints a JSON verdict on stdout:
   {fixed, wrapper_children, wrapper_chars, http_5xx, sample_5xx,
    final_url, title, auth_ok}
@@ -38,6 +43,7 @@ History:
               auth directory.
   2026-08-04  auth profile lookup moves through the credential store's
               `profile-dir` verb instead of a hardcoded path.
+  2026-09-19  `--ticket-dir`: the url comes off the ticket, never a command line.
 """
 
 import argparse
@@ -50,12 +56,47 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-def _ops_dirname():
-    """The wiki's machinery-tree name, exported by the front door that ran
-    this script (`LLM_WIKI_OPS_DIRNAME`). None outside `llm-wiki-ops run` —
-    the caller treats the wiki as unreachable rather than guessing where its
-    tree lives."""
-    return os.environ.get("LLM_WIKI_OPS_DIRNAME") or None
+# The front door, by the bare name every SKILL.md already runs this script
+# under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
+
+# What a nested front-door call must NOT inherit from the one that ran this
+# script. The re-entry guard is still set in here — this script is the front
+# door's grandchild — and a call carrying it is refused (127) as a loop, which
+# this is not. And the front door binds to `CLAUDE_PROJECT_DIR` AHEAD of the
+# cwd, so without dropping it `cwd=<root>` would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+
+
+def _ops(root, *args):
+    """One front-door command, bound to the wiki by running from its root,
+    answered as JSON — the CLI's plain answer is prose for a person. An
+    `llm-wiki-ops` that is not on PATH raises `FileNotFoundError` — an
+    `OSError`, which the caller reports as an unreachable store."""
+    env = {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+    return subprocess.run([OPS, "--json", *args], cwd=str(root), env=env, capture_output=True, text=True)
+
+
+def profile_dir(root, domain):
+    """`(path, None)` for a profile a login has minted; else `(None, (kind,
+    why))`, kind `absent` or `unreachable`.
+
+    `credential profile-dir` exits 0 whether or not the directory exists —
+    it reports, and creates nothing — so `exists` is the answer, never the
+    exit code. Launching a persistent context on a path that is not there
+    would MAKE it, and run the whole capture logged out without a word."""
+    proc = _ops(root, "credential", "profile-dir", domain)
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    if proc.returncode != 0 or not isinstance(answer, dict) or not answer.get("path"):
+        detail = answer.get("error") if isinstance(answer, dict) else None
+        detail = detail or (proc.stderr or proc.stdout or "").strip()
+        return None, ("unreachable", f"credential store unreachable ({proc.returncode}): {detail[:200]}")
+    if answer.get("exists") is not True:
+        return None, ("absent", f"no auth profile for {domain}")
+    return Path(answer["path"]), None
 
 
 def domain_of(url: str) -> str:
@@ -69,51 +110,48 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
+def ticket_target(root, ticket_dir) -> str | None:
+    """The http(s) `target` of `<root>/<ticket_dir>/ticket.json`, or None."""
+    if not ticket_dir:
+        return None
+    base = Path(ticket_dir) if Path(ticket_dir).is_absolute() else Path(root) / ticket_dir
+    try:
+        ticket = json.loads((base / "ticket.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    target = ticket.get("target") if isinstance(ticket, dict) else None
+    return target if isinstance(target, str) and urlsplit(target).scheme in ("http", "https") else None
+
+
 def main() -> int:
     from playwright.sync_api import sync_playwright
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="wiki root path")
-    ap.add_argument("url")
+    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY; default: `target` of <ticket-dir>/ticket.json")
+    ap.add_argument("--ticket-dir", help="the ticket's capture dir, wiki-relative — its ticket.json names the url")
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     ap.add_argument("--settle-ms", type=int, default=8000, help="Wait after load for XHRs to fire / content to render")
     args = ap.parse_args()
 
+    args.url = args.url or ticket_target(args.root, args.ticket_dir)
+    if not args.url:
+        print(json.dumps({"fixed": False, "error": "no url: give --ticket-dir <capture_dir> (its ticket.json names the target)"}))
+        return 0
     domain = domain_of(args.url)
 
-    dirname = _ops_dirname()
-    if dirname is None:
-        print(
-            json.dumps(
-                {
-                    "fixed": False,
-                    "error": "LLM_WIKI_OPS_DIRNAME is not set — run "
-                    "this through the wiki's front door "
-                    "(`llm-wiki-ops run …`), which exports "
-                    "it",
-                }
-            )
-        )
-        return 0
     try:
-        proc = subprocess.run(
-            [str(Path(args.root) / dirname / "bin" / "llm-wiki-ops"), "credential", "profile-dir", domain],
-            capture_output=True,
-            text=True,
-        )
+        profile, refused = profile_dir(args.root, domain)
     except OSError as e:
         print(json.dumps({"fixed": False, "error": f"credential store unreachable ({e.__class__.__name__}: {e})"}))
         return 0
-    if proc.returncode != 0:
-        err = (
-            f"no auth profile for {domain} — run llm-wiki-ops run scripts/login.py first"
-            if proc.returncode == 1
-            else f"credential store unreachable ({proc.returncode}): {(proc.stderr or '').strip()[:200]}"
-        )
-        print(json.dumps({"fixed": False, "error": err}))
+    if refused:
+        kind, why = refused
+        if kind == "absent":
+            why += " — run llm-wiki-ops run scripts/login.py first"
+        print(json.dumps({"fixed": False, "error": why}))
         return 0
-    profile_dir = Path(proc.stdout.strip())
 
     errors_5xx = []
 
@@ -124,9 +162,9 @@ def main() -> int:
             ignore_default_args=["--enable-automation"],
         )
         try:
-            context = p.chromium.launch_persistent_context(str(profile_dir), channel="chrome", **launch_kw)
+            context = p.chromium.launch_persistent_context(str(profile), channel="chrome", **launch_kw)
         except Exception:
-            context = p.chromium.launch_persistent_context(str(profile_dir), **launch_kw)
+            context = p.chromium.launch_persistent_context(str(profile), **launch_kw)
 
         page = context.pages[0] if context.pages else context.new_page()
 

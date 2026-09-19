@@ -1,0 +1,74 @@
+[
+ {
+  "id": 13411,
+  "slug": "the-newest-one",
+  "title": "The Newest One",
+  "audience": "everyone",
+  "post_date": "2026-09-10T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/the-newest-one",
+  "type": "newsletter"
+ },
+ {
+  "id": 969725,
+  "slug": "members-only",
+  "title": "Members Only",
+  "audience": "only_paid",
+  "post_date": "2026-09-08T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/members-only",
+  "type": "newsletter"
+ },
+ {
+  "id": 108464,
+  "slug": "founders-letter",
+  "title": "Founders Letter",
+  "audience": "founding",
+  "post_date": "2026-09-05T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/founders-letter",
+  "type": "newsletter"
+ },
+ {
+  "id": 967613,
+  "slug": "a-podcast-episode",
+  "title": "A Podcast Episode",
+  "audience": "everyone",
+  "post_date": "2026-09-01T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/a-podcast-episode",
+  "type": "newsletter"
+ },
+ {
+  "id": 131272,
+  "slug": "sponsored-roundup",
+  "title": "Sponsored Roundup",
+  "audience": "everyone",
+  "post_date": "2026-08-20T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/sponsored-roundup",
+  "type": "newsletter"
+ },
+ {
+  "id": 683723,
+  "slug": "cross-posted",
+  "title": "Cross Posted",
+  "audience": "everyone",
+  "post_date": "2026-08-15T12:00:00.000Z",
+  "canonical_url": "https://elsewhere.invalid/p/cross-posted",
+  "type": "newsletter"
+ },
+ {
+  "id": 172896,
+  "slug": "already-held",
+  "title": "Already Held",
+  "audience": "everyone",
+  "post_date": "2026-08-10T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/already-held",
+  "type": "newsletter"
+ },
+ {
+  "id": 386520,
+  "slug": "ancient-history",
+  "title": "Ancient History",
+  "audience": "everyone",
+  "post_date": "2024-01-01T12:00:00.000Z",
+  "canonical_url": "https://example-newsletter.invalid/p/ancient-history",
+  "type": "newsletter"
+ }
+]

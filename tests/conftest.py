@@ -68,7 +68,10 @@ def env(tmp_path_factory, ops) -> dict:
     mp.parent.mkdir(parents=True)
     mp.symlink_to(ROOT, target_is_directory=True)
     e = dict(os.environ)
-    e.pop("LLM_WIKI_OPS_DIRNAME", None)
+    # A suite started from inside a wiki session must not act on THAT wiki:
+    # these are what bind one ambiently, ahead of the `cwd=` a `run` case uses.
+    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS_DISPATCHED"):
+        e.pop(ambient, None)
     e.update(
         LLM_WIKI_PACKAGES_HOME=str(home),
         LLM_WIKI_PACKAGES_OFFLINE="1",
@@ -81,9 +84,16 @@ def env(tmp_path_factory, ops) -> dict:
     return e
 
 
-def run(ops: list, env: dict, *args) -> Result:
-    cp = subprocess.run([*ops, *args], env=env, capture_output=True, text=True, check=False)
+def run(ops: list, env: dict, *args, cwd=None) -> Result:
+    cp = subprocess.run([*ops, *args], env=env, cwd=cwd, capture_output=True, text=True, check=False)
     return Result(cp.returncode, cp.stdout, cp.stderr)
+
+
+def at(wiki: Path) -> str:
+    """The CLI is root-bound — no verb takes a wiki positional. `wiki=<path>`
+    is the token every verb accepts anywhere among its own; a `run` child owns
+    its whole argv, so that one verb binds by `cwd=` instead."""
+    return f"wiki={wiki}"
 
 
 @pytest.fixture(scope="session")
@@ -91,6 +101,73 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     """One `init`ed wiki for the session — installs accumulate in it, which
     is what a real wiki does."""
     w = tmp_path_factory.mktemp("wiki") / "w"
-    r = run(ops, env, "init", str(w), "--preset", "general", "--commit")
+    r = run(ops, env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
     assert r.returncode == 0, r.stderr
     return w
+
+
+@pytest.fixture(scope="session")
+def tactics_group(ops, env) -> None:
+    """Skips unless the CLI at hand has a `tactics` group. Asked of the CLI
+    rather than assumed, so the cases run again the day it is ported."""
+    if run(ops, env, "tactics", "--help").returncode != 0:
+        pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")
+
+
+def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
+    """The unit, installed and enabled in the session wiki — by whichever case
+    gets there first. Both verbs are no-ops over an identical copy, so a case
+    that needs the unit asks for it rather than leaning on another having run
+    (`-k`, `--lf`, a shuffled or split run)."""
+    for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
+        r = run(ops, env, "--json", *verb, at(wiki))
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+@dataclass
+class Job:
+    slug: str
+    dest: str
+    record: dict
+
+
+def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
+    """A real job for `unit` in the session wiki, declared the way INSTALL.md
+    says to — `pipeline extract` reads the job a capture belongs to, so a
+    capture with no job behind it is refused. Idempotent for one
+    (slug, target) pair; a wiki holds ONE job per target and a slug names one
+    source for good, so a case wanting a job of its own passes both."""
+    enabled(ops, env, wiki, unit)
+    slug = slug or f"port-{unit}"
+    r = run(ops, env, "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, at(wiki))
+    assert r.returncode == 0, r.stdout + r.stderr
+    record = run(ops, env, "--json", "pipeline", "show", slug, at(wiki)).data["job"]
+    return Job(slug, record["dest"], record)
+
+
+def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) -> Path:
+    """A capture directory holding the `ticket.json` a download worker is
+    started beside — every key `pipeline/dispatch.py` writes, the job's own
+    sections riding along. Returns the directory; `leaf` is `<page>--<hash8>`
+    for an item with an address, `<YYYY-MM-DD>` for a channel's pull."""
+    rel = f"_raw/{job.slug}/{leaf}"
+    directory = wiki / rel
+    directory.mkdir(parents=True, exist_ok=True)
+    ticket = {
+        "v": 1, "ticket": "0123456789ab", "unit": unit, "slug": job.slug, "item": item, "target": item,
+        "capture_dir": rel, "dest": None, "hosts": [], "harvest": job.record["harvest"],
+        "options": job.record.get("options") or {}, "credential": None, "min_date": None, "known": [],
+    }
+    ticket.update(over)
+    (directory / "ticket.json").write_text(json.dumps(ticket, indent=1), encoding="utf-8")
+    return directory
+
+
+def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
+    """The REAL extractor over one capture — the pages it wrote, as paths. The
+    whole point of a unit's harvest is that this works on what it left."""
+    r = run(ops, env, "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)), at(wiki))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.data["pages"] or r.data["ledgers"], r.data
+    return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]
+

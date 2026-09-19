@@ -5,8 +5,14 @@
 """Recursively enumerate a Frame.io share's folder tree into a flat asset manifest.
 
 platform: frameio
-scope: platform-general (any next.frame.io/share/<share-id>[/<asset-id>]
-link). No hardcoded share ids.
+scope: platform-general (any `<host>/share/<share-id>[/<asset-id>]` link —
+`next.frame.io` is the one seen so far). No hardcoded share ids, and no
+hardcoded host: folder and leaf URLs are built on the ORIGIN of the URL that
+was given. A slice's egress is the manifest's `*.frame.io` plus the ticket's
+own target host, so the target's host is the one host certain to be granted;
+building on a fixed `next.frame.io` sent a share served from anywhere else to
+a host its slice could not reach, and gave its leaves a host `harvest.scope`
+then judged against the wrong one.
 
 Frame.io's guest share viewer is a React SPA, but folder/asset navigation is
 plain client-side routing keyed by data-asset-id: every listing row is a
@@ -22,17 +28,30 @@ Outputs a JSON manifest to stdout (or --out):
   "folders_visited": N, "leaf_count": N,
   "leaves": [
     {"asset_id": "...", "name": "<file name from the card text>",
-     "path": ["Top Folder", "Subfolder"],
+     "path": ["Top Folder", "Subfolder"],   # folders walked INTO, below the
+                                            # given URL; [] for a leaf listed
+                                            # at it. Never the share's own
+                                            # name — that is `root_title`.
      "view_url": "https://next.frame.io/share/<share>/view/<id>"}
   ]
 }
 
+Leaves come out in folder-walk order, which is stable for an unchanged
+share. `harvest_share.py` captures them in that order and resumes a share too
+large for one slice from the ticket's `known[]`, so the order is part of the
+contract: do not sort or shuffle it.
+
 Usage:
-  uv run enumerate_tree.py <share-url> [--out tree.json]
+  uv run enumerate_tree.py <share-url> [--out <capture_dir>/tree.json]
 
 History:
   2026-07-14  created — first Frame.io share harvest.
   2026-07-29  packaged into the channel-frameio skill unit.
+  2026-09-19  docstring only — ported with the unit to the ticket contract:
+              the manifest is written into the ticket's capture dir and read
+              by `harvest_share.py`, which captures the leaves itself.
+  2026-09-19  URLs are built on the given URL's own origin, not a hardcoded
+              `next.frame.io`; an http(s) URL is required.
 """
 
 import argparse
@@ -48,10 +67,23 @@ def share_id_of(url: str) -> str:
     return m.group(1)
 
 
+def origin_of(url: str) -> str:
+    """`https://<host>` of the URL that was given — what every folder and leaf
+    URL of the walk is built on."""
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise SystemExit(f"error: not an http(s) URL: {url}")
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 def domain_of(url: str) -> str:
     host = urlparse(url).netloc
     return host[4:] if host.startswith("www.") else host
 
+
+#: A card's `data-asset-id` is venue text that becomes part of a URL (a uuid
+#: on every share seen). Anything else is left out of the walk, never spliced in.
+ASSET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _BADGE_RE = re.compile(
     r"^(pg\.\s*\d+|\d{1,2}:\d{2}(:\d{2})?|Contains HTML|Interactive|"
@@ -91,6 +123,7 @@ def main() -> int:
     args = ap.parse_args()
 
     share_id = share_id_of(args.url)
+    origin = origin_of(args.url)
     leaves = []
     visited = set()
 
@@ -122,9 +155,11 @@ def main() -> int:
             if root_title is None:
                 root_title = page.title()
             for c in cards:
+                if not isinstance(c.get("id"), str) or not ASSET_ID_RE.match(c["id"]):
+                    continue
                 name = card_name(c["text"], c["isFolder"])
                 if c["isFolder"]:
-                    child_url = f"https://next.frame.io/share/{share_id}/{c['id']}"
+                    child_url = f"{origin}/share/{share_id}/{c['id']}"
                     walk(child_url, path + [name])
                 else:
                     leaves.append(
@@ -132,7 +167,7 @@ def main() -> int:
                             "asset_id": c["id"],
                             "name": name,
                             "path": path,
-                            "view_url": f"https://next.frame.io/share/{share_id}/view/{c['id']}",
+                            "view_url": f"{origin}/share/{share_id}/view/{c['id']}",
                         }
                     )
 

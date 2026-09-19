@@ -20,18 +20,25 @@ enough for the relevant request to fire, then:
   - document: streams the proxy URL down with httpx (same signed-CDN pattern
     as the video asset's low-res proxy — no auth needed beyond the URL itself)
 
-Does not write capture.json or handle stage-2 handoff — the caller wraps this
-per-item with metadata (path, tags, watch_id) into the pipeline's job/capture
-schema (capture_job.py does exactly that).
+Does not write `capture.json` — `capture_job.py` wraps this per leaf and names
+the file downloaded here as the capture's body. Rendering a page is the unit's
+PROCESS step's, over these bytes.
 
 Usage:
-  uv run capture_asset.py <view-url> --out <dir> --name <asset-name>
-         [--timeout-ms 20000]
+  uv run capture_asset.py <view-url> --out=<dir> --name=<asset-name>
+         [--timeout-ms 20000] [--deadline-seconds N]
+
+`--name=<v>`, never `--name <v>`: the name is venue text, and one that starts
+with `-` is an option to argparse when it rides as its own item.
+`--deadline-seconds` bounds the DOWNLOAD (yt-dlp, or the document stream),
+which is the only open-ended step here; past it the download is killed and
+this exits 3 with `timeout` in stderr.
 
 Outputs into <dir>/:
   - video.mp4   (video assets)
   - document.<ext>  (document assets; the original filename is recorded in
-                     meta.json's "name" — the note builder restores it)
+                     meta.json's "name", which the process step's page body
+                     names)
   - meta.json   title, final_url, kind, resolved asset URL, bytes
 
 Exit 0 on success, 2 if no video/doc URL was ever observed (page didn't
@@ -42,17 +49,23 @@ History:
   2026-07-14  created — first Frame.io share harvest.
   2026-07-29  packaged into the channel-frameio skill unit.
   2026-08-18  the document extension falls back to the proxy URL's own
-              `_proxy.<ext>` when no --name is passed: the per-job
-              capture path has only the job's URL, and every document
-              landed as `document.bin` without it.
+              `_proxy.<ext>` when no --name is passed: a capture with
+              only a URL landed every document as `document.bin` without it.
+  2026-09-19  docstrings only — ported with the unit to the ticket contract;
+              the capture itself is unchanged.
+  2026-09-19  the download has a deadline (`--deadline-seconds`): yt-dlp ran
+              open-ended, and one long video could outlive the slice's kill
+              and take the ticket's report with it.
 """
 
 import argparse
 import json
 import re
-import subprocess
 import sys
+import time
 from pathlib import Path
+
+from capture_record import TIMED_OUT, run
 
 HLS_MASTER_RE = re.compile(r"sahls\.frame\.io/encode-hls/[^\"'\s]+/main\.m3u8")
 DOC_PROXY_RE = re.compile(r"assets\.frame\.io/\w+/[^\"'\s]+_proxy\.\w+\?[^\"'\s]+")
@@ -64,9 +77,9 @@ def document_ext(name, doc_url):
 
     `--name` wins where it is passed: it is the asset's ORIGINAL filename,
     off the share's leaf manifest, and the proxy route names only whatever
-    Frame.io converted the asset to. But a dispatched leaf job carries a URL
-    and nothing else, so on the per-job capture path there is no name
-    — and the signed conversion route spells the extension itself
+    Frame.io converted the asset to. But a ticket whose target is itself a
+    leaf viewer has a URL and no manifest, so there is no name — and the
+    signed conversion route spells the extension itself
     (`.../<kind>_proxy.<ext>?<signature>`). Without that fallback every
     document on that path landed as `document.bin`.
     """
@@ -85,7 +98,15 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="Output capture dir")
     ap.add_argument("--name", default=None, help="Human/original file name (for doc extension + logging)")
     ap.add_argument("--timeout-ms", type=int, default=20000)
+    ap.add_argument("--deadline-seconds", type=float, default=None, help="kill the download after this long (default: none)")
     args = ap.parse_args()
+    began = time.monotonic()
+
+    def left():
+        """Seconds of the deadline still unspent, or None with no deadline."""
+        if args.deadline_seconds is None:
+            return None
+        return max(1.0, args.deadline_seconds - (time.monotonic() - began))
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -110,25 +131,30 @@ def main() -> int:
 
     if hls:
         dest = out / "video.mp4"
-        r = subprocess.run(
-            ["yt-dlp", "--no-warnings", "-o", str(dest), hls],
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode != 0 or not dest.exists():
-            print(r.stdout, file=sys.stderr)
-            print(r.stderr, file=sys.stderr)
+        # `run` kills yt-dlp AND the ffmpeg it may have started when the
+        # deadline passes; the `.part` it leaves is what a retry resumes.
+        rc, ytout, yterr = run(["yt-dlp", "--no-warnings", "-o", str(dest), hls], timeout=left())
+        if rc != 0 or not dest.exists():
+            print(ytout, file=sys.stderr)
+            print(yterr, file=sys.stderr)
+            if rc == TIMED_OUT:
+                print("timeout: the video download outlived its deadline", file=sys.stderr)
             return 3
         kind, resolved, size = "video", hls, dest.stat().st_size
     elif doc:
         dest = out / f"document.{document_ext(args.name, doc)}"
         try:
+            # httpx's timeout is per read, not for the whole stream: a body
+            # that drips never trips it, so the deadline is checked per chunk.
             with httpx.stream("GET", doc, timeout=60.0, follow_redirects=True) as resp:
                 resp.raise_for_status()
                 with open(dest, "wb") as f:
                     for chunk in resp.iter_bytes():
                         f.write(chunk)
+                        if args.deadline_seconds is not None and time.monotonic() - began > args.deadline_seconds:
+                            raise TimeoutError("timeout: the document download outlived its deadline")
         except Exception as e:
+            dest.unlink(missing_ok=True)
             print(f"document download failed: {e}", file=sys.stderr)
             return 3
         kind, resolved, size = "document", doc, dest.stat().st_size

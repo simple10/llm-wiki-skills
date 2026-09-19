@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><title>Fixture Lesson</title></head>
+<body>
+<main>
+<h1>Lesson Title</h1>
+<p>Intro paragraph before the video. This section sets up the lesson objectives so the video that follows makes sense in context.</p>
+<video controls><source src="blob:https://x/abc"><track kind="captions" srclang="en" src="blob:https://x/cap"></video>
+<p>Text between the video and an audio clip. This paragraph gives the reader some narrative continuity before the next media element begins.</p>
+<audio controls src="https://cdn.example.com/clip.mp3"></audio>
+<p>Now an embedded player. The player below embeds a short recap using a hosted video service rather than a native tag.</p>
+<iframe src="https://player.vimeo.com/video/12345"></iframe>
+<p>And an unrelated widget iframe that must be dropped. It is not player media and should never produce a placeholder token.</p>
+<iframe src="https://ads.example.com/banner"></iframe>
+<p>Closing paragraph. This wraps up the fixture content used to validate positional media placeholders end to end.</p>
+</main>
+</body></html>

@@ -15,15 +15,16 @@
       "*.circle.so",
       "circle.so"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
     "harvest",
     "process"
   ],
+  "usage": "/channel-circle ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "circle",
-  "version": "1.7.1",
+  "version": "1.9.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -33,6 +34,6 @@
       }
     },
     "dest": "sources/courses/{slug}",
-    "note": "The URL must be the space ROOT (/c/<slug>): scope `section` is a prefix test, so a lesson URL rejects every sibling lesson as out_of_scope while the run still exits 0."
+    "note": "The URL must be the space ROOT (/c/<slug>): `harvest.scope: section` means under the job's own url, so from a lesson URL every sibling lesson is outside it."
   }
 }

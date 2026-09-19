@@ -12,17 +12,19 @@
     "credential": false,
     "network": [
       "*.substack.com",
-      "substack.com"
+      "substack.com",
+      "substackcdn.com"
     ],
-    "ops": ">=1.62"
+    "ops": ">=1.88"
   },
   "stages": [
     "harvest",
     "process"
   ],
+  "usage": "/channel-substack ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "substack",
-  "version": "1.9.3",
+  "version": "1.11.0",
   "watch": {
     "defaults": {
       "every": "1d",

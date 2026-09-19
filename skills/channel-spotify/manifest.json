@@ -16,16 +16,20 @@
     "network": [
       "*.spotify.com",
       "spotify.com",
+      "*.scdn.co",
+      "*.spotifycdn.com",
       "itunes.apple.com"
     ],
-    "ops": ">=1.2"
+    "ops": ">=1.88"
   },
   "stages": [
-    "harvest"
+    "harvest",
+    "process"
   ],
+  "usage": "/channel-spotify ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "spotify",
-  "version": "1.7.4",
+  "version": "1.9.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -39,6 +43,6 @@
       }
     },
     "dest": "sources/podcasts/{slug}",
-    "note": "One watch per entity URL (playlist/show/episode/album/audiobook) — scope page; enumeration happens inside the capture via the API, not by link discovery. API credentials (the `spotify` credential, per machine) are needed for complete item lists and for search; keyless capture degrades to a possibly-truncated list. Audio downloads only when the show publishes an open RSS feed; Spotify-exclusive/music/audiobook audio is captured as DRM references, never ripped. A non-URL request (\"add episode 400 of X\") resolves via scripts/spotify.py search first. Confined harvest reaches metadata and the RSS lookup; media download needs a host the unit cannot declare (the creator's own feed and enclosure hosts, different per show)."
+    "note": "One watch per entity URL (playlist/show/episode/album/audiobook) \u2014 scope page; enumeration happens inside the capture via the API, not by link discovery. API credentials (the `spotify` credential, per machine) are needed for complete item lists and for search; keyless capture degrades to a possibly-truncated list. Audio downloads only when the show publishes an open RSS feed; Spotify-exclusive/music/audiobook audio is captured as DRM references, never ripped. A non-URL request (\"add episode 400 of X\") resolves via scripts/spotify.py search first. Confined harvest reaches metadata and the RSS lookup; media download needs a host the unit cannot declare (the creator's own feed and enclosure hosts, different per show)."
   }
 }

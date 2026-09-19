@@ -2,7 +2,7 @@
 
 ## Customizing this unit
 
-Install this package's `writing-skills` first — `llm-wiki-ops skills install writing-skills --repo simple10/llm-wiki-skills` (an "already installed" refusal is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
+Install this package's `writing-skills` first — `llm-wiki-ops skills install simple10/llm-wiki-skills@writing-skills` (over an unedited copy this just refreshes it; a refusal means this wiki customized its copy, which is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
 
 Customize the wiki's copy now, while the operator is present:
 
@@ -10,18 +10,31 @@ Customize the wiki's copy now, while the operator is present:
    installed SKILL.md under a "Watched shares" heading. Ask for a slug and a
    content-named destination for each — share-link domains carry no source
    identity, so a mechanically-derived one would be opaque
-   (`--slug <content-name> --dest sources/scrapes/<content-name>`).
+   (`slug=<content-name> dest=sources/scrapes/<content-name>`).
 2. Ask whether asset titles carry a share-wide suffix worth trimming — that
-   becomes `--title-strip` on the doc-note step; record the chosen value in
-   the installed SKILL.md.
-3. Check `yt-dlp` is on PATH on the harvesting machine (video capture
-   depends on it); tell the operator if it is missing.
+   becomes `--title-strip` on the capture step (`harvest_share.py`, which
+   hands it to every leaf, and each leaf records it for the process step);
+   record the chosen value in the installed
+   SKILL.md. The share's author, group and tags go on the JOB, not in this
+   file — `meta.author=`, `meta.group=`, `meta.group_type=`, `meta.tags=`,
+   `meta.areas=` on the `pipeline add` in step 5 — and the host stamps them
+   onto every page the job lands.
+3. Check `yt-dlp` and a real Chrome are on the harvesting machine, and that
+   the worker there can launch them — both are the harvest step's, and a
+   confined worker that cannot reach the browser captures nothing; tell the
+   operator if either is missing. The process step needs neither: it reads the
+   bytes harvest left and writes the page.
 4. No auth walkthrough: guest share links authorize themselves.
-5. Point the watch at the skill — **scope MUST be `domain`**, because the
-   host's intake applies the watch's scope prefix to every leaf this unit
-   discovers: `page` rejects all of them as out_of_scope while the run
-   still exits 0, and `section` rejects them too whenever the watch URL is
-   a FOLDER inside the share rather than its root:
-   `llm-wiki-ops watch add --slug <content-name> --description "<what this is>"
-   --url <share-url> --skill channel-frameio
-   --scope domain --mode once --dest sources/scrapes/<content-name>`
+5. Declare the job, naming the skill. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-frameio`, which the
+   operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
+   defaults off the enabled copy, and answers `dest required` without it.
+   `llm-wiki-ops pipeline add <share-url> slug=<content-name>
+   description="<what this is>" skill=channel-frameio
+   dest=sources/scrapes/<content-name>` — the unit's manifest supplies
+   `every=once` and `harvest.scope=domain`. **Scope MUST stay `domain`**: a
+   share's leaves sit under the share host, not under the watched URL, so
+   `page` and (for a FOLDER inside the share) `section` both exclude them.
+   Name `dest` for the content now: moving it later means re-running this
+   `add` with a new `dest=`, since `pipeline edit` refuses that key. `dest`
+   is also the one directory the unit's process step writes: it is handed to
+   the page builder verbatim, off each process ticket.

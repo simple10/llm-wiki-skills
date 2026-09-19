@@ -35,8 +35,8 @@ jobs:
           git config --global user.email "ci@users.noreply.github.com"
       # The ops CLI comes from llm-wiki-plugins, which is not public, and it
       # must run FROM that checkout: the wheel alone has no plugin tree —
-      # `scripts/` and `references/` live beside the package, and `watch add`
-      # refuses without them ("no ops plugin found"). The secret is a
+      # `scripts/` and `skills/` live beside the package, and `run` serves
+      # a unit's plugin-side scripts out of them. The secret is a
       # fine-grained token with Contents: read on that repo and nothing
       # else. It reaches git's URL rewrite only — never a package spec, a
       # command line, or anything uv could echo back in an error. Without
@@ -45,8 +45,9 @@ jobs:
       #
       # `LLM_WIKI_OPS` is the command the harness runs (conftest); a `uv run
       # --project` against the checkout, the same shape a developer's proof
-      # run uses. `LLM_WIKI_OPS_PLUGIN_SCRIPTS` lets the youtube-note cases
-      # that need the plugin's `format_transcript.py` run instead of skip.
+      # run uses. `LLM_WIKI_OPS_PLUGIN` is the plugin's root: the
+      # youtube-note cases look under it for `format_transcript.py`, at the
+      # address the unit itself runs, and FAIL if it is not there.
       - name: Check out llm-wiki-plugins and resolve the ops CLI
         env:
           LLM_WIKI_OPS_INSTALL: ${{ secrets.LLM_WIKI_OPS_INSTALL }}
@@ -57,11 +58,24 @@ jobs:
           fi
           git config --global url."https://x-access-token:${LLM_WIKI_OPS_INSTALL}@github.com/".insteadOf "https://github.com/"
           plugins="$RUNNER_TEMP/llm-wiki-plugins"
+          # `main`, unpinned, on purpose: the docs and the harness are checked
+          # against the CLI as it IS, so a verb or flag the plugins change turns
+          # this repo red the day it lands rather than the day someone installs.
           git clone --quiet --depth 1 --branch main https://github.com/simple10/llm-wiki-plugins "$plugins"
           project="$plugins/llm-wiki-ops/v1/plugin/packages/llm-wiki-ops-v1"
           uv run --project "$project" llm-wiki-ops-v1 --version
           echo "LLM_WIKI_OPS=uv run --project $project llm-wiki-ops-v1" >> "$GITHUB_ENV"
-          echo "LLM_WIKI_OPS_PLUGIN_SCRIPTS=$plugins/llm-wiki-ops/v1/plugin/scripts" >> "$GITHUB_ENV"
+          echo "LLM_WIKI_OPS_PLUGIN=$plugins/llm-wiki-ops/v1/plugin" >> "$GITHUB_ENV"
+      # Some cases run a unit script the way production does — `uv run --script`, OFFLINE, so a
+      # test can never reach a venue — and skip, saying so, when its PEP 723 dependencies are
+      # not in uv's cache. A fresh runner's cache is empty: resolve them once here, online, so
+      # those cases RUN in CI rather than skip. `-h` imports nothing heavy and touches no venue.
+      - name: Warm the unit scripts' dependencies
+        run: |
+          for script in skills/*/scripts/*.py; do
+            grep -q '^# /// script' "$script" || continue
+            uv run --quiet --script "$script" -h > /dev/null 2>&1 || echo "::warning::could not warm $script"
+          done
       - name: Check the manifest
         run: python3 scripts/check-manifest.py
       # `-rs`: every skip prints its reason, so a harness that skipped its

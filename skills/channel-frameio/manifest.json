@@ -15,15 +15,16 @@
       "*.frame.io",
       "frame.io"
     ],
-    "ops": ">=1.62"
+    "ops": ">=1.88"
   },
   "stages": [
     "harvest",
     "process"
   ],
+  "usage": "/channel-frameio ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "frameio",
-  "version": "1.14.4",
+  "version": "1.16.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -32,6 +33,6 @@
       }
     },
     "dest": "sources/courses/{slug}",
-    "note": "`harvest.scope: domain` is MANDATORY: the host's intake applies the watch's scope prefix to every leaf this unit discovers, `page` rejects all of them while the run still exits 0, and `section` rejects them too whenever the watch URL is a folder inside the share rather than its root."
+    "note": "`harvest.scope: domain` is MANDATORY: a share's leaves sit under the share host, not under the job's url, so `page` excludes all of them, and `section` does too whenever the url is a folder inside the share rather than its root."
   }
 }

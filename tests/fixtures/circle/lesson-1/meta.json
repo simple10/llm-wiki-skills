@@ -1,0 +1,42 @@
+{
+  "url": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+  "final_url": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+  "title": "Getting the Frame Right | Example Community",
+  "canonical": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+  "domain": "community.example.invalid",
+  "html_bytes": 0,
+  "stream_requests": [],
+  "discovered_lesson_links": [
+    {
+      "href": "https://community.example.invalid/c/course-one/sections/111",
+      "text": "Section One"
+    },
+    {
+      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+      "text": "Getting the Frame Right\n\n04:07"
+    },
+    {
+      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2002#comments",
+      "text": "Reading the Room\n\n12:30"
+    },
+    {
+      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+      "text": "Getting the Frame Right\n\n04:07"
+    },
+    {
+      "href": "https://community.example.invalid/c/course-two/sections/900/lessons/9001",
+      "text": "A Lesson In Another Space\n\n01:00"
+    },
+    {
+      "href": "https://elsewhere.example.invalid/c/course-one/sections/1/lessons/1",
+      "text": "Off-host"
+    }
+  ],
+  "captions": [
+    {
+      "lang": "en",
+      "label": "English",
+      "file": "captions/en.vtt"
+    }
+  ]
+}

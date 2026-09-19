@@ -3,118 +3,120 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Enumerate a Substack newsletter's post archive via its JSON API.
+"""Plan one ticket's captures: walk a Substack archive and name every leaf.
 
 platform: substack
 scope: platform-general (no hardcoded domain/slugs)
 
-Paginates `GET /api/v1/archive?sort=new&offset=<n>&limit=<n>` newest-first
-for a given Substack domain, applies `--min-date` (stop paginating once a
-page's posts fall below the floor — the API is newest-first, so once we're
-below the floor everything older is too) and `--access` (free → only
-`audience: everyone` posts are queued; paid-tier posts are counted in the
-summary, never fetched), then EMITS the surviving URLs for the
-worker to put in its report's `discovered` array. It queues nothing itself.
+ONE ticket captures the whole archive. Nothing fans a listing out into child
+jobs any more, and nothing filters for this script after it: the worker's
+report lists every post it captured, and `pipeline apply` mints one process
+ticket per capture directory. So this script is where the job's own rules are
+applied, all of them, before a single post page is fetched.
 
-A confined worker has no ledger and no
-queue, so discovery is reported and the HOST applies it — which is also
-what gets the `parent` checked against the jobs it dispatched and the
-`watch_id` (the watch's slug) against that job's own. The queued jobs still
-inherit scope, filters, tags, areas and assets mode from the watch entry;
-intake still does the denylist, exclude, scope-prefix and seen-ledger work.
-None of that moved — only who calls it.
+It paginates `GET /api/v1/archive?sort=new&offset=<n>&limit=<n>` newest-first
+and keeps a post only if it passes, in this order:
 
-Three things changed shape when the intake call left, and each is a fact a
-caller used to get here and now gets one step later:
+- `min_date`       the ticket's floor (`now - harvest.max_age`). The API is
+                   newest-first, so the first post below the floor ends the walk.
+- `--max-date`     a hand-run ceiling, inclusive. Not how a run resumes — see below.
+- `harvest.scope`  applied HERE, against the ticket's `target`:
+                   `domain`  the post is on the target's host (`www.` ignored);
+                   `section` same host, and under the target's path;
+                   `page`    the post IS the target.
+                   Posts live at `/p/<slug>`, never under `/archive`, so on an
+                   archive target only `domain` keeps anything — the unit's
+                   manifest defaults to it, and a walk that scope emptied says
+                   so on stderr and in `summary.skipped_by_scope`.
+- `harvest.exclude_urls`  THIS UNIT'S READING — the host defines no matching
+                   rule for this list. An entry drops a post whose URL it
+                   equals (a trailing `/` aside); or that it is a PATH PREFIX
+                   of, ending on a segment boundary (`…/p/a` drops `…/p/a/x`
+                   and `…/p/a?x=1`, never `…/p/ab`); or, when it carries a
+                   `*`, that it matches as a glob over the whole URL. `*` is
+                   the only wildcard: `?` and `[` are URL characters here.
+- `harvest.access` `free` keeps only `audience: everyone`. Paid-tier posts are
+                   counted, never fetched. `licensed` keeps every tier.
+- `known[]`        a post whose URL is the `resource` of a page this job
+                   already holds is skipped — matched EXACTLY, because that
+                   string is the key the page carries.
 
-- **The intake-side counts are gone.** `queued`, `intake_skipped` and
-  `intake_reasons` were intake's own answers, summed over one call per
-  archive page. `harvest_apply.py apply` takes ONE discovered row per parent
-  job, so the per-page batching collapses into a single emission and those
-  answers do not exist until the host applies it. They come back in
-  `apply`'s output, per row.
-- **A `scope: page` watch is no longer visible here.** It used to show up as
-  `queued: 0` with `intake_reasons` full of `out_of_scope`. That signal now
-  appears in `apply`'s `reasons` — check it there, and see the SKILL.md.
-- **The emission is bounded.** The report refuses whole past the host's
-  `max_discovered_urls` ceiling (across every row — the assignment's
-  `limits` carries it, and `--max-urls` is how it reaches this script), and a
-  refused report sends every job in the slice back to `pending/`. So this
-  stops paginating at `--max-urls` and names `resume_max_date`, the ceiling
-  to resume AT, rather than handing the worker a payload that poisons the
-  whole slice.
-  The default leaves no headroom for a sibling row on purpose: one archive
-  walk is the only discoverer in its own slice, and a caller that knows
-  otherwise lowers it.
+Each survivor becomes a leaf: `{"item", "dir", "title", "published",
+"audience", "on_disk"}`. `dir` is the leaf's capture directory,
+`_raw/<slug>/<page-slug>--<hash8>`: the URL's path folded to a slug (lowercase,
+non-alphanumeric runs to one hyphen, 60 chars) and the first 8 hex of
+sha1(item URL). That is the host's own shape for an addressed item
+(`pipeline/jobs.py::capture_dir_for`), which has no verb to ask — so it is
+composed here, and `apply` accepts exactly `_raw/<slug>/<one-component>`.
 
-**Resuming is `--max-date`, not `--min-date`.** The walk always starts at
-`offset=0` and runs newest-first, so `--min-date` only decides where it
-STOPS — lowering it re-emits the same first `--max-urls` posts and makes no
-progress at all (measured). `--max-date` is what moves the start: it skips
-everything newer, so a truncated walk continues with
-`--max-date <summary.resume_max_date>`. It is INCLUSIVE, deliberately —
-several posts can share one date, and re-emitting a boundary post costs a
-slot that intake's seen-ledger then dedupes, while excluding it would drop
-a post silently.
+**Resuming is `known[]`, not a date.** A slice is killed at thirty minutes and
+a killed slice leaves no report, so the plan is bounded (`--max-leaves`) and
+`capture_posts.py` stops at a deadline; the report says `partial`. The next
+ticket's `known[]` carries what was extracted since, this walk skips it, and
+the cap is spent only on posts still to capture — so a bounded walk always
+advances. A leaf whose directory already holds a complete capture (a slice
+that died after capturing it but before reporting) is planned with
+`on_disk: true`: nothing re-fetches it, the report lists it again, and it
+does not count against `--max-leaves`.
 
-**It stalls if `--max-urls` or more posts share the boundary date**: the
-whole emission is then one date, the ceiling cannot move below itself, and
-the next pass returns the same set. `summary.stalled` says so and stderr
-names the fix — raise `--max-urls` above the number of posts sharing that
-date. Unreachable at the default 2000 for a human-written newsletter, and
-measured: 1/day and 10/day walk 300 of 300 at cap 50, 60/day at cap 50
-stalls on pass 2.
+Two tickets are not an archive walk, and both plan ONE leaf into the ticket's
+own `capture_dir`, with no API call:
 
-Inputs: either a domain (example.substack.com) or a full archive URL —
-either is accepted, the domain is extracted automatically. No wiki root:
-this script no longer touches the wiki at all, which is the property that
-lets it run confined.
+- a **refresh** ticket (`refresh: true`) — the leaf is its `resource` (else its
+  `item`), exactly that, and `known[]` is not consulted, since re-fetching a
+  known page is the job;
+- a ticket whose `target` is itself a post (`/p/<slug>`).
 
-Outputs: one JSON object on stdout, `{"discovered": {...}, "summary": {...}}`.
-`discovered` is the report row VERBATIM — copy it into the report's
-`discovered` array, do not rebuild it. `summary` is this script's own
-accounting: {"total_posts", "by_audience", "skipped_paywalled",
-"skipped_newer", "stopped_at_min_date", "emitted", "truncated",
-"stalled", "resume_max_date"}.
-Paywalled posts are summary counts, not URLs — to pick them up after
-subscribing, re-run with --access licensed.
+That directory is STABLE across pulls, and the extractor writes into it too.
+So for such a plan the old `page.html`, `leaf.json`, `capture.json` and
+`results.json` are removed here, before anything is fetched: a refresh that
+found yesterday's `page.html` would never fetch, and `apply` would stamp the
+page `unchanged` on bytes nobody re-read. And on EVERY ticket the first thing
+this does is remove a stale `report.json` — `apply` does not check whose
+report it reads, so a respawn must not be read as a success it did not have.
 
-History:
-- 2026-07-09: initial version; same-day pagination fix — `offset=0`
-  silently caps the response at 23 items even when `limit` asks for more,
-  so advance the offset by the actual page length returned and stop only on
-  a truly empty page.
-- 2026-07-28: ported into the channel-substack skill unit. Intake handoff
-  rewritten to the watch-inherited contract (per-URL, with `--watch-id`/
-  `--parent`); the enumerator no longer passes scope/filters/tags itself.
-- 2026-07-31: intake handoff batched per archive page on the
-  `--discovered` contract (`--discovered-from -`, URLs on stdin); the
-  summary's `queued` comes from intake's parsed response (it previously
-  counted attempts without reading intake's stdout, even on failure), and
-  `--dry-run` passes intake's own `--dry-run` through so the counts stay
-  real while nothing is written.
-- 2026-08-18: moved onto the host-owned report seam. Queues nothing
-  and shells nothing: emits one `discovered` row for the worker's report
-  and the host applies it. `<root>`, `--intake` and `--dry-run` are gone
-  (it touches no wiki and writes nothing, so there is no run to dry); the
-  three intake-side summary counts went with them; `--parent` is now
-  required, since the host refuses a row it cannot match to a dispatched
-  job; `--max-urls` bounds the emission under the host's own ceiling.
-- 2026-08-20: `--watch-id` -> `--slug`: the watch is identified by its
-  slug now, not an opaque id, and a unit reads its job's `slug` field.
-  The `discovered` row's own `watch_id` key is UNCHANGED —
-  the report half keeps its field names and now carries the slug in it.
+`--capture-dir` is REQUIRED and is the ticket's `capture_dir` VERBATIM —
+wiki-relative, because `llm-wiki-ops run` starts a script at the WIKI ROOT,
+not in the directory the worker stands in. Inputs come from `ticket.json` in
+it. Every other flag is an override for a hand run; with no `ticket.json` give
+the domain or archive URL positionally, and `--slug`. A relative `--out` is
+resolved INSIDE the capture directory, never against the wiki root.
+
+Output: one JSON object on stdout, `{"v", "ticket", "slug", "newsletter",
+"capture_dir", "refresh", "leaves": [...], "summary": {...}}`, and — when
+there is a `ticket.json`, or `--out` names a file — the same object written as
+`leaves.json`, which `capture_posts.py` and `write_report.py` read. `summary`:
+{"total_posts", "by_audience", "skipped_paywalled", "skipped_known",
+"skipped_excluded", "skipped_by_scope", "skipped_newer",
+"stopped_at_min_date", "planned", "on_disk", "truncated", "fetch_failed"}.
 """
 
 import argparse
+import fnmatch
+import hashlib
 import json
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit
 
 USER_AGENT = "Mozilla/5.0 (compatible; llm-wiki-harvest/1.0)"
+
+TICKET_NAME = "ticket.json"
+PLAN_NAME = "leaves.json"
+CAPTURE_NAME = "capture.json"
+REPORT_NAME = "report.json"
+# What one leaf's capture is made of. Cleared from the ticket's own directory
+# when the plan is that one leaf: see "STABLE across pulls" above.
+OWN_LEAF_FILES = ("page.html", "leaf.json", CAPTURE_NAME, "results.json")
+RAW_DIRNAME = "_raw"
+SCOPES = ("page", "section", "domain")
+
+_NON_SLUG = re.compile(r"[^a-z0-9]+")
+_POST_PATH = re.compile(r"^/p/[^/]+/?$")
 
 
 def domain_from_arg(arg):
@@ -139,95 +141,263 @@ def post_url(domain, post):
     return f"https://{domain}/p/{post.get('slug')}"
 
 
-
 def parse_date(s):
     # post_date is ISO 8601, e.g. "2026-07-08T12:00:00.000Z"
     return s[:10]  # YYYY-MM-DD prefix sorts/compares fine as strings
 
 
+def leaf_name(url):
+    """`<page-slug>--<hash8>` — the host's own shape for an addressed item.
+
+    Mirrors `pipeline/jobs.py::capture_dir_for` + `slugify`, which no verb
+    exposes: the path's segments joined, folded, capped at 60; the host when
+    the path is empty; then the first 8 hex of sha1 over the URL as given.
+    """
+    parts = urlsplit(url)
+    bits = [bit for bit in parts.path.split("/") if bit] or [parts.netloc.lower()]
+    folded = _NON_SLUG.sub("-", "-".join(bits).lower()).strip("-")[:60] or "item"
+    return f"{folded}--{hashlib.sha1(url.encode('utf-8')).hexdigest()[:8]}"
+
+
+def leaf_dir(slug, url):
+    return f"{RAW_DIRNAME}/{slug}/{leaf_name(url)}"
+
+
+def _host(url):
+    host = urlsplit(url if "://" in url else f"https://{url}").netloc.lower().split(":")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def in_scope(url, target, scope):
+    """Does `harvest.scope`, read against the job's `target`, keep this post?"""
+    if not target:
+        return True  # a hand run with no job behind it has nothing to scope against
+    if scope == "page":
+        return url.rstrip("/") == target.rstrip("/")
+    if _host(url) != _host(target):
+        return False
+    if scope == "domain":
+        return True
+    prefix = urlsplit(target if "://" in target else f"https://{target}").path.rstrip("/")
+    path = urlsplit(url).path
+    return not prefix or path == prefix or path.startswith(prefix + "/")
+
+
+def excluded(url, patterns):
+    """This unit's reading of `harvest.exclude_urls` — the host defines none.
+
+    Exact (a trailing `/` aside); a path prefix that ends on a SEGMENT
+    boundary, so `/p/a` drops `/p/a/x` and `/p/a?x` but never `/p/ab`; or a
+    `*` glob over the whole URL. `?` and `[` are URL characters, not wildcards.
+    """
+    for pattern in patterns or []:
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if "*" in pattern:
+            if fnmatch.fnmatchcase(url, pattern.replace("[", "[[]").replace("?", "[?]")):
+                return True
+            continue
+        stem = pattern.rstrip("/")
+        if url.rstrip("/") == stem:
+            return True
+        if url.startswith(stem) and url[len(stem)] in "/?#":
+            return True
+    return False
+
+
+def known_resources(ticket):
+    entries = ticket.get("known")
+    if not isinstance(entries, list):
+        return set()
+    return {e["resource"] for e in entries if isinstance(e, dict) and isinstance(e.get("resource"), str)}
+
+
+def load_ticket(directory):
+    """`ticket.json` beside the worker, or {} on a hand run. Never raises:
+    a ticket this cannot read is a hand run that must name its own inputs."""
+    try:
+        doc = json.loads((Path(directory) / TICKET_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def holds_capture(directory):
+    """Is there a COMPLETE capture here — a record, and the body it names?"""
+    try:
+        record = json.loads((Path(directory) / CAPTURE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    body = record.get("body") if isinstance(record, dict) else None
+    return isinstance(body, str) and bool(body) and (Path(directory) / body).is_file()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    # No wiki root and no intake path: this script writes nothing and
-    # reaches nothing outside its own process.
-    ap.add_argument("domain", help="Substack domain (e.g. example.substack.com) or full archive URL")
     ap.add_argument(
-        "--slug",
-        required=True,
-        help="the watch's slug — queued jobs inherit "
-        "scope/filters/tags from that entry. The host "
-        "refuses a row naming any watch but this job's "
-        "own",
+        "domain",
+        nargs="?",
+        default=None,
+        help="Substack domain (e.g. example.substack.com) or full archive URL. Default: ticket.json's `target`",
     )
     ap.add_argument(
-        "--parent",
+        "--capture-dir",
         required=True,
-        help="job id of the enumeration job that ran this. "
-        "REQUIRED: the host refuses a discovered "
-        "row whose parent is not a job it dispatched, so a "
-        "row without one can never apply",
+        help="REQUIRED: ticket.json's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
+        "this script at the wiki root — and is where ticket.json is read and leaves.json is written",
     )
+    ap.add_argument("--slug", default=None, help="the job's slug, which names the leaf dirs. Default: ticket.json's `slug`")
     ap.add_argument(
         "--min-date",
         default=None,
-        help="ISO date floor (YYYY-MM-DD); stop paginating once "
-        "posts fall below it (read it off the claimed "
-        "job's min_date)",
+        help="ISO date floor (YYYY-MM-DD); stop paginating once posts fall below it. Default: ticket.json's `min_date`",
     )
     ap.add_argument(
         "--max-date",
         default=None,
-        help="ISO date ceiling (YYYY-MM-DD), INCLUSIVE: skip "
-        "every post newer than it. This is how a truncated "
-        "walk resumes — pass the previous run's "
-        "summary.resume_max_date. `--min-date` cannot do "
-        "it: the walk always starts at offset=0, so "
-        "lowering the floor re-emits the same first "
-        "--max-urls posts",
+        help="ISO date ceiling (YYYY-MM-DD), INCLUSIVE: skip every post newer than it. A hand-run "
+        "window only — a run resumes through the ticket's known[], never through a date",
     )
     ap.add_argument(
         "--access",
         choices=["licensed", "free"],
-        default="free",
-        help="licensed: queue every post reachable; free: only audience=everyone (read it off the job's access)",
+        default=None,
+        help="licensed: every post reachable; free: only audience=everyone. Default: ticket.json's harvest.access, else free",
+    )
+    ap.add_argument(
+        "--scope",
+        choices=SCOPES,
+        default=None,
+        help="Default: ticket.json's harvest.scope, else domain. On an archive target only `domain` keeps any post",
+    )
+    ap.add_argument(
+        "--exclude-url",
+        action="append",
+        default=None,
+        metavar="URL|PREFIX|GLOB",
+        help="repeatable; REPLACES ticket.json's harvest.exclude_urls when given",
     )
     ap.add_argument("--limit", type=int, default=50, help="page size for the archive API (default 50)")
     ap.add_argument(
-        "--max-urls",
+        "--max-leaves",
         type=int,
-        required=True,
-        help="stop paginating once this many URLs are emitted — the host's "
-        "ceiling across EVERY discovered row in one report, handed to you as "
-        "assignment.limits.max_discovered_urls; this script restates no number. "
-        "Past it the host applies none of the report and every job in the "
-        "slice returns to pending/, so this truncates and says so instead",
+        default=200,
+        help="stop once this many posts are planned for fetching (default 200). A slice is killed at thirty "
+        "minutes with no report behind it, so a plan is one slice's worth; the rest comes on the next "
+        "run, which skips what known[] holds. Leaves already on disk do not count",
+    )
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="write the plan here as well as stdout; a relative path is resolved INSIDE --capture-dir. "
+        "Default: <capture-dir>/leaves.json when a ticket.json is there",
     )
     args = ap.parse_args()
 
-    domain = domain_from_arg(args.domain)
+    capture_dir = Path(args.capture_dir)
+    if not capture_dir.is_dir():
+        ap.error(
+            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give ticket.json's "
+            f"`capture_dir` verbatim: it is wiki-relative, and `llm-wiki-ops run` starts a script at the wiki root"
+        )
+    capture_dir = capture_dir.resolve()
+    # First, before anything can fail: a report left by an earlier spawn (or
+    # by the extractor, which writes its own here) is not THIS run's answer.
+    (capture_dir / REPORT_NAME).unlink(missing_ok=True)
+    ticket = load_ticket(capture_dir)
+    harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
+
+    target = args.domain or ticket.get("target") or ticket.get("item")
+    if not target:
+        ap.error(f"no domain given and no {TICKET_NAME} with a `target` in {capture_dir}")
+    slug = args.slug or ticket.get("slug")
+    if not slug:
+        ap.error(f"no --slug given and no {TICKET_NAME} with a `slug` in {capture_dir}")
+    min_date = args.min_date or ticket.get("min_date")
+    access = args.access or harvest.get("access") or "free"
+    scope = args.scope or harvest.get("scope") or "domain"
+    patterns = args.exclude_url if args.exclude_url is not None else harvest.get("exclude_urls") or []
+    known = known_resources(ticket)
+    # A scope is read against the JOB's target; a bare domain on a hand run is one too.
+    scope_target = ticket.get("target") or (target if "://" in target else f"https://{target}")
+
+    domain = domain_from_arg(target)
+    own_dir = ticket.get("capture_dir")  # wiki-relative, host-derived: never recomposed
 
     by_audience = {}
-    urls = []
-    skipped_newer = 0
-    truncated = False
-    oldest_emitted = None
-    newest_emitted = None
-    skipped_paywalled = 0
+    leaves = []
+    counts = dict.fromkeys(
+        ("skipped_paywalled", "skipped_known", "skipped_excluded", "skipped_by_scope", "skipped_newer"), 0
+    )
     total_posts = 0
+    planned = 0
     stopped_at_min_date = False
+    truncated = False
+    fetch_failed = None
+
+    def on_disk(rel):
+        # Leaves are siblings of the ticket's own directory: both are
+        # `_raw/<slug>/<one>`, so no wiki root has to be found to look.
+        return holds_capture(capture_dir.parent / rel.rsplit("/", 1)[-1])
+
+    single = None
+    refresh = bool(ticket.get("refresh"))
+    if refresh:
+        # Exactly the page the ticket names — never the archive its job walks.
+        single = next((ticket[key] for key in ("resource", "item") if isinstance(ticket.get(key), str) and ticket[key]), None)
+        if single is None:
+            ap.error(f"{TICKET_NAME} is a refresh ticket and names no `resource`")
+        known = set()
+    elif "://" in target and _POST_PATH.match(urlsplit(target).path):
+        single = target
+
+    if single is not None:
+        total_posts = 1
+        if single in known:
+            counts["skipped_known"] = 1
+        elif excluded(single, patterns):
+            counts["skipped_excluded"] = 1
+        else:
+            leaves.append(
+                {
+                    "item": single,
+                    "dir": own_dir or leaf_dir(slug, single),
+                    "title": None,
+                    "published": None,
+                    "audience": None,
+                    "on_disk": False,  # its own ticket's directory: a refresh or a re-pull re-fetches
+                }
+            )
+            planned = 1
+            if own_dir:
+                # Its own, stable directory: what an earlier pull left there is
+                # not this run's capture, and a `page.html` found there would
+                # never be re-fetched.
+                for name in OWN_LEAF_FILES:
+                    (capture_dir / name).unlink(missing_ok=True)
 
     offset = 0
-    stop = False
+    stop = single is not None
     while not stop:
         try:
             page = fetch_page(domain, offset, args.limit)
-        except urllib.error.URLError as e:
-            print(f"fetch failed at offset {offset}: {e}", file=sys.stderr)
+        except (urllib.error.URLError, TimeoutError) as e:
+            # A mid-read socket timeout escapes as TimeoutError, not URLError.
+            fetch_failed = f"offset {offset}: {e}"
+            print(f"fetch failed at {fetch_failed}", file=sys.stderr)
+            break
+        except ValueError:
+            # 200 and not JSON (JSONDecodeError is a ValueError): a challenge
+            # page, a login wall, a custom domain with no Substack behind it.
+            page = None
+        if not isinstance(page, list) or not all(isinstance(post, dict) for post in page):
+            fetch_failed = f"offset {offset}: the archive API did not answer a JSON list of posts (a challenge or login page?)"
+            print(f"fetch failed at {fetch_failed}", file=sys.stderr)
             break
 
         if not page:
             break
 
-        page_urls = []
         for post in page:
             total_posts += 1
             audience = post.get("audience", "unknown")
@@ -237,7 +407,7 @@ def main():
             if post.get("post_date"):
                 post_date = parse_date(post["post_date"])
 
-            if args.min_date and post_date and post_date < args.min_date:
+            if min_date and post_date and post_date < min_date:
                 # Newest-first pagination: once we're below the floor, every
                 # subsequent (older) post is too — stop entirely.
                 stop = True
@@ -245,31 +415,49 @@ def main():
                 break
 
             if args.max_date and post_date and post_date > args.max_date:
-                # Newer than the resume ceiling: already taken by the pass
-                # that named it. Skipped, not stopped — the archive is
-                # newest-first, so what we want is further down.
-                skipped_newer += 1
+                counts["skipped_newer"] += 1
                 continue
 
-            if args.access == "free" and audience != "everyone":
-                skipped_paywalled += 1
+            url = post_url(domain, post)
+
+            if not in_scope(url, scope_target, scope):
+                counts["skipped_by_scope"] += 1
                 continue
 
-            if len(urls) + len(page_urls) >= args.max_urls:
-                # Full. Stop here rather than walk an archive whose tail
-                # cannot be emitted anyway — and record the floor to resume
-                # from, since the API is newest-first and everything left is
-                # older than what we kept.
+            if excluded(url, patterns):
+                counts["skipped_excluded"] += 1
+                continue
+
+            if access == "free" and audience != "everyone":
+                counts["skipped_paywalled"] += 1
+                continue
+
+            if url in known:
+                counts["skipped_known"] += 1
+                continue
+
+            rel = leaf_dir(slug, url)
+            held = on_disk(rel)
+            if not held and planned >= args.max_leaves:
+                # Full. Stop here rather than walk an archive whose tail this
+                # slice cannot capture anyway; everything left is older, and
+                # the next run reaches it once known[] holds this batch.
                 truncated = True
                 stop = True
                 break
-            page_urls.append(post_url(domain, post))
-            if post_date:
-                oldest_emitted = post_date
-                if newest_emitted is None:
-                    newest_emitted = post_date
+            if not held:
+                planned += 1
+            leaves.append(
+                {
+                    "item": url,
+                    "dir": rel,
+                    "title": post.get("title") if isinstance(post.get("title"), str) else None,
+                    "published": post_date,
+                    "audience": audience,
+                    "on_disk": held,
+                }
+            )
 
-        urls.extend(page_urls)
         if stop:
             break
 
@@ -281,62 +469,48 @@ def main():
         offset += len(page)
         time.sleep(0.7)
 
-    # The ceiling can only move if the emission spans more than one date.
-    # When it does not, the next pass re-emits this same set — the exact
-    # shape the `--min-date` instruction had, so it says so rather than
-    # looking like progress.
-    stalled = bool(truncated and newest_emitted and newest_emitted == oldest_emitted)
-
-    if stalled:
+    if counts["skipped_by_scope"] and not leaves:
         print(
-            f"STALLED: all {len(urls)} emitted posts share post_date "
-            f"{oldest_emitted}, so --max-date {oldest_emitted} returns "
-            f"this same set and the walk cannot advance. Raise --max-urls "
-            f"above the number of posts sharing that date.",
+            f"harvest.scope={scope} dropped {counts['skipped_by_scope']} posts and nothing is planned, against target "
+            f"{scope_target}. Posts live at /p/<slug> on the newsletter's host: an archive job needs "
+            f"harvest.scope=domain, declared on the host its posts are served from.",
             file=sys.stderr,
         )
-    elif truncated:
+    if truncated:
         print(
-            f"truncated at --max-urls {args.max_urls}: emitted "
-            f"{len(urls)} of an archive still going at post_date "
-            f"{oldest_emitted}. Take the rest with "
-            f"--max-date {oldest_emitted} once this batch has been "
-            f"applied (NOT --min-date: the walk restarts at offset=0, so "
-            f"a lower floor re-emits these same posts).",
+            f"truncated at --max-leaves {args.max_leaves}: the archive goes on past what one slice "
+            f"captures. Report `partial`; the next run's known[] skips this batch and the walk continues.",
             file=sys.stderr,
         )
 
-    # `discovered` is the report row verbatim; `summary` is this script's
-    # own accounting. Two keys rather than one flat object so a worker
-    # copies the row across without having to know which fields the host
-    # reads — a summary field leaking into the row is refused whole.
-    print(
-        json.dumps(
-            {
-                "discovered": {
-                    "parent": args.parent,
-                    "watch_id": args.slug,
-                    "urls": urls,
-                },
-                "summary": {
-                    "total_posts": total_posts,
-                    "by_audience": by_audience,
-                    "skipped_paywalled": skipped_paywalled,
-                    "skipped_newer": skipped_newer,
-                    "stopped_at_min_date": stopped_at_min_date,
-                    "emitted": len(urls),
-                    # No count of what was left behind: the walk STOPS at the cap,
-                    # so the tail is never fetched and any number here would be the
-                    # one post that did not fit, not the remainder.
-                    # `resume_max_date` is the useful answer.
-                    "truncated": truncated,
-                    "stalled": stalled,
-                    "resume_max_date": oldest_emitted if truncated else None,
-                },
-            },
-            indent=2,
-        )
-    )
+    plan = {
+        "v": 1,
+        "ticket": ticket.get("ticket"),
+        "slug": slug,
+        "newsletter": domain,
+        "capture_dir": own_dir,
+        "access": access,
+        "refresh": refresh,
+        "leaves": leaves,
+        "summary": {
+            "total_posts": total_posts,
+            "by_audience": by_audience,
+            **counts,
+            "stopped_at_min_date": stopped_at_min_date,
+            "planned": planned,
+            "on_disk": sum(1 for leaf in leaves if leaf["on_disk"]),
+            # No count of what was left behind: the walk STOPS at the cap, so
+            # the tail is never fetched and any number here would be a guess.
+            "truncated": truncated,
+            "fetch_failed": fetch_failed,
+        },
+    }
+    text = json.dumps(plan, indent=2)
+    # `capture_dir / <absolute>` is the absolute path; a relative one lands inside.
+    out = capture_dir / args.out if args.out else (capture_dir / PLAN_NAME if ticket else None)
+    if out is not None:
+        out.write_text(text + "\n", encoding="utf-8")
+    print(text)
 
 
 if __name__ == "__main__":
