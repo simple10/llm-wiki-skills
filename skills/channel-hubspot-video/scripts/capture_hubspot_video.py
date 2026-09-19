@@ -21,12 +21,12 @@ rewrites it as the STABLE master playlist
 does not expire.
 
 This is the capture I/O of ONE page — one leaf of a section harvest. Which
-pages, which directories, the `page.md` + `capture.json` the extractor reads
-and the `report.json` are the sibling `leaves.py`'s.
+pages, which directories, the flat `capture.json` and the `report.json` are
+the sibling `leaves.py`'s; the PAGE is written at process, per SKILL.md.
 
 Inputs / outputs (default mode, `render`):
   <capture-dir>/page.html   rendered DOM (asset-detection ground truth, and
-                            what `leaves.py page` converts to `page.md`)
+                            the capture's own body)
   <capture-dir>/net.json    network log, list of {url,type,method}
   <capture-dir>/meta.json   {title, mux_playback_id, player_url, final_url, ...}
   stdout                    the same meta.json as one JSON object
@@ -42,7 +42,7 @@ outside a conservative character set), and the three files land in that leaf.
 
 `meta.json` also carries `status` (the HTTP status the page answered with —
 404/410 is `gone` on a refresh ticket, never a capture) and `fetched_at` (when
-THIS render read the page, which `leaves.py page` writes into `capture.json`).
+THIS render read the page, which `leaves.py record` writes into `capture.json`).
 
 Second mode, `patch-assets`, applies the platform's manifest rules to a
 manifest produced by the plugin's `assets.py detect`:
@@ -51,8 +51,8 @@ manifest produced by the plugin's `assets.py detect`:
   - drop the verifi.podscribe.com beacon (analytics pixel, not content)
   - append the stable Mux master playlist as the page's video asset,
     carrying the rendered iframe's live src as `embed_url` — the same value
-    `leaves.py page` writes into `page.md` as the page's iframe, because a
-    bare play.hubspotvideo.com URL refuses to play outside its page
+    the process step puts on the page as its iframe, because a bare
+    play.hubspotvideo.com URL refuses to play outside its page
 
 Usage (`<capture_dir>` is the ticket's `capture_dir`, verbatim: it is
 WIKI-RELATIVE, and `run` starts this script at the wiki root):
@@ -221,9 +221,9 @@ def render(args):
         # The LIVE iframe src after HubSpot's script swapped data-hsv-src in
         # — verbatim, params and all (parentOrigin is what lets the player
         # run inside a frame; the bare player URL refuses to play outside
-        # its page). `leaves.py page` writes it into page.md as the page's
-        # iframe; the extractor strips it when the job says `process.embeds:
-        # false`, which is why a plain link rides beside it.
+        # its page). The process step puts it on the page as its iframe,
+        # and leaves it out where the job says `process.embeds: false`,
+        # which is why a plain link rides beside it.
         embed_src = page.evaluate(
             "(origin) => { const f = Array.from(document.querySelectorAll('iframe')).find(f => {"
             " try { return new URL(f.src).origin + '/' === origin; } catch (e) { return false; } });"

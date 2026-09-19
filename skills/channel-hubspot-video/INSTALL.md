@@ -31,9 +31,15 @@ you customize it.
    slug. A second HubSpot-hosted site is a second job on this same unit, so
    keep each site's selectors and traps under its own heading in the
    installed SKILL.md rather than interleaved.
-2. **Confirm the platform** against the SKILL.md Fingerprints section:
-   `hubfs/` / `hs-fs/hubfs/` asset paths, `data-hsv-src` iframes, `_hcms/`
-   in robots.txt, `?hsLang=` params. A miss means this is not the unit.
+2. **Confirm the platform.** `skills search` answers a site's url with `no
+   unit claims <host>` — no unit can enumerate every HubSpot customer's domain
+   — so keywords, or a person, sent you here. Look for: assets under `/hubfs/`
+   or `/hs-fs/hubfs/`; `hubspot` in the page scripts and `_hcms/` disallowed
+   in `robots.txt`; nav links carrying `?hsLang=<lang>`; a player iframe at
+   `play.hubspotvideo.com/v/<portal>/id/<video>`. Any two together is
+   conclusive, and the last alone means the SKILL.md's *Media* section applies
+   even where the rest of the site is not HubSpot-themed. A miss on all four
+   means this is not the unit.
 3. **Pin the site's host.** In the wiki's copy of `manifest.json` add the
    site's real domain to `requires.network` — from then on
    `skills search <domain>` answers from the wiki's copy directly. That is the
@@ -49,17 +55,19 @@ you customize it.
    `page.html`, and fill the site's entry in the wiki's copy of
    `references/sites.json`, keyed by host (`content_selector`,
    `drop_selectors`, `title_selector`, and `strip_params` / `exclude_urls`
-   where the site needs them) per the SKILL.md's "Content extraction"
-   section. That file — not the manifest — is what `leaves.py page` reads at
-   harvest, which is the only time this venue's rendering happens: processing
-   is the generic extractor's. Set `title_selector` whenever the site reuses
-   one `<title>` across a section — HubSpot sites commonly do, and pages are
-   FILED by title, so identically titled lessons overwrite each other
-   (`leaves.py report` tells namesakes apart within one run only).
-   Check it without the network:
-   `llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py page <capture_dir> --leaf <n> --sites <ops dir>/skills/channel-hubspot-video/references/sites.json --no-media-leaf`
-   re-renders `page.md` from the `page.html` already on disk (`<capture_dir>`
-   is the ticket's, wiki-relative; `<n>` the leaf's index in its `plan.json`).
+   where the site needs them). That file — not the manifest — is where both
+   steps read the site's rules: `to_markdown.py` takes the selectors at
+   process, `leaves.py plan` takes `strip_params` and `exclude_urls` at
+   harvest. `content_selector` is the real content root. `drop_selectors` are
+   the theme chrome that would otherwise be the bulk of every page — module
+   navs, CTA blocks, lead forms, legal disclaimers — removed at the DOM level,
+   the only point where they are still tellable from prose. `title_selector`
+   is the page's true title: set it whenever the site reuses one `<title>`
+   across a section, which HubSpot sites commonly do. `strip_params` and
+   `exclude_urls` are query parameters beyond `hsLang` that do not change the
+   page, and URL globs this site should never yield. Check the selectors
+   without the network by running `to_markdown.py` over a `page.html` already
+   on disk.
 5. **Record site traps in the wiki's SKILL.md** as they surface, under the
    site's own heading: the section map, why each selector is what it is, what
    a pointer page looks like there. Traps a SCRIPT must act on go where a

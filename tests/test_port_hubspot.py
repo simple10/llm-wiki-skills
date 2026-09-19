@@ -1,14 +1,15 @@
-"""channel-hubspot-video on the rebuilt worker contract.
+"""channel-hubspot-video on the rebuilt worker contract, in its two steps.
 
-One download ticket captures a whole section: `leaves.py plan` filters the
-enumeration and names one capture directory per page, `leaves.py page` turns a
-rendered `page.html` into the `page.md` + `capture.json` the generic extractor
-reads — with the SITE's selectors, which now live in the unit's own
+HARVEST is bytes: `leaves.py plan` filters the enumeration and names one
+capture directory per page, `leaves.py record` writes the flat `capture.json`
+naming the rendered `page.html`, and `leaves.py report` writes the report
+`apply` reads. PROCESS is this unit's own: the worker converts that
+`page.html` with the SITE's selectors — which live in the unit's
 `references/sites.json` because nothing reads a manifest `extract` block any
-more — and `leaves.py report` writes the report `apply` reads.
+more — and writes the pages through `llm-wiki-ops page create`.
 
-The pure logic is imported and runs everywhere. The end-to-end cases go
-through the real `pipeline extract` and skip where no CLI is at hand. Nothing
+The pure logic is imported and runs everywhere. The end-to-end cases write
+into a real wiki through the real CLI and skip where none is at hand. Nothing
 here touches the network: the rendered page is a fixture.
 """
 
@@ -28,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, declared_job, extracted, ticket_in
+from conftest import ROOT, at, declared_job, run, ticket_in
 
 UNIT = "channel-hubspot-video"
 SCRIPTS = ROOT / "skills" / UNIT / "scripts"
@@ -53,8 +54,8 @@ capturer = _load(CAPTURE)  # Playwright is imported inside `render`, so this loa
 
 
 def _run(*args, cwd=None, env=None):
-    """The unit's script from the WORKING TREE, its PEP 723 deps resolved by uv
-    exactly as `llm-wiki-ops run` would."""
+    """The unit's harvest script from the WORKING TREE, its PEP 723 deps
+    resolved by uv exactly as `llm-wiki-ops run` would."""
     return subprocess.run(["uv", "run", "-q", "--script", str(LEAVES), *args], capture_output=True, text=True, cwd=cwd, env=env, check=False)
 
 
@@ -170,28 +171,15 @@ def test_the_shipped_sites_file_is_an_empty_template():
     assert leaves.load_sites(None) == {"v": 1, "sites": {}}
 
 
-def test_the_video_lands_where_the_player_stood_and_survives_embeds_false():
-    meta = json.loads((FIX / "meta.json").read_text(encoding="utf-8"))
-    body = leaves.place_video("intro\n\n<!-- media:embed:1 -->\n\noutro\n", meta)
-    assert body.index("intro") < body.index("<iframe") < body.index(f"[Video: {STREAM}]") < body.index("outro")
-    assert "media:embed" not in body
-    on_top = leaves.place_video("no player in the content root\n", meta)
-    assert on_top.startswith("<iframe") and "no player" in on_top
-    assert leaves.place_video("a pointer page\n", {}) == "a pointer page\n"
-
-
-def test_facts_never_carry_a_key_the_host_owns():
-    meta = json.loads((FIX / "meta.json").read_text(encoding="utf-8"))
-    facts = leaves.facts_of(LESSON, meta, published="2026-07-15", external_url=None)
-    assert facts == {
-        "type": "video", "venue": "hubspot-cms", "published": "2026-07-15",
-        "mux_playback_id": "AbCdEfGhIjKlMnOpQrStUvWx0123456789", "video_url": STREAM,
-        "player_url": "https://play.hubspotvideo.com/v/1234567/id/987654321",
-    }
-    assert not set(facts) & leaves.HOST_KEYS
-    assert all(isinstance(value, str) for value in facts.values())
-    pointer = leaves.facts_of(LESSON, {}, published=None, external_url="https://podcasts.example/ep/1")
-    assert pointer == {"type": "page", "venue": "hubspot-cms", "external_url": "https://podcasts.example/ep/1"}
+def test_harvest_records_bytes_and_nothing_a_host_verb_owns():
+    """`capture.json` is FLAT: what was fetched and the file it is in. The page,
+    its frontmatter and its identity are the process step's."""
+    record = leaves.capture_record(slug="s", item=LESSON, title="Pricing the offer", body="page.html",
+                                   content_type="text/html", fetched_at="2026-07-15T09:00:00Z")
+    assert record == {"slug": "s", "item": LESSON, "title": "Pricing the offer", "body": "page.html",
+                      "content_type": "text/html", "fetched_at": "2026-07-15T09:00:00Z"}
+    for owned in ("frontmatter", "status", "resource", "harvested", "extracted", "document_id", "document_revision"):
+        assert owned not in record, owned
 
 
 def test_the_report_names_its_outcome_from_what_landed():
@@ -214,9 +202,18 @@ def test_the_report_names_its_outcome_from_what_landed():
     assert forced["outcome"] == "failed" and forced["captured"] == [] and forced["reason"] == "auth_expired:x"
 
 
-def test_a_media_leaf_is_a_sibling_at_the_depth_apply_accepts():
-    rel = leaves.media_leaf_dir(f"_raw/site-learn/learn-offers-lesson-two--{_hash8(LESSON)}", STREAM)
-    assert rel == f"_raw/site-learn/learn-offers-lesson-two-video--{_hash8(STREAM)}"
+def test_a_process_report_names_its_pages_and_captures_nothing():
+    """A process ticket rewrites `ticket.json` long after harvest wrote
+    `capture.json`, so a capture-freshness rule would refuse every honest
+    process report; the report is about `written[]` instead."""
+    pages = ["sources/courses/s/Lesson.md", "sources/courses/s/Lesson (video).md"]
+    report = leaves.process_report(ticket="t1", written=pages)
+    assert (report["outcome"], report["written"], report["captured"]) == ("ok", pages, [])
+    assert set(report) == {"v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"}
+    skipped = leaves.process_report(ticket="t1", written=[], skipped=True, reason="excluded")
+    assert (skipped["outcome"], skipped["reason"]) == ("skipped", "excluded")
+    nothing = leaves.process_report(ticket="t1", written=[])
+    assert nothing["outcome"] == "failed" and nothing["reason"]
 
 
 def test_patch_assets_runs_with_no_browser_installed(tmp_path):
@@ -238,7 +235,7 @@ def test_patch_assets_runs_with_no_browser_installed(tmp_path):
 
 
 def _fake_wiki(tmp_path: Path, *, known=(), exclude=()) -> tuple[Path, Path]:
-    """A capture directory with the ticket a spawner would have left, in a tree shaped like a wiki's."""
+    """A capture directory holding the `ticket.json` a spawner would have left, in a tree shaped like a wiki's."""
     rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
     cap = tmp_path / rel
     cap.mkdir(parents=True)
@@ -257,7 +254,7 @@ def _fill(leaf: Path) -> None:
     shutil.copy(FIX / "meta.json", leaf / "meta.json")
 
 
-def test_plan_page_report_from_a_ticket_with_files_only(tmp_path):
+def test_plan_record_report_from_a_ticket_with_files_only(tmp_path):
     root, cap = _fake_wiki(tmp_path, known=[{"resource": SECTION, "harvested_at": "2026-08-30T09:12:04Z"}])
     done = _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--sites", str(FIX / "sites.json"))
     assert done.returncode == 0, done.stderr
@@ -270,8 +267,11 @@ def test_plan_page_report_from_a_ticket_with_files_only(tmp_path):
 
     lesson_dir = root / plan["leaves"][0]["dir"]
     _fill(lesson_dir)
-    done = _run("page", str(cap), str(lesson_dir), "--published", "2026-07-15", "--sites", str(FIX / "sites.json"))
+    done = _run("record", str(cap), str(lesson_dir))
     assert done.returncode == 0, done.stderr
+    # Harvest rendered nothing: the capture is the bytes the venue served.
+    assert not (lesson_dir / "page.md").exists()
+    assert json.loads((lesson_dir / "capture.json").read_text(encoding="utf-8"))["body"] == "page.html"
 
     done = _run("report", str(cap))
     assert done.returncode == 0, done.stderr
@@ -323,14 +323,43 @@ def test_no_doc_or_manifest_names_the_extract_block_any_more():
 
 def test_the_stages_speak_the_new_contract():
     text = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
-    assert re.search(r'^argument-hint: "ticket=<id>"$', text, re.M)
-    for gone in ("--stage", "<job.", "harvest_apply", "out_of_scope`", "scaffold", "intake.py", "job.py", "watch.py", "drain_pending", "--exclude-url '"):
+    assert re.search(r'^argument-hint: "ticket=<id> stage=harvest\|process"$', text, re.M)
+    for gone in ("<job.", "harvest_apply", "out_of_scope`", "scaffold", "intake.py", "job.py", "watch.py", "drain_pending"):
         assert gone not in text, gone
-    for kept in ("ticket.json", "capture.json", "report.json", "page.md", "data-hsv-src", "stream.mux.com", "verifi.podscribe.com"):
+    for kept in ("ticket.json", "capture.json", "report.json", "data-hsv-src", "stream.mux.com", "verifi.podscribe.com",
+                 "$ARGUMENTS", "stage=harvest|process", "### harvest", "### process", "page create", "to_markdown.py"):
         assert kept in text, kept
+    # Harvest is bytes: no page is rendered there, and no body is one.
+    harvest = text.split("### harvest", 1)[1].split("### process", 1)[0]
+    assert "page.md" not in harvest and "page create" not in harvest
+    # One sentence settles the step, and the reasoning stays in its one home.
+    opening = text.split("## Stages", 1)[1].split("### harvest", 1)[0]
+    assert " ".join(opening.split()) == "`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections below are those steps."
 
 
-# ------------------------------------------------------------ end to end, the real extractor
+def test_the_skill_stays_under_its_budget():
+    """A skill is a command sequence, and this one is a platform template an
+    installing agent reads end to end."""
+    assert len((ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").splitlines()) <= 204
+
+
+def test_every_script_this_unit_ships_is_named_where_a_worker_would_run_it():
+    """A script no SKILL.md line runs, and no sibling runs, is dead surface."""
+    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    runs = set(re.findall(r"llm-wiki-ops run \S*/([\w-]+\.py)", skill))
+    siblings = "\n".join(path.read_text(encoding="utf-8") for path in SCRIPTS.glob("*.py"))
+    for script in sorted(SCRIPTS.glob("*.py")):
+        named = script.name in runs or re.search(rf"\b{re.escape(script.name)}\b", siblings.replace(script.read_text(encoding="utf-8"), ""))
+        assert named, f"{script.name} is named on no `llm-wiki-ops run` line and no sibling runs it"
+
+
+def test_the_quirks_log_holds_venue_facts_and_nothing_else():
+    """The log is what this VENUE does, dated. Facts about the plugin, the
+    harness or the port belong in the change record, not here."""
+    log = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").split("## Quirks log", 1)[1]
+    assert "2026-07-31" in log  # the oldest entry is still there
+    for stale in ("user-invocable", "known[]", "key=value", "stage=", "Ported", "the port", "until the plugin", "Review fixes"):
+        assert stale not in log, stale
 
 
 # ------------------------------------------------------------ page names
@@ -357,38 +386,63 @@ def test_a_namesake_is_qualified_by_the_url_segment_that_tells_it_apart():
     # Nothing in the path tells it apart (module-1's segments are the holder's, module-2 is taken): the hash.
     assert leaves.unique_title("Introduction", leaves.leaf_qualifiers(third), taken) == f"Introduction ({_hash8(third['item'])})"
     assert leaves.unique_title("Introduction", ["module-2"], taken) == "Introduction (module-2) (2)"
-    # A media leaf is qualified by its PAGE's url, and a segment never smuggles in a refused character.
-    media = leaf("/v.m3u8", item="https://stream.example/v.m3u8", media_of="https://x.example/learn/what%3F/a%2Fb")
-    assert leaves.leaf_qualifiers(media)[:2] == ["a/b", "what?"]
-    assert leaves.unique_title("Introduction", leaves.leaf_qualifiers(media), taken) == "Introduction (a-b)"
+    # A segment never smuggles a character the host refuses into a title.
+    escaped = leaf("/learn/what%3F/a%2Fb")
+    assert leaves.leaf_qualifiers(escaped)[:2] == ["a/b", "what?"]
+    assert leaves.unique_title("Introduction", leaves.leaf_qualifiers(escaped), taken) == "Introduction (a-b)"
 
 
-def _held_leaf(root: Path, item: str, title, body="page.md", **over) -> dict:
-    rel = f"_raw/site-learn/{leaves.leaf_name(item + over.get('media_of', ''))}"
-    (root / rel).mkdir(parents=True)
+def _held_leaf(root: Path, item: str, title, body="page.html", **over) -> dict:
+    rel = f"_raw/site-learn/{leaves.leaf_name(item)}"
+    (root / rel).mkdir(parents=True, exist_ok=True)
     (root / rel / body).write_text("x\n", encoding="utf-8")
     (root / rel / "capture.json").write_text(json.dumps({"item": item, "title": title, "body": body}), encoding="utf-8")
     return {"item": item, "dir": rel, "lastmod": None, **over}
 
 
-def test_settling_titles_is_idempotent_and_a_media_leaf_follows_its_page(tmp_path):
+def test_settling_titles_is_idempotent_and_leaves_the_first_leaf_alone(tmp_path):
     one, two = f"{SECTION}/module-1/intro", f"{SECTION}/module-2/intro"
     planned = [
         _held_leaf(tmp_path, one, "Intro"), _held_leaf(tmp_path, two, "Intro"),
-        _held_leaf(tmp_path, f"{SECTION}/a", None), _held_leaf(tmp_path, f"{SECTION}/b", None),  # no title: filed as `page`
-        _held_leaf(tmp_path, STREAM, "Intro (video)", "media.mp4", media_of=one),
-        _held_leaf(tmp_path, STREAM, "Intro (video)", "media.mp4", media_of=two),
+        _held_leaf(tmp_path, f"{SECTION}/a", None), _held_leaf(tmp_path, f"{SECTION}/b", None),  # no title: filed as the body's stem
         {"item": f"{SECTION}/never-rendered", "dir": "_raw/site-learn/never--00000000", "lastmod": None},
     ]
-    want = ["Intro", "Intro (module-2)", None, "page (b)", "Intro (video)", "Intro (module-2) (video)"]
+    want = ["Intro", "Intro (module-2)", None, "page (b)"]
     for _ in range(2):
         leaves.settle_titles(tmp_path, planned)
         assert [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned[:-1]] == want
-    # `page` run again writes the plain titles back; the next report ends on the SAME names.
-    for leaf, plain in ((planned[1], "Intro"), (planned[5], "Intro (video)")):
-        (tmp_path / leaf["dir"] / "capture.json").write_text(json.dumps({"item": leaf["item"], "title": plain, "body": "page.md" if plain == "Intro" else "media.mp4"}), encoding="utf-8")
+    # `record` run again writes the plain title back; the next report ends on the SAME names.
+    (tmp_path / planned[1]["dir"] / "capture.json").write_text(json.dumps({"item": two, "title": "Intro", "body": "page.html"}), encoding="utf-8")
     leaves.settle_titles(tmp_path, planned)
     assert [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned[:-1]] == want
+
+
+def test_a_qualifier_never_carries_a_settled_title_past_the_filename_cap(tmp_path):
+    """`settle_titles` appends `(<url segment>)` and the process step a ` (video)`:
+    the BASE is cut, the qualifier and the suffix kept."""
+    base = leaves.safe_title("価" * 100)
+    final = f"{base} ({'節' * 30})"
+    fitted = leaves.fit_title(final, [base])
+    assert len(fitted.encode()) <= leaves.FILENAME_TITLE_MAX_BYTES < len(final.encode())
+    assert fitted.endswith(f"… ({'節' * 30})") and fitted.startswith("価")
+    assert leaves.fit_title("Intro (module-2)", ["Intro"]) == "Intro (module-2)"  # under the cap: untouched
+    # The cap leaves room for the transcript stub's own ` (video).md` too.
+    assert len(f"{'x' * leaves.FILENAME_TITLE_MAX_BYTES} (video).md".encode()) <= 255
+
+    seg = "%E7%AF%80" * 30
+    one, two = f"{SECTION}/a/{seg}", f"{SECTION}/b/{seg}"
+    planned = [_held_leaf(tmp_path, one, base), _held_leaf(tmp_path, two, base)]
+    for _ in range(2):  # a second report renames nothing twice
+        before = leaves.titles_on_disk(tmp_path, planned)
+        leaves.settle_titles(tmp_path, planned)
+        leaves.fit_titles(tmp_path, planned, before)
+        titles = [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned]
+        assert len({leaves.page_key(t) for t in titles}) == 2, titles
+        assert all(len(f"{t} (video).md".encode()) <= 255 for t in titles), [len(t.encode()) for t in titles]
+        assert titles[0] == base
+
+
+# ------------------------------------------------------------ end to end, harvest then process
 
 
 def _fresh(wiki: Path, slug: str) -> None:
@@ -397,11 +451,14 @@ def _fresh(wiki: Path, slug: str) -> None:
     shutil.rmtree(wiki / "_raw" / slug, ignore_errors=True)
 
 
-def _captured_lesson(ops, env, wiki, *extra_page_args, lesson=LESSON, meta_over=None):
-    job = declared_job(ops, env, wiki, UNIT, SECTION)
+def _captured_lesson(ops, env, wiki, *extra, lesson=LESSON, section=SECTION, slug=None, meta_over=None):
+    """One lesson harvested into a real wiki: the ticket a spawner would have
+    left, a plan, the rendered fixture, and the flat capture."""
+    job = declared_job(ops, env, wiki, UNIT, section, slug=slug)
     assert job.record["harvest"]["scope"] == "section"
     _fresh(wiki, job.slug)
-    cap = ticket_in(wiki, job, f"learn--{_hash8(SECTION)}", unit=UNIT, item=SECTION)
+    shutil.rmtree(wiki / job.dest, ignore_errors=True)
+    cap = ticket_in(wiki, job, f"root--{_hash8(section)}", unit=UNIT, item=section)
     urls = cap / "urls.json"
     urls.write_text(json.dumps([{"url": lesson + "?hsLang=en", "lastmod": "2026-07-15"}]), encoding="utf-8")
     done = _run("plan", str(cap), "--urls", str(urls), "--sites", str(FIX / "sites.json"))
@@ -413,116 +470,14 @@ def _captured_lesson(ops, env, wiki, *extra_page_args, lesson=LESSON, meta_over=
     if meta_over:
         meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), **meta_over}
         (lesson_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    done = _run("page", str(cap), str(lesson_dir), "--published", "2026-07-15", "--sites", str(FIX / "sites.json"), *extra_page_args)
+    done = _run("record", str(cap), str(lesson_dir), *extra)
     assert done.returncode == 0, done.stderr
     return job, cap, lesson_dir
 
 
-def test_a_section_page_reaches_the_jobs_dest_with_the_sites_chrome_stripped(ops, env, wiki):
-    job, cap, lesson_dir = _captured_lesson(ops, env, wiki)
-
-    record = json.loads((lesson_dir / "capture.json").read_text(encoding="utf-8"))
-    assert {k: record[k] for k in ("slug", "item", "title", "body", "content_type")} == {
-        "slug": job.slug, "item": LESSON, "title": "Pricing the offer", "body": "page.md", "content_type": "text/markdown"}
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["fetched_at"])
-    assert record["frontmatter"]["type"] == "video" and record["frontmatter"]["published"] == "2026-07-15"
-    assert not (lesson_dir / "page.md").read_text(encoding="utf-8").startswith("---")
-
-    assert _run("report", str(cap)).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok"
-    assert report["captured"] == [{"item": LESSON, "dir": str(lesson_dir.relative_to(wiki)), "title": "Pricing the offer"}]
-
-    (page,) = extracted(ops, env, wiki, lesson_dir)  # the REAL `pipeline extract`, over the leaf `apply` would mint a ticket for
-    text = page.read_text(encoding="utf-8")
-    assert page.is_relative_to(wiki / job.dest)
-    assert page.name == "Pricing the offer.md"
-    front, _, body = text[4:].partition("\n---\n")
-    assert text.startswith("---\n") and "\n---\n" not in body  # one frontmatter block, the extractor's own
-    assert "title: Pricing the offer" in front and "status: draft" in front and LESSON in front
-    # The site's selectors did their work: the theme's chrome is gone, the lesson is not.
-    assert "how to price the offer" in body
-    for chrome in ("Course modules", "Module one", "GET YOUR COPY NOW", "Results are not typical", "FREE ADVANCED TRAINING", "all rights reserved", "Start Here"):
-        assert chrome not in text, chrome
-    # The unit's exact facts survive today, in the body, until the extractor merges `frontmatter`.
-    assert f"- source: <{LESSON}>" in body and "- type: video" in body and "- published: 2026-07-15" in body
-    assert "- mux_playback_id: AbCdEfGhIjKlMnOpQrStUvWx0123456789" in body
-    # The video, referenced the unit's way: the live iframe, and a link that outlives `process.embeds: false`.
-    assert '<iframe src="https://play.hubspotvideo.com/v/1234567/id/987654321?parentOrigin=' in body
-    assert f"[Video: {STREAM}]({STREAM})" in body
-    assert "https://www.example-hubspot.invalid/hubfs/worksheets/pricing.pdf" in body  # relative links made absolute
-    # Rule 1: the venue's TRUE title is the body's one H1 (the frontmatter's is the filename-safe one).
-    assert body.lstrip("\n").startswith("# Pricing the offer\n") and body.count("Pricing the offer") == 1
-    assert "source_title" not in record["frontmatter"]  # only where the two differ
-    # `fetched_at` is when the page was RENDERED — `meta.json` carries none here, so `page.html`'s mtime.
-    assert record["fetched_at"] == leaves._iso((lesson_dir / "page.html").stat().st_mtime)
-
-
-def test_a_downloaded_video_becomes_a_queued_transcription_stub(ops, env, wiki, tmp_path):
-    """The extractor queues a transcription only for a capture whose BODY is media, so the
-    downloaded file rides out as a sibling leaf of its own."""
-    video = tmp_path / "abc123-lesson.mp4"
-    video.write_bytes(b"\x00\x00\x00\x18ftypmp42 not really a video")
-    job, cap, lesson_dir = _captured_lesson(ops, env, wiki, "--media-file", str(video))
-
-    media_dir = wiki / f"_raw/{job.slug}/learn-offers-lesson-two-video--{_hash8(STREAM)}"
-    record = json.loads((media_dir / "capture.json").read_text(encoding="utf-8"))
-    assert (record["item"], record["title"], record["body"]) == (STREAM, "Pricing the offer (video)", "media.mp4")
-    assert (media_dir / "media.mp4").read_bytes() == video.read_bytes()
-
-    assert _run("report", str(cap)).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok"
-    assert [row["dir"] for row in report["captured"]] == [str(lesson_dir.relative_to(wiki)), str(media_dir.relative_to(wiki))]
-
-    (stub,) = extracted(ops, env, wiki, media_dir)
-    text = stub.read_text(encoding="utf-8")
-    assert stub.is_relative_to(wiki / job.dest)
-    assert "extracted: queued" in text and "media.mp4" in text and STREAM in text
-    (page,) = extracted(ops, env, wiki, lesson_dir)
-    assert page != stub  # two titles, two pages: the stub never overwrites the lesson
-
-
-def test_two_pages_with_one_title_land_as_two_pages_and_so_do_their_videos(ops, env, wiki, tmp_path):
-    """The extractor files a page under its title and overwrites what is there:
-    before `report` settled titles, a section's second "Pricing the offer" WAS
-    the first one's page — and its `(video)` stub the first one's stub."""
-    section = "https://www.example-hubspot.invalid/academy"
-    one, two = f"{section}/module-1/intro", f"{section}/module-2/intro"
-    job = declared_job(ops, env, wiki, UNIT, section, slug="port-channel-hubspot-names")
-    _fresh(wiki, job.slug)
-    cap = ticket_in(wiki, job, f"academy--{_hash8(section)}", unit=UNIT, item=section)
-    urls = cap / "urls.json"
-    urls.write_text(json.dumps([{"url": one, "lastmod": "2026-07-15"}, {"url": two, "lastmod": "2026-07-01"}]), encoding="utf-8")
-    assert _run("plan", str(cap), "--urls", str(urls), "--sites", str(FIX / "sites.json")).returncode == 0
-    planned = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"]
-    assert [leaf["item"] for leaf in planned] == [one, two]
-    video = tmp_path / "lesson.mp4"
-    video.write_bytes(b"\x00\x00\x00\x18ftypmp42 not really a video")
-    for leaf in planned:
-        _fill(wiki / leaf["dir"])
-        done = _run("page", str(cap), str(wiki / leaf["dir"]), "--sites", str(FIX / "sites.json"), "--media-file", str(video))
-        assert done.returncode == 0, done.stderr
-
-    reports = []
-    for _ in range(2):  # a respawned worker reports again: same names
-        assert _run("report", str(cap)).returncode == 0
-        reports.append(json.loads((cap / "report.json").read_text(encoding="utf-8")))
-    report = reports[-1]
-    assert report["outcome"] == "ok" and len(report["captured"]) == 4
-
-    pages = [extracted(ops, env, wiki, wiki / row["dir"])[0] for row in report["captured"]]
-    assert len({page.resolve() for page in pages}) == 4 and all(page.is_relative_to(wiki / job.dest) for page in pages)
-    names = ["Pricing the offer", "Pricing the offer (module-2)", "Pricing the offer (video)", "Pricing the offer (module-2) (video)"]
-    assert [page.name for page in pages] == [f"{name}.md" for name in names]
-    assert [[row["title"] for row in r["captured"]] for r in reports] == [names] * 2
-    first, second = pages[0].read_text(encoding="utf-8"), pages[1].read_text(encoding="utf-8")
-    assert f"resource: {one}" in first and f"resource: {two}" in second  # still the FIRST page's page
-
-
 def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):
-    """No flag needed: the asset `patch-assets` appended, once `assets.py download` marks it
-    `downloaded`, is the media leaf's body — and `--no-media-leaf` declines it."""
+    """No flag needed: the asset `patch-assets` appended, once `assets.py download`
+    marks it `downloaded`, is placed in the leaf — and `--no-media` declines it."""
     root, cap = _fake_wiki(tmp_path)
     (cap / "urls.json").write_text(json.dumps([LESSON]), encoding="utf-8")  # one page: a `--limit` that left others would be `partial`
     assert _run("plan", str(cap), "--urls", str(cap / "urls.json"), "--sites", str(FIX / "sites.json")).returncode == 0
@@ -540,29 +495,28 @@ def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):
 
     manifest[1].update(status="downloaded", local_path="../assets/0123456789ab-lesson.m4a")
     (leaf / "assets.json").write_text(json.dumps(manifest), encoding="utf-8")
-    media_dir = root / leaves.media_leaf_dir(str(leaf.relative_to(root)), STREAM)
-    assert _run("page", str(cap), str(leaf), "--sites", str(FIX / "sites.json"), "--no-media-leaf").returncode == 0
-    assert not media_dir.exists()
-    done = _run("page", str(cap), str(leaf), "--sites", str(FIX / "sites.json"))
+    assert _run("record", str(cap), str(leaf), "--no-media").returncode == 0
+    assert json.loads((leaf / "capture.json").read_text(encoding="utf-8"))["body"] == "page.html"
+    assert not list(leaf.glob("media.*"))
+    done = _run("record", str(cap), str(leaf))
     assert done.returncode == 0, done.stderr
-    record = json.loads((media_dir / "capture.json").read_text(encoding="utf-8"))
-    assert (record["body"], record["item"], record["frontmatter"]["page_url"]) == ("media.m4a", STREAM, LESSON)
-    assert record["content_type"].startswith("audio/")
-    assert (media_dir / "media.m4a").read_bytes() == b"audio, by courtesy"
+    assert json.loads(done.stdout)["captured"]["media"] == "media.m4a"
+    assert (leaf / "media.m4a").read_bytes() == b"audio, by courtesy"
     assert _run("report", str(cap)).returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok" and len(report["captured"]) == 2  # the media leaf is not a second PAGE to have planned
+    assert report["outcome"] == "ok" and len(report["captured"]) == 1
 
 
 @pytest.mark.parametrize("bad", ["notes.txt", "missing.mp4"])
-def test_a_media_leaf_is_refused_for_a_file_the_extractor_would_not_queue(tmp_path, bad):
+def test_a_media_file_the_transcriber_could_not_read_is_refused(tmp_path, bad):
     root, cap = _fake_wiki(tmp_path)
     assert _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml")).returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
-    done = _run("page", str(cap), str(leaf), "--media-file", str(tmp_path / bad))
+    done = _run("record", str(cap), str(leaf), "--media-file", str(tmp_path / bad))
     assert done.returncode == 2 and "not a media file" in done.stderr
+    assert not (leaf / "capture.json").exists()  # refused before anything was written
 
 
 # ------------------------------------------------------------ Rule 1: the title is a filename
@@ -587,77 +541,10 @@ def test_safe_title_is_a_title_the_hosts_filename_rule_holds():
 
 def _with_h2(leaf: Path, title: str) -> None:
     import html as html_mod
+
     page = (leaf / "page.html").read_text(encoding="utf-8")
     assert page.count("<h2>Pricing the offer</h2>") == 1
     (leaf / "page.html").write_text(page.replace("<h2>Pricing the offer</h2>", f"<h2>{html_mod.escape(title)}</h2>"), encoding="utf-8")
-
-
-@pytest.mark.parametrize(("venue_title", "safe"), [
-    ('Lesson 3: What is "A/B" pricing?', "Lesson 3 - What is 'A-B' pricing"),
-    (".Hidden: the offer?", "Hidden - the offer"),
-])
-def test_a_title_the_host_would_refuse_still_lands_as_a_page(ops, env, wiki, venue_title, safe):
-    """BLOCKER: the extractor names the FILE from `capture.json`'s title and REFUSES the process
-    ticket for `:` `?` `/` `"` or a leading dot — harvest said ok and the page never landed."""
-    lesson = f"{SECTION}/offers/{leaves.slugify([safe])}"
-    job, cap, lesson_dir = _captured_lesson(ops, env, wiki, "--no-media-leaf", lesson=lesson)
-    _with_h2(lesson_dir, venue_title)
-    done = _run("page", str(cap), str(lesson_dir), "--sites", str(FIX / "sites.json"), "--no-media-leaf")
-    assert done.returncode == 0, done.stderr
-    record = json.loads((lesson_dir / "capture.json").read_text(encoding="utf-8"))
-    assert record["title"] == safe and record["frontmatter"]["source_title"] == venue_title
-    assert _run("report", str(cap)).returncode == 0
-    assert json.loads((cap / "report.json").read_text(encoding="utf-8"))["captured"][0]["title"] == safe
-    (page,) = extracted(ops, env, wiki, lesson_dir)  # the REAL extractor: this is the line that failed
-    assert page.name == f"{safe}.md" and page.is_relative_to(wiki / job.dest)
-    body = page.read_text(encoding="utf-8")[4:].partition("\n---\n")[2]
-    assert body.lstrip("\n").startswith("# " + venue_title.replace("<", "&lt;") + "\n")  # the TRUE title stays visible
-
-
-def test_a_long_cjk_title_and_its_video_stub_both_land(ops, env, wiki, tmp_path):
-    """100 CJK characters is 300 bytes: `filename_for` checks no length, and the real
-    extractor died `OSError: [Errno 36] File name too long`. The ` (video)` suffix rides on the SAFE title."""
-    venue_title = "価" * 100
-    video = tmp_path / "lesson.mp4"
-    video.write_bytes(b"\x00\x00\x00\x18ftypmp42 not really a video")
-    lesson = f"{SECTION}/offers/cjk"
-    job, cap, lesson_dir = _captured_lesson(ops, env, wiki, "--no-media-leaf", lesson=lesson)
-    _with_h2(lesson_dir, venue_title)
-    done = _run("page", str(cap), str(lesson_dir), "--sites", str(FIX / "sites.json"), "--media-file", str(video))
-    assert done.returncode == 0, done.stderr
-    assert _run("report", str(cap)).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok" and len(report["captured"]) == 2
-    page_title, media_title = (row["title"] for row in report["captured"])
-    assert media_title == f"{page_title} (video)" and page_title.startswith("価") and page_title.endswith("…")
-    for row in report["captured"]:
-        assert len(f"{row['title']}.md".encode()) <= 255
-        (landed,) = extracted(ops, env, wiki, wiki / row["dir"])
-        assert landed.name == f"{row['title']}.md" and landed.is_file()
-
-
-def test_a_qualifier_never_carries_a_settled_title_past_the_filename_cap(tmp_path):
-    """`settle_titles` appends `(<url segment>)` and `page` a ` (video)`: the BASE is cut, the qualifier and the suffix kept."""
-    base = leaves.safe_title("価" * 100)
-    final = f"{base} ({'節' * 30}) (video)"
-    fitted = leaves.fit_title(final, [base])
-    assert len(fitted.encode()) <= leaves.FILENAME_TITLE_MAX_BYTES < len(final.encode())
-    assert fitted.endswith(f"… ({'節' * 30}) (video)") and fitted.startswith("価")
-    assert leaves.fit_title("Intro (module-2)", ["Intro"]) == "Intro (module-2)"  # under the cap: untouched
-
-    seg = "%E7%AF%80" * 30
-    one, two = f"{SECTION}/a/{seg}", f"{SECTION}/b/{seg}"
-    planned = [_held_leaf(tmp_path, one, base), _held_leaf(tmp_path, two, base),
-               _held_leaf(tmp_path, STREAM, f"{base} (video)", "media.mp4", media_of=one),
-               _held_leaf(tmp_path, STREAM, f"{base} (video)", "media.mp4", media_of=two)]
-    for _ in range(2):  # a second report renames nothing twice
-        before = leaves.titles_on_disk(tmp_path, planned)
-        leaves.settle_titles(tmp_path, planned)
-        leaves.fit_titles(tmp_path, planned, before)
-        titles = [json.loads((tmp_path / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))["title"] for leaf in planned]
-        assert len({leaves.page_key(t) for t in titles}) == 4, titles
-        assert all(len(f"{t}.md".encode()) <= 255 for t in titles), [len(t.encode()) for t in titles]
-        assert titles[0] == base and titles[2] == f"{base} (video)" and titles[3].endswith(" (video)")
 
 
 # ------------------------------------------------------------ Rule 2: venue text forges nothing
@@ -678,44 +565,29 @@ def test_venue_text_cannot_forge_a_heading_a_rule_or_an_attribute(tmp_path):
     (leaf / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     (leaf / "published.txt").write_text("2026-07-15\n# Forged by a date\n", encoding="utf-8")
     (leaf / "external_url.txt").write_text("javascript:alert(1)\n", encoding="utf-8")
-    # No sites file → no title_selector → the render's (hostile) title is the one used.
-    forged = _run("page", str(cap), str(leaf), "--published", "2026-07-15\n# Forged by a flag")
-    assert forged.returncode == 2 and "YYYY-MM-DD" in forged.stderr and not (leaf / "capture.json").exists()
-    done = _run("page", str(cap), str(leaf))
-    assert done.returncode == 0, done.stderr
-    body = (leaf / "page.md").read_text(encoding="utf-8")
+    assert _run("record", str(cap), str(leaf)).returncode == 0
     record = json.loads((leaf / "capture.json").read_text(encoding="utf-8"))
-    lines = body.splitlines()
-    assert lines[0] == "# Pricing --- # Forged heading ```" and record["title"] == "Pricing --- # Forged heading ```"
-    assert not any(line.strip() == "---" for line in lines) and sum(line.startswith("# ") for line in lines) == 1
-    assert not any(line.startswith("```") for line in lines)
-    assert "<iframe" not in body and "<script" not in body and "evil.example" not in body  # the embed is OMITTED…
-    assert f"[Video: {STREAM}]({STREAM})" in body  # …and the plain Mux link stands
-    assert "- published: 2026-07-15" in lines and "Forged by" not in body
-    assert "external_url" not in record["frontmatter"] and "canonical_url" not in record["frontmatter"] and "player_url" not in record["frontmatter"]
-    assert all("\n" not in value for value in record["frontmatter"].values())
+    assert record["title"] == "Pricing --- # Forged heading ```"  # one line, and the host's filename rule holds it
+    assert all(isinstance(value, str) or value is None for value in record.values())
+
+    # …and what `record` hands the process step is CHECKED, so the hostile
+    # embed and the forged canonical never reach a page.
+    said = json.loads(_run("record", str(cap), str(leaf)).stdout)["captured"]["video"]
+    assert said == {"embed_url": None, "player_url": None, "stream_url": STREAM,
+                    "mux_playback_id": "AbCdEfGhIjKlMnOpQrStUvWx0123456789"}
+    assert all(value is None or "\n" not in value for value in said.values())
 
 
-def test_the_embed_is_checked_then_escaped_and_facts_are_folded():
+def test_the_embed_and_the_stream_are_checked_before_a_worker_can_copy_them():
     meta = leaves.clean_meta(json.loads((FIX / "meta.json").read_text(encoding="utf-8")))
-    assert '?parentOrigin=https%3A%2F%2Fwww.example-hubspot.invalid&amp;renderContext=iframe"' in leaves.video_block(meta)
+    assert meta["embed_url"].endswith("&renderContext=iframe")
     for bad in ("http://play.hubspotvideo.com/v/1/id/2", "https://play.hubspotvideo.com.evil.example/v/1/id/2",
                 "https://play.hubspotvideo.com/v/1/id/2/../../x", 'https://play.hubspotvideo.com/v/1/id/2?a="b', None, 7):
         assert leaves.player_url(bad, query=True) is None, bad
     assert leaves.player_url("https://play.hubspotvideo.com/v/1/id/2?a=b", query=False) is None
     assert leaves.clean_meta({"stream_url": "https://stream.mux.com/short.m3u8", "mux_playback_id": "x y"}) | {"title": None} == {
         "title": None, "stream_url": None, "mux_playback_id": None, "player_url": None, "embed_url": None, "final_url": None, "status": None, "fetched_at": None}
-    facts = leaves.facts_of(LESSON, {}, published="2026-07-15T00:00", external_url="https://podcasts.example/ep/1", source_title="a\nb")
-    assert facts == {"type": "page", "venue": "hubspot-cms", "external_url": "https://podcasts.example/ep/1", "source_title": "a b"}
-
-
-def test_the_player_is_matched_by_origin_not_by_a_substring():
-    assert "*=" not in capturer.IFRAME_SELECTOR and "^='https://play.hubspotvideo.com/'" in capturer.IFRAME_SELECTOR
-    assert capturer.is_player("https://play.hubspotvideo.com/v/1234567/id/987654321?x=1")
-    assert not capturer.is_player("https://evil.example/?next=play.hubspotvideo.com/v/1/id/2")
-    mux = "AbCdEfGhIjKlMnOpQrStUvWx0123456789"
-    assert capturer.find_mux_id([{"url": f"https://evil.example/?u=image.mux.com/{mux}/"}]) is None
-    assert capturer.find_mux_id([{"url": f"https://image.mux.com/{mux}/storyboard.vtt"}]) == mux
+    assert leaves.fold("a\nb\tc") == "a b c" and leaves.safe_url("javascript:alert(1)") is None
 
 
 # ------------------------------------------------------------ S8: a mis-rooted job is not "nothing new"
@@ -760,7 +632,7 @@ def _documented_section(tmp_path, **ticket_over):
     return root, cap, str(cap.relative_to(root))
 
 
-def test_plan_page_and_report_the_documented_way_from_the_wiki_root(tmp_path):
+def test_plan_record_and_report_the_documented_way_from_the_wiki_root(tmp_path):
     """Rule 3: `run` starts a script at the WIKI ROOT, so every path is the ticket's wiki-relative `capture_dir`."""
     root, cap, rel = _documented_section(tmp_path)
     done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json")
@@ -771,13 +643,11 @@ def test_plan_page_and_report_the_documented_way_from_the_wiki_root(tmp_path):
     nxt = _documented(root, "next", rel)
     assert nxt.returncode == 0 and json.loads(nxt.stdout)["n"] == 0 and json.loads(nxt.stdout)["item"] == LESSON
     _fill(root / said["leaves"][0]["dir"])
-    (root / said["leaves"][0]["dir"] / "published.txt").write_text("2026-07-15\n", encoding="utf-8")
-    (root / said["leaves"][0]["dir"] / "external_url.txt").write_text("https://podcasts.example/ep/1\n", encoding="utf-8")
-    done = _documented(root, "page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json")
+    done = _documented(root, "record", rel, "--leaf", "0")
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout)["written"][0]["dir"] == said["leaves"][0]["dir"]
+    assert json.loads(done.stdout)["captured"]["dir"] == said["leaves"][0]["dir"]
     record = json.loads((root / said["leaves"][0]["dir"] / "capture.json").read_text(encoding="utf-8"))
-    assert record["frontmatter"]["published"] == "2026-07-15" and record["frontmatter"]["external_url"] == "https://podcasts.example/ep/1"
+    assert record["body"] == "page.html" and record["content_type"] == "text/html"
     assert json.loads(_documented(root, "next", rel).stdout)["n"] == 1  # the captured leaf is not offered again
     done = _documented(root, "report", rel)
     assert done.returncode == 0, done.stderr
@@ -801,7 +671,7 @@ def test_past_the_deadline_the_worker_is_told_to_stop_and_the_report_says_how_to
     spawned_long_ago = time.time() - 25 * 60
     os.utime(cap / "ticket.json", (spawned_long_ago, spawned_long_ago))
     assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
-    done = _documented(root, "page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json")
+    done = _documented(root, "record", rel, "--leaf", "0")
     assert done.returncode == 5 and json.loads(done.stdout)["stop"] is True  # written, AND told to stop
     assert (root / plan["leaves"][0]["dir"] / "capture.json").is_file()
     nxt = _documented(root, "next", rel)
@@ -822,7 +692,7 @@ def test_a_second_run_does_not_redo_what_a_killed_run_finished(tmp_path):
     _fill(root / first["leaves"][0]["dir"])
     video = tmp_path / "v.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-    assert _run("page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json", "--media-file", str(video), cwd=root).returncode == 0
+    assert _run("record", rel, "--leaf", "0", "--media-file", str(video), cwd=root).returncode == 0
     assert _documented(root, "report", rel).returncode == 0
     limited = json.loads((cap / "report.json").read_text(encoding="utf-8"))
     assert limited["outcome"] == "partial" and "1 of 3" in limited["reason"]  # every PLANNED page landed, and the limit left two: not `ok`
@@ -831,14 +701,13 @@ def test_a_second_run_does_not_redo_what_a_killed_run_finished(tmp_path):
     done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1")
     assert done.returncode == 0 and not (cap / "report.json").exists()  # Rule 4: the run before's report is gone first
     second = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
-    assert [(leaf["item"], bool(leaf.get("landed"))) for leaf in second["leaves"] if not leaf.get("media_of")] == [
+    assert [(leaf["item"], bool(leaf.get("landed"))) for leaf in second["leaves"]] == [
         (LESSON, True), ("https://www.example-hubspot.invalid/learn/offers/lesson-one", False)]  # landed is outside the limit
-    assert [leaf["dir"] for leaf in second["leaves"] if leaf.get("media_of")] == [leaves.media_leaf_dir(first["leaves"][0]["dir"], STREAM)]
     nxt = json.loads(_documented(root, "next", rel).stdout)
     assert nxt["item"].endswith("/lesson-one") and nxt["n"] == 1
     assert _documented(root, "report", rel).returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert [row["item"] for row in report["captured"]] == [LESSON, STREAM]  # what the killed run finished is reported by this one
+    assert [row["item"] for row in report["captured"]] == [LESSON]  # what the killed run finished is reported by this one
 
 
 def test_the_limit_defaults_by_what_a_leaf_costs(tmp_path):
@@ -866,27 +735,27 @@ def test_a_refresh_ticket_plans_exactly_its_resource_and_captures_it_again(tmp_p
         "known": [{"resource": LESSON, "harvested_at": "2026-08-30T09:12:04Z"}, {"resource": SECTION, "harvested_at": None}],
         "refresh": True, "resource": LESSON, "prev_harvested_at": "2026-08-30T09:12:04Z",
     }), encoding="utf-8")
-    for stale in ("capture.json", "page.md", "report.json"):  # the first pull's, in the SAME directory
-        (cap / stale).write_text('{"outcome": "ok", "body": "page.md"}', encoding="utf-8")
+    for stale in ("capture.json", "page.html", "report.json"):  # the first pull's, in the SAME directory
+        (cap / stale).write_text('{"outcome": "ok", "body": "page.html"}', encoding="utf-8")
     done = _documented(tmp_path, "plan", rel)  # no --urls: there is nothing to enumerate
     assert done.returncode == 0, done.stderr
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     assert plan["leaves"] == [{"item": LESSON, "dir": rel, "lastmod": None}] and plan["skipped"] == []
-    assert not any((cap / stale).exists() for stale in ("capture.json", "page.md", "report.json"))  # forced: `apply` hashes THIS run's body
+    assert not any((cap / stale).exists() for stale in ("capture.json", "page.html", "report.json"))  # forced: `apply` hashes THIS run's body
     _fill(cap)
-    shutil.copy(FIX / "sites.json", cap / "sites.json")
     video = tmp_path / "v.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-    done = _run("page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json", "--media-file", str(video), cwd=tmp_path)
+    done = _run("record", rel, "--leaf", "0", "--media-file", str(video), cwd=tmp_path)
     assert done.returncode == 0, done.stderr
-    assert len(json.loads(done.stdout)["written"]) == 1  # no second stub over a video the wiki already transcribed
+    # No second transcript stub over a video the wiki already transcribed.
+    assert json.loads(done.stdout)["captured"]["media"] is None and not list(cap.glob("media.*"))
     assert _documented(tmp_path, "report", rel).returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
     assert report["outcome"] == "ok" and report["captured"] == [{"item": LESSON, "dir": rel, "title": "Pricing the offer"}]
     # 404/410: the render's status refuses the capture, and `--gone` is the answer.
     meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), "status": 410}
     (cap / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    gone = _documented(tmp_path, "page", rel, "--leaf", "0")
+    gone = _documented(tmp_path, "record", rel, "--leaf", "0")
     assert gone.returncode == 2 and "--gone" in gone.stderr
     assert _documented(tmp_path, "report", rel, "--gone").returncode == 0
     report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
@@ -956,9 +825,9 @@ def test_the_asset_steps_carry_the_pages_url_as_argv_and_never_through_a_shell(t
                               "--network-log", f"{leaf['dir']}/net.json"]
     assert download["argv"] == ["run", script, "download", f"{leaf['dir']}/assets.json", "--dest", "_raw/site-learn/assets", "--referer", LESSON]
     assert Path(detect["cwd"]) == root.resolve() and not detect["guard"]  # bound by cwd; the re-entry guard is not inherited
-    # …and `page` then finds the file with no flag at all.
-    done = _documented(root, "page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json")
-    assert done.returncode == 0 and len(json.loads(done.stdout)["written"]) == 2
+    # …and `record` then finds the file with no flag at all.
+    done = _documented(root, "record", rel, "--leaf", "0")
+    assert done.returncode == 0 and json.loads(done.stdout)["captured"]["media"] == "media.mp4"
     assert not list(root.rglob("PWNED")) and not (Path.cwd() / "PWNED").exists()
 
     job = {"slug": "s", "assets": "download-audio"}
@@ -971,7 +840,7 @@ def test_a_missing_url_is_named_by_leaf_or_by_bare_host_never_typed(tmp_path):
     assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     _fill(root / plan["leaves"][0]["dir"])
-    assert _documented(root, "page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json").returncode == 0
+    assert _documented(root, "record", rel, "--leaf", "0").returncode == 0
     done = _documented(root, "report", rel, "--missing-leaf", "denied", "0", "--missing-leaf", "timeout", "1", "--missing-host", "denied", "Chunk.Mux.com")
     assert done.returncode == 0, done.stderr
     assert json.loads((cap / "report.json").read_text(encoding="utf-8"))["missing"] == [
@@ -992,12 +861,25 @@ def test_render_reads_its_url_off_the_plan(tmp_path):
     assert "--leaf" in subprocess.run([sys.executable, str(CAPTURE), "render", "-h"], capture_output=True, text=True, check=False).stdout
 
 
-def test_no_doc_has_the_worker_type_a_venues_url_onto_a_command_line():
-    for name in ("SKILL.md", "INSTALL.md"):
-        text = (ROOT / "skills" / UNIT / name).read_text(encoding="utf-8")
-        for typed in ("--external-url", "--base-url", "--referer", "render <item>", "render <url>", "--missing <", "--url <"):
-            assert typed not in text, (name, typed)
-    assert "--leaf <n>" in (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+def test_venue_text_on_a_command_line_is_quoted_verbatim_and_never_retyped():
+    """The harvest half never lets a url near a shell at all (`--leaf <n>`);
+    the process half has the worker paste venue text, under one stated rule."""
+    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    harvest = skill.split("### harvest", 1)[1].split("### process", 1)[0]
+    assert "--leaf <n>" in harvest
+    for typed in ("--external-url", "--base-url", "--referer", "render <item>", "render <url>", "--missing <", "--url <"):
+        assert typed not in harvest, typed
+    process = skill.split("### process", 1)[1].split("## ", 1)[0]
+    assert "VERBATIM and\nSINGLE-QUOTED" in process or "VERBATIM and SINGLE-QUOTED" in " ".join(process.split())
+    assert "unquotable_title" in process
+    # Every venue value in a process command sits inside single quotes.
+    venue = ("<item>", "<stream_url>", "<content_selector>", "<title_selector>",
+             "<drop selector>", "<the capture title>", "<title>")
+    for line in process.splitlines():
+        if not line.lstrip().startswith("llm-wiki-ops"):
+            continue
+        bare = re.sub(r"'[^']*'", "", line)
+        assert not [one for one in venue if one in bare], line.strip()
 
 
 # ------------------------------------------------------------ robustness: say it, do not trace it
@@ -1019,21 +901,20 @@ def test_a_malformed_enumeration_is_a_clear_refusal_and_the_failure_can_still_be
     assert (report["ticket"], report["outcome"], report["reason"], report["captured"]) == ("0123456789ab", "failed", "sitemap_unreadable", [])
 
 
-def test_fetched_at_is_the_renders_time_not_the_time_page_ran(tmp_path):
+def test_fetched_at_is_the_renders_time_not_the_time_record_ran(tmp_path):
     root, cap, rel = _documented_section(tmp_path)
     assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1").returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), "fetched_at": "2026-09-01T08:00:00Z"}
     (leaf / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    done = _documented(root, "page", rel, "--leaf", "0", "--sites", f"{rel}/sites.json", "--no-media-leaf")
-    assert json.loads(done.stdout)["written"][0]["fetched_at_from"] == "meta.json"
+    done = _documented(root, "record", rel, "--leaf", "0", "--no-media")
+    assert json.loads(done.stdout)["captured"]["fetched_at_from"] == "meta.json"
     assert json.loads((leaf / "capture.json").read_text(encoding="utf-8"))["fetched_at"] == "2026-09-01T08:00:00Z"
 
 
 def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki):
     """`every` is not an identity key, so a `once` job can be given a period while a section fills, and back."""
-    from conftest import at, run
     job = declared_job(ops, env, wiki, UNIT, "https://www.example-hubspot.invalid/continue", slug="port-channel-hubspot-continue")
     assert job.record["every"] == "once"
     for cadence in ("1h", "once"):
