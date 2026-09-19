@@ -16,6 +16,8 @@
     "network": [
       "*.spotify.com",
       "spotify.com",
+      "*.scdn.co",
+      "*.spotifycdn.com",
       "itunes.apple.com"
     ],
     "ops": ">=1.88"
