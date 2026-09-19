@@ -20,9 +20,9 @@ enough for the relevant request to fire, then:
   - document: streams the proxy URL down with httpx (same signed-CDN pattern
     as the video asset's low-res proxy — no auth needed beyond the URL itself)
 
-Does not write `capture.json` or `page.md` — `capture_job.py` wraps this per
-leaf and leaves the dir in the shape the generic extractor reads (a rendered
-`page.md` for a document, the media file itself as the body for a video).
+Does not write `capture.json` — `capture_job.py` wraps this per leaf and names
+the file downloaded here as the capture's body. Rendering a page is the unit's
+PROCESS step's, over these bytes.
 
 Usage:
   uv run capture_asset.py <view-url> --out=<dir> --name=<asset-name>
@@ -37,8 +37,8 @@ this exits 3 with `timeout` in stderr.
 Outputs into <dir>/:
   - video.mp4   (video assets)
   - document.<ext>  (document assets; the original filename is recorded in
-                     meta.json's "name" — frameio_doc_note.py names it in the
-                     page body)
+                     meta.json's "name", which the process step's page body
+                     names)
   - meta.json   title, final_url, kind, resolved asset URL, bytes
 
 Exit 0 on success, 2 if no video/doc URL was ever observed (page didn't

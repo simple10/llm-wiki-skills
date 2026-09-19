@@ -13,13 +13,17 @@ Customize the wiki's copy now, while the operator is present:
    (`slug=<content-name> dest=sources/scrapes/<content-name>`).
 2. Ask whether asset titles carry a share-wide suffix worth trimming — that
    becomes `--title-strip` on the capture step (`harvest_share.py`, which
-   hands it to every leaf); record the chosen value in the installed
+   hands it to every leaf, and each leaf records it for the process step);
+   record the chosen value in the installed
    SKILL.md. The share's author, group and tags go on the JOB, not in this
    file — `meta.author=`, `meta.group=`, `meta.group_type=`, `meta.tags=`,
    `meta.areas=` on the `pipeline add` in step 5 — and the host stamps them
    onto every page the job lands.
-3. Check `yt-dlp` is on PATH on the harvesting machine (video capture
-   depends on it); tell the operator if it is missing.
+3. Check `yt-dlp` and a real Chrome are on the harvesting machine, and that
+   the worker there can launch them — both are the harvest step's, and a
+   confined worker that cannot reach the browser captures nothing; tell the
+   operator if either is missing. The process step needs neither: it reads the
+   bytes harvest left and writes the page.
 4. No auth walkthrough: guest share links authorize themselves.
 5. Declare the job, naming the skill. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-frameio`, which the
    operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
@@ -31,4 +35,6 @@ Customize the wiki's copy now, while the operator is present:
    share's leaves sit under the share host, not under the watched URL, so
    `page` and (for a FOLDER inside the share) `section` both exclude them.
    Name `dest` for the content now: moving it later means re-running this
-   `add` with a new `dest=`, since `pipeline edit` refuses that key.
+   `add` with a new `dest=`, since `pipeline edit` refuses that key. `dest`
+   is also the one directory the unit's process step writes: it is handed to
+   the page builder verbatim, off each process ticket.

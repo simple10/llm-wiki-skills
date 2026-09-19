@@ -5,28 +5,33 @@ Not run directly: `harvest_share.py`, `capture_job.py` and
 sys.path, so a within-unit sibling import is the sanctioned way to share code
 inside a skill unit (stdlib only; never import plugin or package modules).
 
-Holds the two file contracts this unit has with the pipeline, in one place,
-so a second caller can never drift from them:
+Holds the file contracts this unit has with the pipeline, in one place, so a
+second caller can never drift from them:
 
-  - `capture_record()` — the `capture.json` dict the generic extractor reads:
-    `slug, item, title, body, content_type, fetched_at` as text, plus the
-    `frontmatter` object of this unit's exact facts. The extractor ignores
-    `frontmatter` today, so the same facts also go in the `page.md` body.
+  - `capture_record()` — the `capture.json` dict HARVEST writes: `slug, item,
+    title, body, content_type, fetched_at`, all text, and nothing else. It is
+    FLAT — no `frontmatter` object — and never carries a key a host verb owns.
+    `body` names the payload as it arrived (`document.<ext>`, `video.mp4`),
+    because harvest captures bytes and renders no page.
+  - `asset_facts()` — this unit's own facts about one asset, which the PROCESS
+    step reads back off `meta.json` and puts in the page body.
   - `leaf_dir_name()` — `<slugified path and name>--<hash8 of the view url>`,
     the same shape the host's own namer gives a capture dir. The host has no
     verb for it, so this unit composes that shape itself for every leaf it
     captures beside the ticket's own capture dir.
 
-  - `settle_titles()` — the page-name rule. The extractor files a page under
-    its TITLE and overwrites what is there, so two assets of one share with
-    one name (`Brief.pdf` in two folders) would be ONE page; the driver calls
-    this before every report, and a later namesake is retitled
+  - `settle_titles()` — the page-name rule. A page is filed under its TITLE
+    and overwrites what is there, so two assets of one share with one name
+    (`Brief.pdf` in two folders) would be ONE page; the driver calls this
+    before every report, and a later namesake is retitled
     `<title> (<folder breadcrumb>)` in its own `capture.json`.
 
   - `safe_title()` — the title the page's FILE can be named from. Applied
     inside `capture_record()`, where a title is first written, so no caller
     can write a raw one — and BEFORE `settle_titles()`, because two titles
     differing only in a refused character collide only once both are safe.
+
+  - `front_door_env()` — the environment a nested `llm-wiki-ops` call gets.
 
 Plus the small utilities the per-leaf path is built from: `run()` (a child
 with a deadline, killed with everything it started), `source_hosts_for()`,
@@ -54,9 +59,29 @@ TICKET_NAME = "ticket.json"
 REPORT_NAME = "report.json"
 META_NAME = "meta.json"
 
-#: Frontmatter keys another verb owns. A unit that writes one into its
-#: `frontmatter` object is asking the extractor to let a fetched page decide
-#: a page's lifecycle, so they are dropped here rather than trusted to callers.
+# The front door, by the bare name every SKILL.md already runs this unit's
+# scripts under — never a path into the wiki, which stops carrying a shim.
+OPS = "llm-wiki-ops"
+
+# What a nested front-door call must NOT inherit from the one that ran the
+# script. Both names belong to the MACHINE-GLOBAL bash dispatcher that is the
+# bare `llm-wiki-ops` on PATH, not to the versioned CLI package. That
+# dispatcher exports `LLM_WIKI_OPS_DISPATCHED=1` before it execs the wiki's
+# shim and refuses (exit 127) any call arriving with it set, as a loop — and a
+# script `run` started is the dispatcher's grandchild, so the guard is still
+# set in here while this call is no loop. It also seeds its walk for the wiki
+# root from `$CLAUDE_PROJECT_DIR` when that names a wiki, AHEAD of the cwd, so
+# without dropping it `cwd=<root>` would not be what picks the wiki.
+NOT_INHERITED = ("LLM_WIKI_OPS_DISPATCHED", "CLAUDE_PROJECT_DIR")
+
+
+def front_door_env() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+
+
+#: Frontmatter keys another verb owns. A unit that sets one is asking a fetched
+#: page to decide a page's lifecycle, so they are dropped here rather than
+#: trusted to callers.
 OWNED_KEYS = frozenset({"status", "document_id", "document_revision", "harvested", "extracted", "title", "resource"})
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -198,7 +223,7 @@ def leaf_dir_name(view_url: str, name=None, crumb=()) -> str:
 def one_line(value) -> str:
     """Venue text as ONE line: newlines, tabs and control characters become a
     space. A title or a fact value that kept its newline could open a heading,
-    a rule or a list item in a body the extractor takes verbatim."""
+    a rule or a list item in a page body."""
     return " ".join("".join(ch if ch.isprintable() else " " for ch in str(value or "")).split())
 
 
@@ -254,9 +279,10 @@ def clean_frontmatter(facts: dict) -> dict:
 
 
 def asset_facts(*, kind: str, url: str, name, ext, size, path_bits, author=None, group=None, group_type=None) -> dict:
-    """This unit's exact facts about one captured asset — the `frontmatter`
-    object, and the source of the facts block a document's `page.md` opens
-    with. `kind` is capture_asset.py's own word: `video` or `document`."""
+    """This unit's exact facts about one captured asset — the source of the
+    facts block a document's page opens with, built at PROCESS time off what
+    harvest recorded in `meta.json`. `kind` is capture_asset.py's own word:
+    `video` or `document`."""
     share_id, asset_id = leaf_ids(url)
     return clean_frontmatter(
         {
@@ -275,46 +301,86 @@ def asset_facts(*, kind: str, url: str, name, ext, size, path_bits, author=None,
     )
 
 
-def capture_record(
-    *, slug: str, item: str, title, body: str, content_type: str, frontmatter: dict, fallback: str = "Untitled"
-) -> dict:
-    """The `capture.json` dict for one captured Frame.io asset.
+#: Extensions a captured document is known to land with, in the order one is
+#: preferred when a leaf dir holds several `document.*`. `bin` is what
+#: `capture_asset.py` names a file it could not type — and it sorts FIRST.
+DOC_EXTS = ("pdf", "pptx", "xlsx", "docx", "ppt", "xls", "doc", "key", "numbers", "pages", "mht", "txt", "csv")
+
+
+def pick_document(docs, name=None):
+    """The one `document.<ext>` a leaf's capture is: the extension the asset's
+    own name carries, else the first known document extension, else by name
+    with `document.bin` last. None when there is none."""
+    wanted = name.rsplit(".", 1)[-1].lower() if isinstance(name, str) and "." in name else None
+
+    def rank(path):
+        ext = path.suffix.lstrip(".").lower()
+        known = DOC_EXTS.index(ext) if ext in DOC_EXTS else len(DOC_EXTS)
+        return (ext != wanted, known, ext == "bin", path.name)
+
+    return min(docs, key=rank, default=None)
+
+
+#: What `content_type` a captured document file gets. The bytes are whatever
+#: Frame.io's signed proxy converted the asset to, so the extension is the only
+#: thing that types them; anything unlisted is opaque bytes and says so.
+DOC_TYPES = {
+    "pdf": "application/pdf",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "ppt": "application/vnd.ms-powerpoint",
+    "xls": "application/vnd.ms-excel",
+    "doc": "application/msword",
+    "mht": "message/rfc822",
+    "txt": "text/plain",
+    "csv": "text/csv",
+}
+
+
+def content_type_for(ext: str) -> str:
+    return DOC_TYPES.get((ext or "").lower(), "application/octet-stream")
+
+
+def is_media(content_type: str) -> bool:
+    """A body the transcriber is owed rather than a reader: only `pipeline
+    extract` can mint the page that waits for one, so the unit's process step
+    hands a media capture back rather than writing a finished page over it."""
+    return str(content_type or "").startswith(("video/", "audio/"))
+
+
+def capture_record(*, slug: str, item: str, title, body: str, content_type: str, fallback: str = "Untitled") -> dict:
+    """The `capture.json` dict for one captured Frame.io asset. FLAT.
 
     `item` is the leaf's view URL: it becomes the page's `resource`, which is
     what the next ticket's `known[]` names, so it must be the same string the
     leaf planner compares against.
 
     `title` is the VENUE's, as captured; what is written is `safe_title()` of
-    it — never null, because the extractor falls back from a null title to the
-    body's own H1, which is the raw one. Where the two differ the true title
-    rides in `frontmatter` as `source_title`, on one line.
+    it, because the process step names the page's FILE from it. The venue's own
+    spelling stays in `meta.json`, which is where the process step reads the
+    H1 from — nothing here renders a page, so nothing here needs it twice.
     """
-    true = one_line(title)
-    safe = safe_title(true, fallback=safe_title(fallback))
-    facts = dict(frontmatter)
-    if true and true != safe:
-        facts["source_title"] = true
     return {
         "v": 1,
         "slug": slug,
         "item": item,
-        "title": safe,
+        "title": safe_title(one_line(title), fallback=safe_title(fallback)),
         "body": body,
         "content_type": content_type,
         "fetched_at": now_utc(),
-        "frontmatter": clean_frontmatter(facts),
     }
 
 
 # ---------------------------------------------------------------- page names
 #
-# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
-# capture's title and writes it with no existence check (llm-wiki-ops
-# `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
-# name_for` -> `page/note.py::filename_for`): the filename is
+# KEEP IN SYNC with the host. `page create` names a page FILE from its title
+# (llm-wiki-ops `commands/page/note.py::filename_for`): the filename is
 # `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying
-# one of `ILLEGAL` or a control character is REFUSED, not altered — and a
-# capture with no title is filed under its body's stem (`page`). So two leaves
+# one of `ILLEGAL` or a control character is REFUSED, not altered. The generic
+# extractor, which is what reads a media capture, goes the same way
+# (`commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
+# name_for`), and files a capture with no title under its body's stem. So two leaves
 # of one run whose titles differ only in outer whitespace are ONE page, the
 # second overwriting the first; on a filesystem that folds case (macOS,
 # Windows) so are two that differ only in that. `page_key` folds both: a
@@ -397,7 +463,7 @@ def fitted_title(title: str, qualifiers, taken: dict) -> str:
     """`unique_title()`, and the answer still fits a filename.
 
     `safe_title()` caps a title in bytes, and a qualifier appended afterwards
-    puts a long one back over the cap — the extractor then dies on `File name
+    puts a long one back over the cap — the write then dies on `File name
     too long`. The BASE is what gives way: ` (<qualifier>)` is what tells the
     page from its namesake, so it is kept whole and the base is cut, with an
     ellipsis, to what is left of `TITLE_MAX_BYTES`. Done here, at this unit's
@@ -429,7 +495,7 @@ def settle_titles(root: Path, leaves) -> None:
     In the driver's report step and not in `capture_job.py`, because a title
     is the captured page's own — unknown until the viewer has been opened —
     and one capture sees one leaf; the driver sees all of them, on every
-    pass, before anything is extracted. A title already qualified is free on
+    pass, before the process step names any page. A title already qualified is free on
     the next pass, so a later pass renames nothing a second time.
     """
     taken: dict = {}

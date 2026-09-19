@@ -16,6 +16,11 @@ captures each one into its OWN capture dir beside the ticket's
 The foreman's `pipeline apply` mints one process ticket per `captured[].dir`;
 this script touches no queue.
 
+This is the HARVEST step, and harvest is bytes: no page is rendered, no
+summary is written and no `capture.json` carries a `frontmatter` object. The
+page is `frameio_doc_note.py`'s, in the process step that `apply`'s ticket
+starts.
+
 **The plan** is the ticket's own filters applied by this unit, because no one
 else applies them:
 
@@ -123,6 +128,8 @@ History:
               text crosses argv as `--name=<v>`: a file named `-rf.pdf` exited
               2 on every pass. Breadcrumbs drop the top folder only when every
               leaf carries it. A leaf URL must be http(s).
+  2026-09-19  the unit's two steps restored: nothing here renders a page, and
+              a leaf's `body` is the file the venue served.
 """
 
 import argparse
@@ -336,7 +343,7 @@ def leaf_state(root: Path, leaf: dict, spawn=None):
 
     Read off the leaf's own dir, so a second pass — or a second script — sees
     what the first one left. `captured` means a `capture.json` naming a body
-    file that is there: exactly what the extractor will ask of it. A recorded
+    file that is there: exactly what the process step will ask of it. A recorded
     failure counts only for the SPAWN that recorded it (`spawn_of`) — a
     share's capture dirs outlive a spawn, the ticket id does not change
     between them, and a later spawn owes the leaf a fresh attempt.
@@ -468,7 +475,7 @@ def write_report(root: Path, directory: Path, ticket: dict, plan: dict, spawn) -
     After EVERY leaf, not once at the end: whatever kills the pass — the
     slice's cap, a tool call's own timeout — the report on disk already names
     every leaf that had landed. Titles first: two leaves with one title are
-    ONE page to the extractor, the second overwriting the first.
+    ONE page, the second overwriting the first.
     """
     settle_titles(root, plan["leaves"])
     states = {leaf["item"]: leaf_state(root, leaf, spawn) for leaf in plan["leaves"]}
@@ -549,7 +556,7 @@ def main() -> int:
         # The first capturing pass of this spawn. What an earlier spawn left
         # in this (stable) dir is not this one's word: `apply` does not check
         # whose `report.json` it reads, and on a single-leaf ticket the
-        # extractor's own report lands here too.
+        # process step's own report lands here too.
         (directory / REPORT_NAME).unlink(missing_ok=True)
         if refreshing is not None:
             # A refresh RE-reads. The capture the last one left would otherwise

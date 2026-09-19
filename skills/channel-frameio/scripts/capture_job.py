@@ -2,28 +2,28 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Capture ONE Frame.io leaf into its own capture dir, ready for the extractor.
+"""Capture ONE Frame.io leaf into its own capture dir. Harvest only — bytes.
 
 platform: frameio
 scope: platform-general (no hardcoded share ids or hosts). The per-leaf half
 of a share harvest: `harvest_share.py` calls it once per planned leaf, and it
 is also what a hand run uses for a single asset. It wraps `capture_asset.py`
-— one asset, one capture dir — and then leaves that dir in the one shape the
-generic extractor reads:
+— one asset, one capture dir — and then leaves that dir holding what the venue
+served plus a FLAT `capture.json` naming it:
 
-- a **document** (pdf/pptx/xlsx/…): `frameio_doc_note.py` renders `page.md`
-  and writes `capture.json` naming it, `content_type: text/markdown`.
-- a **video**: `capture.json` names `video.mp4` itself as the `body`. The
-  extractor treats a media body as the transcriber's: it writes the page
-  empty, flags it for transcription and reports the file as discovered media.
-  A `page.md` that merely LINKED the video would be taken verbatim as the
-  page, and the recording would never be transcribed — and the link would be
-  a signed HLS URL that dies within hours anyway. The cost is that a video's
-  facts reach only the `frontmatter` object today, not a page body.
+- a **document** (pdf/pptx/xlsx/…): `body` is `document.<ext>`, as downloaded.
+  The page is the PROCESS step's — `frameio_doc_note.py` over these bytes.
+- a **video**: `body` is `video.mp4`. A media body is the transcriber's, and
+  only `pipeline extract` mints the page that waits for a transcript.
 
-Processing is the generic extractor's, so everything venue-specific happens
-here, at harvest. It runs no queue verb and writes no report: `report.json`
-is the ticket's, and `harvest_share.py` writes it from what this left on disk.
+No page is rendered here, no summary is written, and `capture.json` carries no
+`frontmatter` object: harvest captures bytes. What the harvest knew and the
+bytes do not carry — the leaf's folder path, the operator's
+`--author`/`--group`/`--title-strip` — is recorded in `meta.json`, which is
+where the process step reads it back.
+
+It runs no queue verb and writes no report: `report.json` is the ticket's, and
+`harvest_share.py` writes it from what this left on disk.
 
 The leaf dir must be exactly `_raw/<slug>/<one component>` — the slice is
 granted the job's whole `_raw/<slug>/`, and `apply` mints a process ticket for
@@ -55,9 +55,9 @@ signed proxy route.
 Outputs one JSON object on stdout: {"ok", "item", "dir", "kind", "bytes",
 "title", "body"} — or {"ok": false, "item", "dir", "error"}.
 
-Exit 0 when the leaf is captured, 1 when the fetch or the render failed (the
-dir then holds no `capture.json`, which is how the driver reads it), 2 when
-the arguments do not add up — nothing was fetched.
+Exit 0 when the leaf is captured, 1 when the fetch failed (the dir then holds
+no `capture.json`, which is how the driver reads it), 2 when the arguments do
+not add up — nothing was fetched.
 
 History:
   2026-08-18  created — the per-job capture path.
@@ -71,12 +71,15 @@ History:
               written (`capture_record()`); children get a deadline; venue
               text crosses argv as `--name=<v>`; what an earlier attempt left
               in the leaf dir is cleared before the fetch.
+  2026-09-19  the unit's two steps restored: harvest is bytes. `page.md` and
+              the `frontmatter` object are gone from here, the document's
+              `body` is the downloaded file, and the manifest and operator
+              facts are recorded in `meta.json` for the process step.
 """
 
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 from capture_record import (
@@ -84,11 +87,12 @@ from capture_record import (
     META_NAME,
     TICKET_NAME,
     TIMED_OUT,
-    asset_facts,
     capture_record,
+    content_type_for,
     inner_deadline,
     leaf_ids,
     name_stem,
+    pick_document,
     read_json,
     run,
     strip_title,
@@ -144,7 +148,7 @@ def main() -> int:
     ap.add_argument("--group", default=None)
     ap.add_argument("--group-type", dest="group_type", default=None)
     ap.add_argument("--timeout-ms", type=int, default=None, help="passed through to capture_asset.py")
-    ap.add_argument("--crumb-skip", type=int, default=None, help="leading --path folders every leaf of the share carries; passed through to frameio_doc_note.py")
+    ap.add_argument("--crumb-skip", type=int, default=None, help="leading --path folders every leaf of the share carries; recorded in meta.json for the process step")
     ap.add_argument("--deadline-seconds", type=float, default=None, help="what is left of the slice: children are killed when it runs out")
     ap.add_argument("--fresh", action="store_true", help="a refresh: drop the media an earlier capture left, so it is fetched again")
     args = ap.parse_args()
@@ -179,7 +183,6 @@ def main() -> int:
     for name in stale:
         (leaf_dir / name).unlink(missing_ok=True)
 
-    began = time.monotonic()
     inner = inner_deadline(args.deadline_seconds)
     cmd = ["uv", "run", str(SCRIPTS / "capture_asset.py"), url, f"--out={leaf_dir}"]
     if args.name:
@@ -196,51 +199,54 @@ def main() -> int:
         return fail(url, rel, f"capture_asset exit {rc}: {err or out}")
 
     # Everything past the fetch still ends in a JSON answer and an exit code:
-    # truncated JSON, a missing `kind`, a render that died — each used to be a
-    # traceback with the bytes already on disk and nothing said about them.
+    # truncated JSON, a missing `kind`, a body that is not on disk — each used
+    # to be a traceback with the bytes already down and nothing said about them.
     try:
         result = json.loads(out.splitlines()[-1])
         kind, size = result["kind"], result["bytes"]
+        meta = read_json(leaf_dir / META_NAME) or {}
+        name = args.name or meta.get("name")
+        title = strip_title(result.get("title") or meta.get("title") or "", args.title_strip)
         if kind == "video":
-            if not (leaf_dir / VIDEO_BODY).is_file():
-                raise FileNotFoundError(f"{VIDEO_BODY} is not in {rel}")
-            meta = read_json(leaf_dir / META_NAME) or {}
-            name = args.name or meta.get("name")
-            title = strip_title(result.get("title") or meta.get("title") or "", args.title_strip)
-            record = capture_record(
-                slug=slug,
-                item=url,
-                title=title or name_stem(name),
-                fallback=leaf_ids(url)[1],
-                body=VIDEO_BODY,
-                content_type="video/mp4",
-                frontmatter=asset_facts(
-                    kind="video", url=url, name=name, ext="mp4", size=size, path_bits=path_bits,
-                    author=args.author, group=args.group, group_type=args.group_type,
-                ),
-            )
-            write_json(leaf_dir / CAPTURE_NAME, record)
+            body, content_type = VIDEO_BODY, "video/mp4"
         else:
-            note = ["uv", "run", str(SCRIPTS / "frameio_doc_note.py"), str(leaf_dir), f"--slug={slug}", f"--url={url}"]
-            if args.name:
-                note.append(f"--name={args.name}")
-            note += [f"--path={bit}" for bit in path_bits]
-            for flag, value in (
-                ("--crumb-skip", args.crumb_skip),
-                ("--title-strip", args.title_strip),
-                ("--author", args.author),
-                ("--group", args.group),
-                ("--group-type", args.group_type),
-            ):
-                if value is not None:
-                    note.append(f"{flag}={value}")
-            left = None if inner is None else max(1.0, inner - (time.monotonic() - began))
-            nrc, nout, nerr = run(note, timeout=left)
-            if nrc != 0:
-                raise RuntimeError(f"frameio_doc_note exit {nrc}: {nerr or nout}")
-            record = read_json(leaf_dir / CAPTURE_NAME)
-            if not record or not (leaf_dir / str(record.get("body"))).is_file():
-                raise RuntimeError("frameio_doc_note exited 0 and left no capture.json naming a body that is there")
+            document = pick_document([p for p in leaf_dir.glob("document.*") if p.is_file()], name)
+            if document is None:
+                raise FileNotFoundError(f"no document.<ext> in {rel}")
+            body, content_type = document.name, content_type_for(document.suffix.lstrip("."))
+        if not (leaf_dir / body).is_file():
+            raise FileNotFoundError(f"{body} is not in {rel}")
+        # What the harvest knew and the bytes do not carry. The process step
+        # reads it back from here: nothing renders a page at harvest, and the
+        # leaf's place in the share is not in the file it downloaded.
+        meta.update(
+            {
+                "url": meta.get("url") or url,
+                "name": name,
+                # capture_asset.py's stdout title beats the one it left in
+                # meta.json, as it always has here; the process step's H1 is
+                # this, trimmed by `title_strip`.
+                "title": result.get("title") or meta.get("title") or "",
+                "path": path_bits,
+                "crumb_skip": args.crumb_skip if args.crumb_skip is not None else 0,
+                "title_strip": args.title_strip,
+                "author": args.author,
+                "group": args.group,
+                "group_type": args.group_type,
+                "kind": kind,
+                "bytes": size,
+            }
+        )
+        write_json(leaf_dir / META_NAME, meta)
+        record = capture_record(
+            slug=slug,
+            item=url,
+            title=title or name_stem(name),
+            fallback=leaf_ids(url)[1],
+            body=body,
+            content_type=content_type,
+        )
+        write_json(leaf_dir / CAPTURE_NAME, record)
     except Exception as exc:  # noqa: BLE001 — see the comment above
         (leaf_dir / CAPTURE_NAME).unlink(missing_ok=True)
         return fail(url, rel, f"capture_asset exited 0 but the capture did not add up: {type(exc).__name__}: {exc}")

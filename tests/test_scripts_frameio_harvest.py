@@ -147,22 +147,41 @@ def test_folder_and_leaf_urls_are_built_on_the_given_urls_own_origin():
 # the capture record
 # --------------------------------------------------------------------------- #
 
-def test_the_capture_record_is_the_extractors_shape_and_owns_no_lifecycle_key():
-    """`slug,item,title,body,content_type,fetched_at` are text the extractor
-    type-checks; `frontmatter` is scalars and flat lists, and never a key
-    another verb owns — a fetched title must not get to set a page's status."""
+def test_the_capture_record_is_flat_and_owns_no_lifecycle_key():
+    """Harvest is bytes: `slug,item,title,body,content_type,fetched_at`, all
+    text, and nothing else. No `frontmatter` object, no summary, and no key a
+    host verb owns — a fetched title must not get to set a page's status."""
     mod = _module(SCRIPTS / "capture_record.py")
     url = f"{SHARE}/view/abc"
     record = mod.capture_record(
-        slug="talks", item=url, title="Deck", body="page.md", content_type="text/markdown",
-        frontmatter={"type": "doc", "status": "published", "title": "x", "resource": "y", "harvested": {"at": 1},
-                     "path": ["Share", {"nested": 1}, "Decks"], "author": "", "bytes": 5, "blob": {"a": 1}})
+        slug="talks", item=url, title="Deck", body="document.pdf", content_type="application/pdf")
 
-    assert list(record) == ["v", "slug", "item", "title", "body", "content_type", "fetched_at", "frontmatter"]
+    assert list(record) == ["v", "slug", "item", "title", "body", "content_type", "fetched_at"]
     for field in ("slug", "item", "title", "body", "content_type", "fetched_at"):
         assert isinstance(record[field], str), field
-    assert record["frontmatter"] == {"type": "doc", "path": ["Share", "Decks"], "bytes": 5}
+    assert not (set(record) & mod.OWNED_KEYS - {"title"}), "a host verb's keys are not a capture's to write"
     assert "dest" not in record, "a download ticket carries no dest and a harvest slice cannot write one"
+
+
+def test_a_captured_document_is_typed_by_its_extension_and_media_is_told_apart():
+    """The bytes are whatever the signed proxy converted the asset to, so the
+    extension is all that types them — and a media body is the transcriber's."""
+    mod = _module(SCRIPTS / "capture_record.py")
+    assert mod.content_type_for("pdf") == "application/pdf"
+    assert mod.content_type_for("PPTX").endswith("presentationml.presentation")
+    assert mod.content_type_for("zzz") == mod.content_type_for("") == "application/octet-stream"
+    assert mod.is_media("video/mp4") and mod.is_media("audio/mpeg")
+    assert not mod.is_media("application/pdf") and not mod.is_media(None)
+
+
+def test_the_real_document_is_preferred_over_a_stray_document_bin():
+    """`sorted(glob("document.*"))[0]` was `document.bin` whenever a nameless
+    attempt had left one beside the real file."""
+    mod = _module(SCRIPTS / "capture_record.py")
+    docs = [Path("document.bin"), Path("document.pptx"), Path("document.pdf"), Path("document.zzz")]
+    assert mod.pick_document(docs).name == "document.pdf"
+    assert mod.pick_document(docs, "Deck Q3.PPTX").name == "document.pptx", "the asset's own extension wins"
+    assert mod.pick_document(docs[:1]).name == "document.bin" and mod.pick_document([]) is None
 
 
 def test_asset_facts_read_the_ids_and_hosts_off_the_leaf_url():

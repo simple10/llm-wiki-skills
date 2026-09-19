@@ -1,12 +1,19 @@
-"""`channel-frameio` on the ticket contract: one ticket captures a whole share.
+"""`channel-frameio` on the ticket contract: two steps, one ticket each.
 
-Nothing fans a share's leaves out into further tickets any more, so the unit
-does it: `harvest_share.py` plans the leaves from the ticket's own filters,
-captures each into its own `_raw/<slug>/<leaf>--<hash8>/`, and writes the one
-`report.json`. The pure half — the plan, the leaf names, the report — is
-tested without a CLI so it runs everywhere; the end-to-end cases put a fixture
-asset where `capture_asset.py` would have left it and run the REAL extractor
-over what the unit rendered.
+HARVEST is bytes. Nothing fans a share's leaves out into further tickets, so
+the unit does it: `harvest_share.py` plans the leaves from the ticket's own
+filters, captures each into its own `_raw/<slug>/<leaf>--<hash8>/`, and writes
+the one `report.json`. No page is rendered there.
+
+PROCESS is the unit's own. `apply` mints one process ticket per captured leaf
+and `frameio_doc_note.py` turns that leaf's bytes into the page under `dest`,
+through the real `page create`.
+
+The pure half — the plan, the leaf names, the report — is tested without a CLI
+so it runs everywhere; the end-to-end cases put a fixture asset where
+`capture_asset.py` would have left it, run the unit's own process step over it,
+and — for a video, whose page only `pipeline extract` can mint — the REAL
+extractor.
 
 Loaded by path: unit scripts live under `skills/<unit>/scripts/` and are
 launched with `uv run`, so there is no package to import them from.
@@ -18,14 +25,16 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
 
-from conftest import declared_job, extracted, ticket_in
+from conftest import declared_job, ticket_in
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills/channel-frameio/scripts"
@@ -231,7 +240,8 @@ def test_a_scope_that_empties_the_plan_fails_loudly_and_names_the_fix():
 
 def _fake_capture_job(calls, fail=()):
     """Stands in for `uv run capture_job.py …`: leaves what a captured leaf
-    leaves, or exits 1 having left nothing."""
+    leaves — the downloaded file and a FLAT record naming it — or exits 1
+    having left nothing."""
 
     def run(cmd, timeout=None):
         calls.append(cmd)
@@ -239,8 +249,11 @@ def _fake_capture_job(calls, fail=()):
         url = _flag(cmd, "--url")
         if any(url.endswith(f) for f in fail):
             return 1, "", "Timeout 20000ms exceeded"
-        (leaf_dir / "page.md").write_text("# x\n", encoding="utf-8")
-        (leaf_dir / "capture.json").write_text(json.dumps({"item": url, "title": "T", "body": "page.md"}), encoding="utf-8")
+        (leaf_dir / "document.pdf").write_bytes(b"%PDF-1.4 fake")
+        (leaf_dir / "capture.json").write_text(
+            json.dumps({"item": url, "title": "T", "body": "document.pdf", "content_type": "application/pdf"}),
+            encoding="utf-8",
+        )
         return 0, "{}", ""
 
     return run
@@ -387,8 +400,8 @@ def test_every_child_gets_what_is_left_of_the_slice_and_a_killed_one_is_a_timeou
         seen.append((cmd, timeout))
         leaf_dir = Path(cmd[3])
         if len(seen) == 1:  # killed mid-write: a capture.json may be there, and is not a capture
-            (leaf_dir / "page.md").write_text("# x\n", encoding="utf-8")
-            (leaf_dir / "capture.json").write_text(json.dumps({"title": "T", "body": "page.md"}), encoding="utf-8")
+            (leaf_dir / "document.pdf").write_bytes(b"%PDF-1.4 fake")
+            (leaf_dir / "capture.json").write_text(json.dumps({"title": "T", "body": "document.pdf"}), encoding="utf-8")
             return _module("capture_record").TIMED_OUT, "", "timeout: killed after 740s"
         return _fake_capture_job([])(cmd)
 
@@ -498,9 +511,9 @@ def test_a_refresh_ticket_recaptures_its_leaf_instead_of_counting_the_old_captur
     `unchanged` over bytes nobody re-read."""
     resource = _leaf(9)["view_url"]
     cap = _refresh_dir(tmp_path, resource)
-    (cap / "page.md").write_text("# last time\n", encoding="utf-8")
-    (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "page.md"}), encoding="utf-8")
-    (cap / "report.json").write_text(json.dumps({"v": 1, "outcome": "ok"}), encoding="utf-8")  # the extractor's, from last time
+    (cap / "document.pdf").write_bytes(b"%PDF-1.4 last time")
+    (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "document.pdf"}), encoding="utf-8")
+    (cap / "report.json").write_text(json.dumps({"v": 1, "outcome": "ok"}), encoding="utf-8")  # the process step's, from last time
     calls = []
     code, summary, report = _drive(monkeypatch, capsys, cap, calls)
     assert len(calls) == 1 and "--fresh" in calls[0] and _flag(calls[0], "--url") == resource
@@ -516,8 +529,8 @@ def test_a_refresh_ticket_recaptures_its_leaf_instead_of_counting_the_old_captur
 def test_a_refresh_that_fails_reports_failed_not_the_old_capture(monkeypatch, capsys, tmp_path):
     resource = _leaf(9)["view_url"]
     cap = _refresh_dir(tmp_path, resource)
-    (cap / "page.md").write_text("# last time\n", encoding="utf-8")
-    (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "page.md"}), encoding="utf-8")
+    (cap / "document.pdf").write_bytes(b"%PDF-1.4 last time")
+    (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "document.pdf"}), encoding="utf-8")
     code, _summary, report = _drive(monkeypatch, capsys, cap, [], fail=("dddddddddddd",))
     assert code == 1 and report["outcome"] == "failed" and report["captured"] == []
 
@@ -578,9 +591,10 @@ def _titled_capture_job(titles):
 
     def run(cmd, timeout=None):
         leaf_dir, url = Path(cmd[3]), _flag(cmd, "--url")
-        (leaf_dir / "page.md").write_text("# x\n", encoding="utf-8")
+        (leaf_dir / "document.pdf").write_bytes(b"%PDF-1.4 fake")
         title = titles[_flag(cmd, "--name")]
-        (leaf_dir / "capture.json").write_text(json.dumps({"item": url, "title": title, "body": "page.md"}), encoding="utf-8")
+        (leaf_dir / "capture.json").write_text(
+            json.dumps({"item": url, "title": title, "body": "document.pdf"}), encoding="utf-8")
         return 0, "{}", ""
 
     return run
@@ -594,7 +608,7 @@ def test_same_named_assets_are_told_apart_by_their_folder_on_every_pass(monkeypa
     titles = {"Brief.pdf": "Brief.pdf", "brief.PDF": "brief.PDF ", "Notes.pdf": "Notes.pdf", "Untitled": None, "Untitled 2": None}
     mod, hash8 = _module("harvest_share"), _module("capture_record").hash8
     want = ["Brief.pdf", "Brief.pdf (Client B - Drafts)", f"brief.PDF ({hash8(leaves[2]['view_url'])})", "Notes.pdf",
-            None, f"page ({hash8(leaves[5]['view_url'])})"]  # no title: the extractor files it under its body's stem
+            None, f"document ({hash8(leaves[5]['view_url'])})"]  # no title: the body's own stem tells them apart
     for _ in range(2):  # a second pass fetches nothing and renames nothing a second time
         monkeypatch.setattr(mod, "run", _titled_capture_job(titles))
         monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0"])
@@ -605,34 +619,30 @@ def test_same_named_assets_are_told_apart_by_their_folder_on_every_pass(monkeypa
         assert [json.loads((tmp_path / c["dir"] / "capture.json").read_text()).get("title") for c in report["captured"]] == want
 
 
-def _fake_asset_run(calls, kind):
-    """`capture_asset.py` stubbed — it needs a browser and the venue — and
-    `frameio_doc_note.py` run FOR REAL, under this interpreter."""
+def _fake_asset_run(calls, kind, title="Real Title - Fixture Share"):
+    """`capture_asset.py` stubbed — it needs a browser and the venue. It is the
+    ONLY child a capture has: harvest renders nothing."""
 
     def run(cmd, timeout=None):
         calls.append(cmd)
-        script = Path(cmd[2]).name
-        if script == "capture_asset.py":
-            out = Path(_flag(cmd, "--out"))
-            out.mkdir(parents=True, exist_ok=True)
-            name = _flag(cmd, "--name")
-            if kind == "video":
-                (out / "video.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
-            else:
-                shutil.copy(FIXTURES / "deck.pdf", out / "document.pdf")
-            meta = {"url": cmd[3], "final_url": cmd[3], "title": "Real Title - Fixture Share", "name": name, "kind": kind, "bytes": 16}
-            (out / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-            return 0, json.dumps({"ok": True, "kind": kind, "bytes": 16, "title": meta["title"]}), ""
-        done = subprocess.run([sys.executable, *cmd[2:]], capture_output=True, text=True)
-        return done.returncode, done.stdout.strip(), done.stderr.strip()
+        out = Path(_flag(cmd, "--out"))
+        out.mkdir(parents=True, exist_ok=True)
+        name = _flag(cmd, "--name")
+        if kind == "video":
+            (out / "video.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        else:
+            shutil.copy(FIXTURES / "deck.pdf", out / "document.pdf")
+        meta = {"url": cmd[3], "final_url": cmd[3], "title": title, "name": name, "kind": kind, "bytes": 16}
+        (out / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        return 0, json.dumps({"ok": True, "kind": kind, "bytes": 16, "title": meta["title"]}), ""
 
     return run
 
 
-def _capture_leaf(monkeypatch, capsys, root, leaf_dir, url, kind, *argv):
+def _capture_leaf(monkeypatch, capsys, root, leaf_dir, url, kind, *argv, title="Real Title - Fixture Share"):
     mod = _module("capture_job")
     calls = []
-    monkeypatch.setattr(mod, "run", _fake_asset_run(calls, kind))
+    monkeypatch.setattr(mod, "run", _fake_asset_run(calls, kind, title))
     monkeypatch.setattr(sys, "argv", ["capture_job.py", str(leaf_dir), "--root", str(root), "--url", url, *argv])
     code = mod.main()
     return code, calls, capsys.readouterr()
@@ -652,9 +662,12 @@ def test_a_video_leaf_names_the_media_file_as_its_body(monkeypatch, capsys, tmp_
     record = json.loads((leaf_dir / "capture.json").read_text())
     assert (record["body"], record["content_type"], record["item"], record["slug"]) == ("video.mp4", "video/mp4", url, "talks")
     assert record["title"] == "Real Title" and not (leaf_dir / "page.md").exists()
-    assert record["frontmatter"]["type"] == "video" and record["frontmatter"]["path"] == ["Share", "Day 1"]
+    assert list(record) == ["v", "slug", "item", "title", "body", "content_type", "fetched_at"], "flat: harvest is bytes"
     for field in ("slug", "item", "title", "body", "fetched_at"):
         assert isinstance(record[field], str), field
+    # What the harvest knew and the bytes do not carry, for the process step.
+    meta = json.loads((leaf_dir / "meta.json").read_text())
+    assert meta["kind"] == "video" and meta["path"] == ["Share", "Day 1"] and meta["title_strip"] == " - Fixture Share"
 
 
 def test_a_videos_title_is_made_a_filename_and_the_venues_own_is_kept(monkeypatch, capsys, tmp_path):
@@ -671,8 +684,10 @@ def test_a_videos_title_is_made_a_filename_and_the_venues_own_is_kept(monkeypatc
     monkeypatch.setattr(sys, "argv", ["capture_job.py", str(leaf_dir), f"--root={tmp_path}", f"--url={url}", "--slug=talks", "--name=-k.mov"])
     assert mod.main() == 0
     record = json.loads((leaf_dir / "capture.json").read_text())
-    assert record["title"] == "Day 1 - Keynote - Q&A" and record["frontmatter"]["source_title"] == "Day 1: Keynote / Q&A?"
-    assert record["frontmatter"]["original_name"] == "-k.mov"
+    assert record["title"] == "Day 1 - Keynote - Q&A", "the page's FILE is named from this one"
+    meta = json.loads((leaf_dir / "meta.json").read_text())
+    assert meta["title"] == "Day 1: Keynote / Q&A?", "the venue's own spelling, for the process step's H1"
+    assert meta["name"] == "-k.mov"
 
 
 def test_a_leafs_children_get_a_shorter_deadline_and_a_killed_fetch_leaves_nothing_behind(monkeypatch, capsys, tmp_path):
@@ -732,12 +747,87 @@ def test_a_capture_that_does_not_add_up_leaves_no_capture_json(monkeypatch, caps
     assert json.loads(capsys.readouterr().out)["ok"] is False and not (leaf_dir / "capture.json").exists()
 
 
-# ------------------------------------------- end to end, the real extractor
+# ------------------------------------------------ end to end, the real CLI
 
 
-def _run_script(name, *argv, cwd):
-    done = subprocess.run([sys.executable, str(SCRIPTS / name), *argv], cwd=cwd, capture_output=True, text=True)
+def _run_script(name, *argv, cwd, env=None):
+    done = subprocess.run([sys.executable, str(SCRIPTS / name), *argv], cwd=cwd, env=env, capture_output=True, text=True)
     return done.returncode, done.stdout, done.stderr
+
+
+def _queued_media(wiki, dest):
+    """`(page, media)` for every stub under `dest` the transcribe stage would
+    take, by ITS rule: `extracted: queued` and a non-empty `media`
+    (`pipeline/media.py::queued_under`). Read here rather than imported — a
+    unit reaches the machinery by verb, and so does its test."""
+    found = []
+    for path in sorted((wiki / dest).rglob("*.md")):
+        front = path.read_text(encoding="utf-8").split("\n---\n", 1)[0]
+        keys = dict(
+            line.split(": ", 1) for line in front.splitlines() if ": " in line and not line.startswith(" ")
+        )
+        if keys.get("extracted") == "queued" and keys.get("media"):
+            found.append((str(path.relative_to(wiki)), keys["media"]))
+    return found
+
+
+def _front_door(tmp, ops, env):
+    """A `PATH` whose bare `llm-wiki-ops` is the harness's REAL CLI.
+
+    In production that name is the machine-global dispatcher, which walks for a
+    wiki and execs its shim; a suite may reach neither the machine's wikis nor
+    its packages home, so this execs the CLI under test with the harness's own
+    environment instead. What is being tested is the page `page create` writes,
+    not how the name resolves — `tests/test_scripts_frameio_doc_note.py` pins
+    the argv, the cwd and the guard the unit drops.
+    """
+    bin_dir = Path(tempfile.mkdtemp(prefix="front-door-", dir=tmp))
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"os.execve({ops[0]!r}, [{ops[0]!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
+
+
+def _stub_front_door(tmp):
+    """A recording `llm-wiki-ops` on PATH, for a case with no wiki behind it.
+    Returns `(env, seen)`; `seen` holds one JSON line per call."""
+    bin_dir = Path(tempfile.mkdtemp(prefix="stub-door-", dir=tmp))
+    seen = bin_dir / "seen.jsonl"
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'stdin': sys.stdin.read()}}) + '\\n')\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return {"PATH": f"{bin_dir}{os.pathsep}{OFFLINE['PATH']}"}, seen
+
+
+def _process(wiki, capture_rel, dest, *extra, env, runner=None):
+    """The unit's PROCESS step, as the SKILL runs it: the wiki root, the
+    ticket's `capture_dir` and the ticket's `dest`."""
+    argv = [".", f"--capture-dir={capture_rel}", f"--dest={dest}", *extra]
+    if runner is not None:
+        return runner(*argv, cwd=wiki, env=env)
+    return _run_script("frameio_doc_note.py", *argv, cwd=wiki, env=env)
+
+
+def _harvested(monkeypatch, capsys, wiki, leaf, slug, *argv, title="Real Title - Fixture Share"):
+    """One planned leaf, harvested for real — `capture_job.py` with only the
+    browser stubbed — and the flat record it leaves."""
+    code, _calls, _io = _capture_leaf(
+        monkeypatch, capsys, wiki, wiki / leaf["dir"], leaf["item"], "document",
+        "--slug", slug, *( [f"--name={leaf['name']}"] if leaf.get("name") else [] ),
+        *[f"--path={bit}" for bit in leaf.get("path") or []],
+        f"--crumb-skip={len(leaf.get('path') or []) - len(leaf.get('crumb') or [])}",
+        *argv, title=title,
+    )
+    assert code == 0
+    return json.loads((wiki / leaf["dir"] / "capture.json").read_text())
 
 
 OFFLINE = {**os.environ, "UV_OFFLINE": "1"}  # a test never reaches the network, and neither does a resolver it starts
@@ -760,15 +850,19 @@ def _uv_cannot_run_the_renderer():
     return None
 
 
-def _render_as_production_does(*argv, cwd):
-    done = subprocess.run(["uv", "run", "--script", str(SCRIPTS / "frameio_doc_note.py"), *argv], cwd=cwd, env=OFFLINE, capture_output=True, text=True)
+def _render_as_production_does(*argv, cwd, env=None):
+    done = subprocess.run(
+        ["uv", "run", "--script", str(SCRIPTS / "frameio_doc_note.py"), *argv],
+        cwd=cwd, env={**OFFLINE, **(env or {})}, capture_output=True, text=True,
+    )
     return done.returncode, done.stdout, done.stderr
 
 
-def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki):
-    """Plan the share, put a fixture document where `capture_asset.py` would
-    have, render it with the ported `frameio_doc_note.py`, write the ticket's
-    report — then the REAL `pipeline extract` over the leaf the report names."""
+def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki, monkeypatch, capsys, tmp_path):
+    """Both steps, in order. HARVEST plans the share and captures the one leaf
+    it still owes — bytes, no page — and writes the report `apply` reads. Then
+    the unit's own PROCESS step over that leaf's capture dir writes ONE page
+    under the ticket's `dest`, through the REAL `page create`."""
     job = declared_job(ops, env, wiki, UNIT, SHARE, "dest=sources/scrapes/port-frameio")
     assert job.record["harvest"]["scope"] == "domain"  # the manifest's shipped default
     cap = ticket_in(wiki, job, "share-0000--e2e00001", unit=UNIT, item=SHARE)
@@ -786,18 +880,10 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki):
     leaf_dir = wiki / planned["dir"]
     assert leaf_dir.parent == cap.parent and leaf_dir != cap
 
-    leaf_dir.mkdir()
-    shutil.copy(FIXTURES / "deck.pdf", leaf_dir / "document.pdf")
-    (leaf_dir / "meta.json").write_text(json.dumps({
-        "url": fresh["view_url"], "title": "Q3 Roadmap.pdf - Fixture Share", "name": fresh["name"], "kind": "document", "bytes": 614,
-    }), encoding="utf-8")
-    code, out, err = _run_script(
-        "frameio_doc_note.py", planned["dir"], "--slug", job.slug, "--path", "Fixture Share", "--path", "Decks",
-        "--title-strip", " - Fixture Share", "--author", "Ada Lovelace", cwd=wiki,
-    )
-    assert code == 0, err
-    body = (leaf_dir / "page.md").read_text(encoding="utf-8")
-    assert not body.startswith("---") and "\n---" not in body
+    record = _harvested(monkeypatch, capsys, wiki, planned, job.slug, "--title-strip= - Fixture Share",
+                        "--author=Ada Lovelace", title="Q3 Roadmap.pdf - Fixture Share")
+    assert record["body"] == "document.pdf" and record["content_type"] == "application/pdf"
+    assert not (leaf_dir / "page.md").exists(), "harvest renders no page"
 
     # Out of budget on purpose: the leaf is already on disk, so this pass only counts it and reports.
     code, out, err = _run_script("harvest_share.py", rel, "--budget-seconds", "-1", cwd=wiki)
@@ -805,25 +891,39 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki):
     report = json.loads((cap / "report.json").read_text())
     assert report["outcome"] == "ok" and report["ticket"] == ticket["ticket"]
     assert report["captured"] == [{"item": fresh["view_url"], "dir": planned["dir"], "title": "Q3 Roadmap.pdf"}]
+    assert report["written"] == [], "a harvest report claims no page"
 
-    (page,) = extracted(ops, env, wiki, wiki / report["captured"][0]["dir"])
+    # PROCESS: one ticket per captured dir, and this is what the unit does with it.
+    code, out, err = _process(wiki, planned["dir"], job.dest, env=_front_door(tmp_path, ops, env))
+    assert code == 0, err + out
+    page = wiki / json.loads(out)["written"][0]
+    assert json.loads((leaf_dir / "report.json").read_text())["written"] == [str(page.relative_to(wiki))]
+
     text = page.read_text(encoding="utf-8")
-    assert page.is_relative_to(wiki / job.dest)
-    assert text.count("\n---\n") == 1 and text.startswith("---\n"), "exactly the extractor's own frontmatter block"
+    assert page.is_relative_to(wiki / job.dest) and page.name == "Q3 Roadmap.pdf.md"
+    assert text.count("\n---\n") == 1 and text.startswith("---\n"), "exactly one frontmatter block, the host's own"
     front, _, rendered = text[4:].partition("\n---\n")
     assert "title: Q3 Roadmap.pdf" in front and "status: draft" in front and fresh["view_url"] in front
-    assert "# Q3 Roadmap.pdf" in rendered and "*Decks*" in rendered
+    assert "extracted: 'true'" in front or "extracted: true" in front, front
+    # The two leaves' top folders differ, so the driver kept both: `--crumb-skip=0`.
+    assert "# Q3 Roadmap.pdf" in rendered and "*Fixture Share / Decks*" in rendered
     assert "- **Type:** doc" in rendered and "- **Author:** Ada Lovelace" in rendered
     assert "`Q3 Roadmap.pdf` (pdf, 614 bytes)" in rendered
     assert "_raw/" not in rendered, "a committed page names the captured file and never points into `_raw/`"
     assert "> [!note]- Extracted text" in rendered
     # WHAT the callout holds is `test_a_pdfs_text_reaches_the_page_…`'s: this interpreter has no pypdf.
 
+    # A second process ticket over the same bytes replaces the page, and does not refuse.
+    code, out, err = _process(wiki, planned["dir"], job.dest, env=_front_door(tmp_path, ops, env))
+    assert code == 0, err + out
+    assert json.loads(out)["written"] == [str(page.relative_to(wiki))]
+    assert page.read_text(encoding="utf-8").count("# Q3 Roadmap.pdf") == 1
 
-def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki):
-    """The extractor files a page under its title and overwrites what is there:
-    before the driver settled titles, `Brief.pdf` in a second folder WAS the
-    first one's page, and both process tickets said ok."""
+
+def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki, monkeypatch, capsys, tmp_path):
+    """A page is filed under its title and the second write wins: before the
+    driver settled titles, `Brief.pdf` in a second folder WAS the first one's
+    page, and both process tickets said ok."""
     share = "https://next.frame.io/share/22222222-2222-2222-2222-222222222222"
     job = declared_job(ops, env, wiki, UNIT, share, "dest=sources/scrapes/port-frameio-names", slug="port-channel-frameio-names")
     cap = ticket_in(wiki, job, "share-2222--e2e00002", unit=UNIT, item=share)
@@ -838,15 +938,9 @@ def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki):
     planned = json.loads((cap / "plan.json").read_text())["leaves"]
     assert len(planned) == 2 and len({leaf["dir"] for leaf in planned}) == 2
 
-    for leaf in planned:  # what `capture_asset.py` leaves, then the unit's own render
-        (wiki / leaf["dir"]).mkdir()
-        shutil.copy(FIXTURES / "deck.pdf", wiki / leaf["dir"] / "document.pdf")
-        (wiki / leaf["dir"] / "meta.json").write_text(json.dumps({
-            "url": leaf["item"], "title": "Brief.pdf - Fixture Share", "name": leaf["name"], "kind": "document", "bytes": 614,
-        }), encoding="utf-8")
-        code, out, err = _run_script("frameio_doc_note.py", leaf["dir"], "--slug", job.slug, "--path", leaf["path"][0],
-                                     "--path", leaf["path"][1], "--title-strip", " - Fixture Share", cwd=wiki)
-        assert code == 0, err
+    for leaf in planned:  # harvested for real, each into its own dir
+        _harvested(monkeypatch, capsys, wiki, leaf, job.slug, "--title-strip= - Fixture Share",
+                   title="Brief.pdf - Fixture Share")
 
     reports = []
     for _ in range(2):  # the driver is re-run pass after pass: same names
@@ -856,7 +950,13 @@ def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki):
     report = reports[-1]
     assert report["outcome"] == "ok"
 
-    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    # One process ticket per captured dir, each run as the SKILL runs it.
+    front = _front_door(tmp_path, ops, env)
+    pages = []
+    for entry in report["captured"]:
+        code, out, err = _process(wiki, entry["dir"], job.dest, env=front)
+        assert code == 0, err + out
+        pages.append(wiki / json.loads(out)["written"][0])
     assert len({page.resolve() for page in pages}) == 2 and all(page.is_relative_to(wiki / job.dest) for page in pages)
     assert [page.name for page in pages] == ["Brief.pdf.md", "Brief.pdf (Client B).md"]
     assert [[c["title"] for c in r["captured"]] for r in reports] == [["Brief.pdf", "Brief.pdf (Client B)"]] * 2
@@ -865,20 +965,33 @@ def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki):
     assert leaves[1]["view_url"] in second and "*Client B*" in second
 
 
-def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki, monkeypatch, capsys):
+def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki, monkeypatch, capsys, tmp_path):
+    """The unit's own process step mints the transcribe stage's stub — and the
+    REAL walker finds it. `page create` takes `extracted=` and `media=` as
+    ordinary keys, so no unit needs the generic extractor for a media body."""
     job = declared_job(ops, env, wiki, UNIT, SHARE, "dest=sources/scrapes/port-frameio")
     url = f"{SHARE}/view/vid00002"
     leaf_dir = wiki / "_raw" / job.slug / f"keynote--{hashlib.sha1(url.encode()).hexdigest()[:8]}"
     code, _calls, _io = _capture_leaf(monkeypatch, capsys, wiki, leaf_dir, url, "video", "--slug", job.slug, "--name", "Keynote.mov")
     assert code == 0
+    rel = str(leaf_dir.relative_to(wiki))
 
-    (page,) = extracted(ops, env, wiki, leaf_dir)
+    code, out, err = _process(wiki, rel, job.dest, env=_front_door(tmp_path, ops, env))
+    assert code == 0, err + out
+    page = wiki / json.loads(out)["written"][0]
+    assert json.loads((leaf_dir / "report.json").read_text())["written"] == [str(page.relative_to(wiki))]
+
     text = page.read_text(encoding="utf-8")
-    assert page.is_relative_to(wiki / job.dest) and "Real Title - Fixture Share" in text and url in text
-    assert f"_raw/{job.slug}/{leaf_dir.name}/video.mp4" in text, "the page names the media the transcriber is owed"
+    assert page.is_relative_to(wiki / job.dest) and page.name == "Real Title - Fixture Share.md"
+    assert "extracted: queued" in text and url in text
+    assert f"media: {rel}/video.mp4" in text, "the page names the media the transcriber is owed"
+    assert text.rstrip().endswith("---"), "an empty body: the transcript is what fills it"
+
+    # The stub is an ITEM to the transcribe stage's own walker, not just a page.
+    assert _queued_media(wiki, job.dest) == [(str(page.relative_to(wiki)), f"{rel}/video.mp4")]
 
 
-def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_it(ops, env, wiki):
+def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_it(ops, env, wiki, tmp_path):
     """Under the test interpreter there is no pypdf, the callout reads
     `(extraction failed: ModuleNotFoundError…)` — and a test that accepted that
     text verified nothing. Run the way production runs it, or not at all."""
@@ -891,12 +1004,21 @@ def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_
     leaf_dir = wiki / "_raw" / job.slug / f"deck--{hashlib.sha1(url.encode()).hexdigest()[:8]}"
     leaf_dir.mkdir(parents=True)
     shutil.copy(FIXTURES / "deck.pdf", leaf_dir / "document.pdf")
-    (leaf_dir / "meta.json").write_text(json.dumps({"url": url, "title": "Deck", "name": "Deck.pdf", "kind": "document", "bytes": 614}), encoding="utf-8")
-    code, out, err = _render_as_production_does(str(leaf_dir.relative_to(wiki)), f"--slug={job.slug}", cwd=wiki)
+    (leaf_dir / "meta.json").write_text(json.dumps(
+        {"url": url, "title": "Deck", "name": "Deck.pdf", "kind": "document", "bytes": 614, "path": [], "crumb_skip": 0},
+    ), encoding="utf-8")
+    (leaf_dir / "capture.json").write_text(json.dumps(
+        {"v": 1, "slug": job.slug, "item": url, "title": "Deck", "body": "document.pdf",
+         "content_type": "application/pdf", "fetched_at": "2026-09-19T00:00:00Z"},
+    ), encoding="utf-8")
+    code, out, err = _process(
+        wiki, str(leaf_dir.relative_to(wiki)), job.dest,
+        env=_front_door(tmp_path, ops, env), runner=_render_as_production_does,
+    )
     assert code == 0, err
     assert json.loads(out)["extracted_chars"] > 0
 
-    (page,) = extracted(ops, env, wiki, leaf_dir)
+    page = wiki / json.loads(out)["written"][0]
     text = page.read_text(encoding="utf-8")
     assert "> **Page 1**" in text and "Quarterly roadmap for the fixture share" in text
     assert "extraction failed" not in text
@@ -954,10 +1076,10 @@ HOSTILE_TITLES = [
 ]
 
 
-def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki):
-    """Harvest said ok and the page never landed: the extractor names the FILE
-    from `capture.json`'s title and refuses `: ? / "`, a leading dot — and the
-    filesystem refuses 300 bytes. The H1 keeps the venue's own title."""
+def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki, monkeypatch, capsys, tmp_path):
+    """Harvest said ok and the page never landed: `page create` names the FILE
+    from the title and refuses `: ? / "`, a leading dot — and the filesystem
+    refuses 300 bytes. The H1 keeps the venue's own title."""
     share = "https://next.frame.io/share/44444444-4444-4444-4444-444444444444"
     job = declared_job(ops, env, wiki, UNIT, share, "dest=sources/scrapes/port-frameio-titles", slug="port-channel-frameio-titles")
     cap = ticket_in(wiki, job, "share-4444--e2e00004", unit=UNIT, item=share)
@@ -972,19 +1094,19 @@ def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki):
     assert code == 0, err
     planned = json.loads((cap / "plan.json").read_text())["leaves"]
     for leaf in planned:
-        (wiki / leaf["dir"]).mkdir()
-        shutil.copy(FIXTURES / "deck.pdf", wiki / leaf["dir"] / "document.pdf")
-        (wiki / leaf["dir"] / "meta.json").write_text(json.dumps({
-            "url": leaf["item"], "title": leaf["name"], "name": leaf["name"], "kind": "document", "bytes": 614}), encoding="utf-8")
-        code, out, err = _run_script("frameio_doc_note.py", leaf["dir"], f"--slug={job.slug}", f"--path={leaf['path'][0]}", "--crumb-skip=0", cwd=wiki)
-        assert code == 0, err
+        _harvested(monkeypatch, capsys, wiki, leaf, job.slug, title=leaf["name"])
     code, out, err = _run_script("harvest_share.py", rel, "--budget-seconds", "-1", cwd=wiki)
     assert code == 0, err
     report = json.loads((cap / "report.json").read_text())
     assert report["outcome"] == "ok" and len(report["captured"]) == 6
 
     rec = _module("capture_record")
-    pages = [extracted(ops, env, wiki, wiki / c["dir"])[0] for c in report["captured"]]
+    front = _front_door(tmp_path, ops, env)
+    pages = []
+    for entry in report["captured"]:
+        code, out, err = _process(wiki, entry["dir"], job.dest, env=front)
+        assert code == 0, err + out
+        pages.append(wiki / json.loads(out)["written"][0])
     assert len({page.resolve() for page in pages}) == 6, "every asset its own page"
     for (name, safe), first, second, leaf in zip(
         [t for t in HOSTILE_TITLES for _ in (0, 1)][::2], pages[::2], pages[1::2], planned[::2], strict=True
@@ -994,7 +1116,8 @@ def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki):
         text = first.read_text(encoding="utf-8")
         assert f"# {name}\n" in text, "the H1 is the venue's own title"
         record = json.loads((wiki / leaf["dir"] / "capture.json").read_text())
-        assert record["frontmatter"]["source_title"] == name and record["title"] == first.stem
+        meta = json.loads((wiki / leaf["dir"] / "meta.json").read_text())
+        assert meta["title"] == name and record["title"] == first.stem
 
 
 # ---- the real argv chain: harvest_share -> capture_job -> frameio_doc_note ---------------
@@ -1046,9 +1169,20 @@ def test_the_real_argv_chain_carries_a_file_named_like_an_option(tmp_path):
     assert [c["title"] for c in report["captured"]] == ["-rf.pdf", "--version"]
 
     first = root / report["captured"][0]["dir"]
+    record = json.loads((first / "capture.json").read_text())
+    assert record["body"] == "document.pdf" and not (first / "page.md").exists(), "harvest is bytes"
+    meta = json.loads((first / "meta.json").read_text())
+    assert meta["path"] == ["--help", "-x"] and meta["name"] == "-rf.pdf" and meta["author"] == "-Ada"
+
+    # And the PROCESS step over the same leaf: the same venue text crosses argv
+    # again, into the renderer and on to `page create`.
+    door, seen = _stub_front_door(tmp_path)
+    code, out, err = _process(root, report["captured"][0]["dir"], "sources/decks", env=door, runner=_render_as_production_does)
+    assert code == 0, err
     body = (first / "page.md").read_text(encoding="utf-8")
     assert body.startswith("# -rf.pdf\n") and "*--help / -x*" in body and "- **File:** `-rf.pdf` (pdf, 614 bytes)" in body
     assert "- **Author:** -Ada" in body
     assert "Quarterly roadmap for the fixture share" in body, "and the PDF's text is inlined, run as production runs it"
-    record = json.loads((first / "capture.json").read_text())
-    assert record["frontmatter"]["path"] == ["--help", "-x"] and record["frontmatter"]["original_name"] == "-rf.pdf"
+    (call,) = [json.loads(line) for line in seen.read_text().splitlines()]
+    assert call["argv"][:4] == ["--json", "page", "create", "title=-rf.pdf"], "a title opening with `-` is no option"
+    assert "dest=sources/decks" in call["argv"] and call["stdin"] == body
