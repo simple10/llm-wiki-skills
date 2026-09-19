@@ -8,21 +8,22 @@
 platform: circle
 scope: platform-general. No browser, no network of its own, stdlib only:
 `plan`, `record` and `report` are pure functions of files already in the job's
-`_raw/<slug>/` slice; `detect` and `render` only start another script.
+`_raw/<slug>/` slice; `detect` only starts another script.
 
-One harvest ticket walks a whole section. `capture_lesson.py` does the
-rendering; this script decides WHICH lessons, WHERE each one lands, writes the
-record the extractor reads, and writes the one report that leaves the slice.
+One harvest ticket walks a whole section. `capture_lesson.py` fetches the
+bytes; this script decides WHICH lessons, WHERE each one lands, writes the
+record that names those bytes, and writes the one report that leaves the
+slice. The PAGE is the process step's, off those same bytes.
 
   section_plan.py plan   <capture_dir> [--target URL] [--slug SLUG]
                          [--scope page|section|domain] [--ticket ID]
                          [--budget-s SECONDS]
   section_plan.py detect <capture_dir> --leaf N
-  section_plan.py render <capture_dir> --leaf N
-  section_plan.py record <capture_dir> (--leaf N | <lesson-url>) [--author NAME]
+  section_plan.py record <capture_dir> (--leaf N | <lesson-url>)
   section_plan.py report <capture_dir> [--auth-expired] [--gone] [--reason TEXT]
                          [--missing-leaf N <why>]... [--missing-host HOST <why>]...
-                         [--missing <host> <url> <why>]...   [--ticket ID]
+                         [--missing <host> <url> <why>]...
+                         [--stage harvest|process] [--written PATH]... [--ticket ID]
 
 `<capture_dir>` is the TICKET's capture directory — the one holding
 `ticket.json` and the root capture (`meta.json`, `page.html`). It is REQUIRED
@@ -57,23 +58,15 @@ plan    reads `ticket.json` (target, slug, `harvest.scope`, `harvest.access`,
 detect  the plugin's `assets.py detect` over one leaf, with the leaf's url
         as `--base-url` taken from `plan.json` — started through the front
         door, as an argument list, never through a shell.
-render  this unit's `to_markdown.py` over one leaf's `page.html`, likewise.
-        Prints the leaf's `page.md` and its caption files, by path.
-record  after `render` (and `format_transcript.py`) have filled one leaf:
-        puts a compact facts block under the heading of its `page.md`, appends
-        the leaf's `transcript.md` (the plugin's `format_transcript.py` over
-        the lesson's caption track) under `## Transcript` when there is one,
-        and writes its `capture.json`, carrying the same facts as
-        `frontmatter`. The record's `title` is `safe_title(venue title)` — a
-        legal FILENAME, because the host names the page file from it; the true
-        title stays the body's `# H1` and, where the two differ,
-        `frontmatter.source_title`. Every fact value is folded to one line.
-        Media the asset manifest (`assets.json`, beside the leaf's page) says
-        was DOWNLOADED is named by its bare FILE NAME — never a path: it sits
-        under `_raw/`, which a committed page never links into; a signed
-        stream url is never written down — it is dead within hours. The
-        author is read from the leaf's `author.txt` when there is one.
-        Safe to re-run: neither block is stacked twice.
+record  once `capture_lesson.py --leaf` has left a leaf's bytes: writes its
+        FLAT `capture.json` — `slug`, `item`, `title`, `body` (`page.html`, as
+        the venue served it), `content_type`, `fetched_at` and nothing else —
+        and `facts.json` beside it, holding what the SIDEBAR knew about this
+        lesson (course, section, duration, the venue's own title). A leaf's
+        own capture carries none of those, and the process step cannot reach
+        the plan. The record's `title` is `safe_title(venue title)` — a legal
+        FILENAME, because the host names the page file from it. Safe to
+        re-run. It renders no page.
 report  Cheap, and safe to run after EVERY leaf as well as last: a slice
         killed at the cap then still leaves a truthful `report.json` behind.
         Writes `report.json` in the ticket's capture dir. `captured[]`
@@ -94,11 +87,17 @@ shape is composed here: `_raw/<slug>/<slugified url path>--<first 8 hex of
 sha1(url)>`. The target itself, where it is a leaf, lands in the ticket's own
 `capture_dir`, which is never composed.
 
-Exit status: `plan`, `detect`, `render` and `record` exit 0 on success, 1 when
+Given `--stage process` (or any `--written`), `report` is the PROCESS step's
+instead: `written[]` is the pages that step wrote, `captured[]` is empty, and
+no plan is read. The step is always told, never read off
+`ticket.json`: a single-item job's process ticket has the SAME capture dir as
+its download ticket, and the file lands there under one name.
+
+Exit status: `plan`, `detect` and `record` exit 0 on success, 1 when
 an input is missing or unusable (said on stderr). `record` exits 3 — and says
 `"stop": true` — when the leaf WAS recorded but the plan's deadline has passed:
-start no further lesson, run `report`, exit. `detect`/`render` pass on the exit
-status of the script they start (127: it could not be started). `report` writes
+start no further lesson, run `report`, exit. `detect` passes on the exit
+status of the script it starts (127: it could not be started). `report` writes
 the report and exits 0 for `ok`, `partial`, `skipped` and `gone`, 1 for
 `failed`, 2 for an argument it refuses (nothing written).
 
@@ -114,6 +113,9 @@ History:
               deadline, `landed` leaves and a re-runnable report make "resume"
               real; a refresh ticket plans exactly its resource; fact values
               are folded to one line; `www.` is not a second host.
+  2026-09-19  harvest and process split apart again: harvest leaves BYTES and
+              a flat `capture.json`, the page is the process step's, and
+              `report --stage process --written` is its report.
 """
 
 import unicodedata
@@ -121,13 +123,11 @@ import argparse
 import hashlib
 import json
 import os
-import posixpath
 import re
-import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
 
 PLAN_V = 1
@@ -137,12 +137,10 @@ TICKET_NAME = "ticket.json"
 META_NAME = "meta.json"
 PLAN_NAME = "plan.json"
 CAPTURE_NAME = "capture.json"
+FACTS_NAME = "facts.json"
 REPORT_NAME = "report.json"
-BODY_NAME = "page.md"
-TRANSCRIPT_NAME = "transcript.md"
+BODY_HTML = "page.html"
 ASSETS_NAME = "assets.json"
-
-AUTHOR_NAME = "author.txt"
 
 RAW_DIRNAME = "_raw"
 SCOPES = ("page", "section", "domain")
@@ -157,18 +155,12 @@ SLICE_CAP_SECONDS = 1800
 DEFAULT_BUDGET_SECONDS = 1500
 EXIT_STOP = 3  # `record`: recorded, and the deadline has passed
 GONE_STATUSES = (404, 410)
-
-# Keys another verb owns: never in `frontmatter`.
-HOST_OWNED = ("status", "document_id", "document_revision", "harvested", "extracted", "title", "resource")
+STAGES = ("harvest", "process")
 
 LESSON_RE = re.compile(r"/lessons/([^/?#]+)")
 SECTION_RE = re.compile(r"/sections/([^/?#]+)")
 SPACE_RE = re.compile(r"^/c/([^/?#]+)")
-POSITION_RE = re.compile(r"\bTopic\s+(\d+)\s+of\s+(\d+)\b", re.I)
 DURATION_RE = re.compile(r"^(?:\d{1,2}:)?\d{1,2}:\d{2}$")
-HEADING_RE = re.compile(r"\A#\s+(.+?)\s*(?:\n|\Z)")
-FACT_LINE_RE = re.compile(r"^- \*\*[^*]+\*\*: ")
-FACTS_OPEN = "- **Type**: lesson"
 LINK_TEXT_CAP = 80  # `capture_lesson.py` slices link text to this many chars
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -395,13 +387,16 @@ def build_plan(ticket: dict, meta: dict, *, capture_rel: str) -> dict:
     if refresh:
         target = clean_url(ticket.get("resource") or "") or target
 
+    links = [link for link in meta.get("discovered_lesson_links") or [] if isinstance(link, dict)]
     candidates = []  # (url, text, is_root)
     if refresh or scope == "page" or is_lesson(target):
-        candidates.append((target, "", True))
+        # The page lists ITSELF in its own sidebar, and that text is the title
+        # the first pull filed it under: a refresh must not rename the page.
+        own = next((link.get("text") or "" for link in links
+                    if clean_url(link.get("href")) and same_key(clean_url(link["href"])) == same_key(target)), "")
+        candidates.append((target, own, True))
     if scope != "page" and not refresh:
-        for link in meta.get("discovered_lesson_links") or []:
-            if isinstance(link, dict):
-                candidates.append((link.get("href"), link.get("text") or "", False))
+        candidates += [(link.get("href"), link.get("text") or "", False) for link in links]
 
     leaves, dropped, seen, sections = [], [], set(), {}
     for raw, text, is_root in candidates:
@@ -492,142 +487,12 @@ def build_plan(ticket: dict, meta: dict, *, capture_rel: str) -> dict:
 # --- record -------------------------------------------------------------------
 
 
-def downloaded_media(directory: Path, leaf_rel: str) -> list:
-    """The FILE NAMES of the non-image assets `assets.py download` stored for
-    this leaf — names, never paths. They sit under `_raw/`, which is
-    machine-local and prunable, and a committed page never links into it."""
-    try:
-        entries = json.loads((directory / ASSETS_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    found = []
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict) or entry.get("status") != "downloaded" or entry.get("type") == "image":
-            continue
-        local = entry.get("local_path")
-        if isinstance(local, str) and local:
-            path = posixpath.normpath(posixpath.join(leaf_rel, local))
-            name = posixpath.basename(path)
-            if path.startswith(RAW_DIRNAME + "/") and name not in found:
-                found.append(name)
-    return found
-
-
-def frontmatter_for(
-    plan: dict, leaf: dict, body: str, meta: dict, *, author: str | None = None, media: list | None = None
-) -> dict:
-    """The lesson's exact facts: scalars and flat lists, unknown ones OMITTED."""
-    path = urlsplit(leaf["url"]).path
-    section, lesson = SECTION_RE.search(path), LESSON_RE.search(path)
-    position = POSITION_RE.search(body)
-    captions = [c["file"] for c in meta.get("captions") or [] if isinstance(c, dict) and isinstance(c.get("file"), str)]
-    title, venue = leaf_titles(leaf, body, meta)
-    facts = {
-        "type": "lesson",
-        "course": plan.get("course"),
-        "space": plan.get("space"),
-        "section_id": section.group(1) if section else None,
-        "lesson_id": lesson.group(1) if lesson else None,
-        "position": f"Topic {position.group(1)} of {position.group(2)}" if position else None,
-        "duration": leaf.get("duration"),
-        "author": author,
-        "captions": captions,
-        "media": media or [],
-        # The venue's own title, where the page could not be NAMED it.
-        "source_title": venue if venue and venue != title else None,
-    }
-    # Every value is venue text (or an argument carrying it) until proven
-    # otherwise: ONE line each, so none can forge a heading, a rule or a second
-    # fact under the facts block — or a key of its own in frontmatter.
-    folded = {k: [fold(i) for i in v if fold(i)] if isinstance(v, list) else fold(v) for k, v in facts.items()}
-    return {k: v for k, v in folded.items() if v not in ("", []) and k not in HOST_OWNED}
-
-
-FACT_LABELS = (
-    ("type", "Type"),
-    ("course", "Course"),
-    ("space", "Space"),
-    ("position", "Position"),
-    ("duration", "Duration"),
-    ("author", "Author"),
-    ("captions", "Captions"),
-    ("media", "Media"),
-)
-
-
-def facts_block(front: dict, item: str) -> str:
-    rows = []
-    for key, label in FACT_LABELS:
-        value = front.get(key)
-        if value:
-            rows.append(f"- **{label}**: {', '.join(value) if isinstance(value, list) else value}")
-    rows.append(f"- **Source**: <{item}>")
-    return "\n".join(rows)
-
-
-def with_facts(body: str, title: str | None, block: str) -> str:
-    """`body` opening with its heading and the facts block under it. Re-running
-    replaces the block this wrote before rather than stacking a second one. The
-    result always opens with `# …`, so it can never open with a `---` line the
-    extractor's own frontmatter would collide with."""
-    body = body.lstrip("﻿\n")
-    found = HEADING_RE.match(body)
-    if found:
-        heading, rest = f"# {fold(found.group(1)) or fold(title) or UNTITLED}", body[found.end():]
-    else:
-        heading, rest = f"# {fold(title) or UNTITLED}", body
-    lines = rest.lstrip("\n").split("\n")
-    if lines and lines[0] == FACTS_OPEN:
-        while lines and FACT_LINE_RE.match(lines[0]):
-            lines.pop(0)
-    rest = "\n".join(lines).lstrip("\n")
-    return f"{heading}\n\n{block}\n\n{rest}".rstrip() + "\n"
-
-
-TRANSCRIPT_OPEN = "## Transcript\n\n*From the lesson's own caption track"
-
-
-def with_transcript(body: str, transcript: str, source: str | None) -> str:
-    """`body` closing with the formatted captions — the extractor reads the
-    body and nothing beside it, so a transcript left as a sibling file never
-    reaches the page. Replaces the section this wrote before."""
-    cut = body.find(TRANSCRIPT_OPEN)
-    if cut != -1:
-        body = body[:cut]
-    if not transcript.strip():
-        return body.rstrip() + "\n"
-    source = re.sub(r"[^A-Za-z0-9._/-]", "", fold(source)) if source else None
-    note = f"{TRANSCRIPT_OPEN}{f' (`{source}`)' if source else ''}, cleaned. Not manually corrected.*"
-    return f"{body.rstrip()}\n\n{note}\n\n{caption_prose(transcript)}\n"
-
-
-_TIMESTAMP_LINE = re.compile(r"\A#{1,6} \[[0-9:]+\]\s*\Z")  # what `format_transcript.py` heads a block with
-_FORGES = re.compile(r"\A\s{0,3}(#{1,6}(\s|\Z)|```|~~~|-+\s*\Z|(-\s*){3,}\Z|(_\s*){3,}\Z|(\*\s*){3,}\Z|=+\s*\Z)")
-
-
-def caption_prose(transcript: str) -> str:
-    """Caption text is venue prose: a cue reading `# Forged`, a fence or a rule
-    is escaped so it stays words. The formatter's own `[mm:ss]` headings stay."""
-    lines = []
-    for line in transcript.strip().split("\n"):
-        line = "".join(ch if ch.isprintable() else " " for ch in line).rstrip()
-        if _FORGES.match(line) and not _TIMESTAMP_LINE.match(line):
-            line = "\\" + line.lstrip()
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def title_for(leaf: dict, body: str, meta: dict) -> str | None:
-    """The VENUE's title for this lesson, on one line: the sidebar's, else the
-    body's own heading, else the browser's."""
-    heading = HEADING_RE.match(body.lstrip("﻿\n"))
-    sidebar = leaf.get("source_title") or leaf.get("title")
-    return fold(sidebar) or fold(heading.group(1) if heading else "") or fold(meta.get("title")) or None
-
-
-def leaf_titles(leaf: dict, body: str, meta: dict) -> tuple[str, str | None]:
-    """`(the page's title — a legal filename, the venue's own title)`."""
-    venue = title_for(leaf, body, meta)
+def leaf_titles(leaf: dict, meta: dict) -> tuple[str, str | None]:
+    """`(the page's title — a legal filename, the venue's own title)`. Harvest
+    holds bytes, not a rendered body: the sidebar's text names the lesson, and
+    where the sidebar's link text was cut short, the browser's own title does.
+    The body's heading is the process step's fallback, once there is one."""
+    venue = fold(leaf.get("source_title") or leaf.get("title")) or fold(meta.get("title")) or None
     return safe_title(venue, fallback=UNTITLED), venue
 
 
@@ -658,46 +523,34 @@ def leaf_numbered(plan: dict, number) -> dict | None:
     return next((leaf for leaf in plan.get("leaves") or [] if leaf.get("order") == number), None)
 
 
-def author_of(directory: Path, given: str | None) -> str | None:
-    """`--author` on a hand run; else the leaf's `author.txt`, which a worker
-    writes with its file tool so a venue's name never crosses a shell."""
-    if given:
-        return given
-    try:
-        return (directory / AUTHOR_NAME).read_text(encoding="utf-8")[:400]
-    except OSError:
-        return None
-
-
-def record_leaf(capture_dir: Path, plan: dict, leaf: dict, *, author: str | None = None) -> dict:
+def record_leaf(capture_dir: Path, plan: dict, leaf: dict) -> dict:
+    """The leaf's flat `capture.json`, naming the bytes the venue served, and
+    `facts.json` beside it — what the SIDEBAR knew about this lesson (the
+    course, its section, its duration), which the leaf's own capture does not
+    carry and the process step cannot otherwise reach."""
     directory = leaf_path(capture_dir, leaf)
-    body_path = directory / BODY_NAME
-    try:
-        body = body_path.read_text(encoding="utf-8")
-    except OSError:
-        raise ValueError(f"{body_path}: no {BODY_NAME} — convert the leaf's page.html with to_markdown.py first")
-    if not body.strip():
-        raise ValueError(f"{body_path}: empty — nothing to record")
+    if not (directory / BODY_HTML).is_file():
+        raise ValueError(f"{directory / BODY_HTML}: nothing captured here — run capture_lesson.py --leaf first")
     meta = read_json(directory / META_NAME)
-    title, venue = leaf_titles(leaf, body, meta)
-    author = author_of(directory, author)
-    front = frontmatter_for(plan, leaf, body, meta, author=author, media=downloaded_media(directory, leaf["dir"]))
-    body = with_facts(body, venue or title, facts_block(front, leaf["url"]))
-    try:
-        transcript = (directory / TRANSCRIPT_NAME).read_text(encoding="utf-8")
-    except OSError:
-        transcript = ""
-    body = with_transcript(body, transcript, (front.get("captions") or [None])[0])
-    body_path.write_text(body, encoding="utf-8")
+    title, venue = leaf_titles(leaf, meta)
+    write_json(
+        directory / FACTS_NAME,
+        {
+            "course": fold(plan.get("course")) or None,
+            "space": plan.get("space"),
+            "section": fold(leaf.get("section")) or None,
+            "duration": fold(leaf.get("duration")) or None,
+            "source_title": venue,
+        },
+    )
     record = {
         "v": CAPTURE_V,
         "slug": plan["slug"],
         "item": leaf["url"],
         "title": title,
-        "body": BODY_NAME,
-        "content_type": "text/markdown",
+        "body": BODY_HTML,
+        "content_type": "text/html",
         "fetched_at": fetched_at_of(directory / META_NAME),
-        "frontmatter": front,
     }
     write_json(directory / CAPTURE_NAME, record)
     return record
@@ -816,14 +669,12 @@ def unique_title(title: str, qualifiers, taken: dict) -> str:
     return chosen
 
 
-def leaf_qualifiers(leaf: dict, record: dict | None) -> list:
+def leaf_qualifiers(leaf: dict) -> list:
     """What tells this lesson from a namesake, most meaningful first: its
-    section's name, its "Topic N of M", both, and last the hash of its url."""
-    front = (record or {}).get("frontmatter")
-    position = front.get("position") if isinstance(front, dict) else None
-    section = leaf.get("section")
-    both = f"{section}, {position}" if section and position else None
-    return [section, position, both, hashlib.sha1(leaf["url"].encode("utf-8")).hexdigest()[:8]]
+    section's name off the sidebar, and last the hash of its url. The lesson's
+    "Topic N of M" is in the page BODY, which harvest does not render — and
+    titles are settled here, before any body exists."""
+    return [leaf.get("section"), hashlib.sha1(leaf["url"].encode("utf-8")).hexdigest()[:8]]
 
 
 def fitted_title(title: str, qualifiers, taken: dict) -> str:
@@ -876,10 +727,10 @@ def settle_titles(capture_dir: Path, plan: dict) -> None:
         record = landed(directory)
         if record is None:
             if leaf.get("title"):
-                fitted_title(leaf["title"], leaf_qualifiers(leaf, None), taken)
+                fitted_title(leaf["title"], leaf_qualifiers(leaf), taken)
             continue
         title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
-        final = fitted_title(title or Path(record["body"]).stem, leaf_qualifiers(leaf, record), taken)
+        final = fitted_title(title or Path(record["body"]).stem, leaf_qualifiers(leaf), taken)
         if final != (title or Path(record["body"]).stem):
             record["title"] = final
             write_json(directory / CAPTURE_NAME, record)
@@ -897,9 +748,40 @@ RESUME = (
 )
 
 
+def process_report(ticket: dict, written, missing, reason) -> dict:
+    """The PROCESS step's report: pages written, nothing captured. The capture
+    dir is the harvest's, and its `capture.json` is older than this ticket by
+    design — nothing here reads freshness off it."""
+    written = list(written)
+    if written and not missing:
+        outcome, derived = "ok", None
+    elif written:
+        outcome, derived = "partial", f"{len(written)} page(s) written; {len(missing)} not reached"
+    elif missing:
+        outcome, derived = "failed", "no page written"
+    else:
+        outcome, derived = "skipped", "the capture earned no page under this ticket's own rules"
+    return {
+        "v": REPORT_V,
+        "ticket": ticket.get("ticket"),
+        "outcome": outcome,
+        "reason": fold(reason) if reason else derived,
+        "captured": [],
+        "written": written,
+        "missing": [dict(entry) for entry in missing],
+        "discovered": [],
+    }
+
+
 def build_report(
-    capture_dir: Path, ticket: dict, plan: dict, *, missing=(), auth_expired=False, gone=False, reason=None, now=None
+    capture_dir: Path, ticket: dict, plan: dict, *, missing=(), written=(), stage=None, auth_expired=False,
+    gone=False, reason=None, now=None,
 ) -> dict:
+    # The step is the caller's to say — never read off `ticket.json`: a
+    # single-item job's process ticket has the SAME capture dir as its
+    # download ticket, and the file lands there under one name.
+    if stage == "process" or written:
+        return process_report(ticket, written, missing, reason)
     settle_titles(capture_dir, plan)
     captured, pending = [], []
     for leaf in plan.get("leaves") or []:
@@ -1019,7 +901,7 @@ def cmd_plan(args) -> int:
         # Force the re-capture: the directory is the page's own and still holds
         # the FIRST pull's record, which would read as landed. `unchanged` is
         # `apply`'s verdict, reached by hashing a body really fetched again.
-        for name in (CAPTURE_NAME, BODY_NAME, TRANSCRIPT_NAME):
+        for name in (CAPTURE_NAME, FACTS_NAME, BODY_HTML):
             forget(capture_dir / name)
     spawned = spawn_time(capture_dir)
     if spawned is not None:
@@ -1086,36 +968,13 @@ def cmd_detect(args) -> int:
     )  # fmt: skip
 
 
-def cmd_render(args) -> int:
-    found = _plan_and_leaf(args)
-    if isinstance(found, int):
-        return found
-    capture_dir, _plan, leaf = found
-    directory = leaf_path(capture_dir, leaf)
-    script = Path(__file__).resolve().with_name("to_markdown.py")
-    uv = shutil.which("uv")  # its PEP 723 dependencies; bare python falls back to its built-in converter
-    runner = [uv, "run", "--script", str(script)] if uv else [sys.executable, str(script)]
-    status = _started([*runner, str(directory / "page.html"), "--base-url", leaf["url"]])
-    if status != 0:
-        return status
-    meta = read_json(directory / META_NAME)
-    captions = [c["file"] for c in meta.get("captions") or [] if isinstance(c, dict) and isinstance(c.get("file"), str)]
-    safe = [name for name in captions if re.fullmatch(r"captions/[a-z0-9-]+\.vtt", name) and (directory / name).is_file()]
-    print(json.dumps({
-        "leaf": leaf["order"], "dir": leaf["dir"], "page": (directory / BODY_NAME).as_posix(),
-        "captions": [(directory / name).as_posix() for name in safe],
-        "transcript": (directory / TRANSCRIPT_NAME).as_posix(),
-    }))  # fmt: skip
-    return 0
-
-
 def cmd_record(args) -> int:
     found = _plan_and_leaf(args)
     if isinstance(found, int):
         return found
     capture_dir, plan, leaf = found
     try:
-        record = record_leaf(capture_dir, plan, leaf, author=args.author)
+        record = record_leaf(capture_dir, plan, leaf)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1124,12 +983,26 @@ def cmd_record(args) -> int:
         other["order"] for other in plan.get("leaves") or [] if not landed_as(leaf_path(capture_dir, other), other)
     ]
     print(json.dumps({
-        "leaf": leaf["order"], "dir": leaf["dir"], "title": record["title"], "frontmatter": record["frontmatter"],
+        "leaf": leaf["order"], "dir": leaf["dir"], "title": record["title"], "body": record["body"],
         "deadline": plan.get("deadline"), "deadline_passed": late, "remaining": waiting,
         # true: start no further lesson — run `report` and exit.
         "stop": late and bool(waiting),
     }, ensure_ascii=False))  # fmt: skip
     return EXIT_STOP if late and waiting else 0
+
+
+def page_path(path) -> str | None:
+    """A page this run wrote, as `report.json` records it: wiki-relative, no
+    escape out of the wiki, printable, and a markdown file."""
+    if not isinstance(path, str) or not path.strip() or any(not ch.isprintable() for ch in path):
+        return None
+    if path.strip().startswith("/"):
+        return None  # an absolute path is outside the wiki, whatever it is named
+    cleaned = path.strip().strip("/")
+    parts = PurePosixPath(cleaned).parts
+    if not cleaned.endswith(".md") or not parts or ".." in parts or parts[0].startswith("."):
+        return None
+    return cleaned
 
 
 def _host_arg(host: str) -> str | None:
@@ -1179,11 +1052,23 @@ def cmd_report(args) -> int:
             file=sys.stderr,
         )
         return 2
+    written, bad_paths = [], []
+    for path in args.written or []:
+        # A page's path carries its TITLE, which is venue text. It is written
+        # down, never typed onto a command line — and never outside the wiki.
+        if not page_path(path):
+            bad_paths.append(redacted(path))
+        else:
+            written.append(page_path(path))
+    if bad_paths:
+        print(f"error: --written {', '.join(bad_paths)} — a wiki-relative path under the job's dest", file=sys.stderr)
+        return 2
     if args.gone and not (plan.get("refresh") is True or ticket.get("refresh") is True):
         print("error: --gone is a refresh ticket's answer alone (ticket.json `refresh: true`)", file=sys.stderr)
         return 2
     report = build_report(
-        capture_dir, ticket, plan, missing=missing, auth_expired=args.auth_expired, gone=args.gone, reason=args.reason
+        capture_dir, ticket, plan, missing=missing, written=written, stage=args.stage,
+        auth_expired=args.auth_expired, gone=args.gone, reason=args.reason,
     )
     write_json(capture_dir / REPORT_NAME, report)
     print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -1208,15 +1093,13 @@ def main(argv=None) -> int:
 
     for name, fn, text in (
         ("detect", cmd_detect, "the plugin's assets.py detect over one leaf, its url read from plan.json"),
-        ("render", cmd_render, "to_markdown.py over one leaf's page.html, its url read from plan.json"),
-        ("record", cmd_record, "facts block into one leaf's page.md, and its capture.json"),
+        ("record", cmd_record, "one leaf's capture.json and facts.json, over the bytes it captured"),
     ):
         r = sub.add_parser(name, help=text)
         r.add_argument("capture_dir", help=f"{where}: holds plan.json")
         r.add_argument("--leaf", type=int, metavar="N", help="the lesson, by its `order` in plan.json")
         if name == "record":
             r.add_argument("url", nargs="?", help="HAND RUNS ONLY: the planned lesson url, in place of --leaf")
-            r.add_argument("--author", help="HAND RUNS ONLY — a worker writes the name to <leaf dir>/author.txt instead")
         r.set_defaults(fn=fn)
 
     w = sub.add_parser("report", help="write report.json — after every leaf, and last")
@@ -1227,6 +1110,11 @@ def main(argv=None) -> int:
     w.add_argument("--missing-leaf", nargs=2, action="append", metavar=("N", "WHY"), help="a planned lesson, by number")
     w.add_argument("--missing-host", nargs=2, action="append", metavar=("HOST", "WHY"), help="a media host, by name")
     w.add_argument("--missing", nargs=3, action="append", metavar=("HOST", "URL", "WHY"), help="HAND RUNS ONLY")
+    w.add_argument("--stage", choices=STAGES, help="which step this report answers; `process` where no page was "
+                                                    "written either")  # fmt: skip
+    w.add_argument("--written", action="append", metavar="PATH",
+                   help="a page THIS process ticket wrote, wiki-relative; repeatable. Given it, the report is the "
+                        "process step's: written[] is these, captured[] is empty")  # fmt: skip
     w.add_argument("--ticket", help="the ticket id, when there is no ticket.json")
     w.set_defaults(fn=cmd_report)
 

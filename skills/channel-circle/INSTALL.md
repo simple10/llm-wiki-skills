@@ -31,9 +31,8 @@ is present:
    is fingerprint-bound to it; see the SKILL.md's Auth section).
    The credential store never syncs, so every harvesting machine repeats
    this once. Tell the operator now: a SPAWNED slice's jail is granted no
-   profile directory today (llm-wiki-plugins#2117 item 12), so until it is,
-   this unit captures only where the worker itself runs unjailed — see the
-   SKILL.md's Auth section.
+   profile directory today, so until it is, this unit captures only where the
+   worker itself runs unjailed — see the SKILL.md's Auth section.
 3. Declare the job, naming the skill. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-circle`, which the
    operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
    defaults off the enabled copy, and answers `dest required` without it.
