@@ -152,12 +152,14 @@ def safe_title(text, fallback="Untitled"):
 
 def page_title(meta):
     """`capture.json`'s title for an entity. `safe_title` is the rule every
-    unit shares; the one thing added here is the host's RESERVED page name
-    (note.py::RESERVED = `index.md`): a page so named is left out of every
-    listing the host makes, `known[]` included, so an entity called "index"
-    would be re-pulled for ever and never found."""
-    title = safe_title(meta.get("name"), fallback=f"Spotify {meta['type']} {meta['id']}")
-    return f"{title} (Spotify {meta['type']})" if title.lower() == "index" else title
+    unit shares, and it already keeps a title off the host's RESERVED page name
+    (`index.md`: a page so named is left out of every listing the host makes,
+    `known[]` included, so the entity would be re-pulled for ever). This unit
+    can say something better than its generic "(page)": what the thing IS."""
+    name = " ".join(str(meta.get("name") or "").split()).strip(". ")
+    if name.casefold() == "index":
+        return safe_title(f"{name} (Spotify {meta['type']})")
+    return safe_title(meta.get("name"), fallback=f"Spotify {meta['type']} {meta['id']}")
 
 
 def _one_line(value):
