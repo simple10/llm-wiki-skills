@@ -13,10 +13,13 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +29,7 @@ from conftest import declared_job, extracted, ticket_in
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "channel-circle" / "scripts"
 PLAN = SCRIPTS / "section_plan.py"
+CAPTURE = SCRIPTS / "capture_lesson.py"
 TO_MARKDOWN = SCRIPTS / "to_markdown.py"
 FIX = Path(__file__).resolve().parent / "fixtures" / "circle"
 
@@ -357,11 +361,20 @@ def test_one_ticket_walks_the_section_and_every_lesson_becomes_a_page(ops, env, 
 
     for leaf, fixture in zip(plan["leaves"], ("lesson-1", "lesson-2")):
         assert leaf["dir"].startswith(f"_raw/{job.slug}/") and len(leaf["dir"].split("/")) == 3
-        converted(wiki / leaf["dir"], fixture, leaf["url"])
-        if fixture == "lesson-1":  # what the plugin's format_transcript.py leaves from captions/en.vtt
+        # THE DOCUMENTED WAY: a lesson is `--leaf N`, never a url on a command line.
+        (wiki / leaf["dir"]).mkdir(parents=True, exist_ok=True)
+        for name in ("page.html", "meta.json"):
+            shutil.copy(FIX / fixture / name, wiki / leaf["dir"] / name)
+        number = str(leaf["order"])
+        rendered = subprocess.run([sys.executable, str(PLAN), "render", str(rel), "--leaf", number],
+                                  cwd=wiki, capture_output=True, text=True)
+        assert rendered.returncode == 0, rendered.stderr
+        assert json.loads(rendered.stdout.strip().splitlines()[-1])["page"] == f"{leaf['dir']}/page.md"
+        if fixture == "lesson-1":  # what the plugin's format_transcript.py leaves from the caption track
             (wiki / leaf["dir"] / "transcript.md").write_text("#### [00:00]\nWelcome to the quokka lesson.\n", encoding="utf-8")
+        (wiki / leaf["dir"] / "author.txt").write_text("Ada Example\n", encoding="utf-8")  # a file, never a shell word
         for _ in range(2):  # a respawned worker records again: nothing may stack
-            done = subprocess.run([sys.executable, str(PLAN), "record", str(rel), leaf["url"], "--author", "Ada Example"],
+            done = subprocess.run([sys.executable, str(PLAN), "record", str(rel), "--leaf", number],
                                   cwd=wiki, capture_output=True, text=True)
             assert done.returncode == 0, done.stderr
         record = json.loads((wiki / leaf["dir"] / "capture.json").read_text(encoding="utf-8"))
@@ -447,3 +460,540 @@ def test_capture_lesson_takes_its_url_off_the_ticket_when_none_is_given(tmp_path
     assert capture.ticket_target(tmp_path) == TARGET
     (tmp_path / "ticket.json").write_text("[1, 2]", encoding="utf-8")
     assert capture.ticket_target(tmp_path) is None
+
+
+# =============================================================================
+# Review fixes (2026-09-19). Each case below fails without the fix it names.
+# =============================================================================
+
+HOSTILE_HREF = f"{TARGET}/sections/111/lessons/2003;$(touch${{IFS}}PWNED)"  # the review's exact href
+
+
+def load_capture():
+    spec_c = importlib.util.spec_from_file_location("circle_capture_lesson_fixes", CAPTURE)
+    capture = importlib.util.module_from_spec(spec_c)
+    spec_c.loader.exec_module(capture)  # playwright is imported inside main(), after everything tested here
+    return capture
+
+
+def cli(script: Path, *args, cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
+    """A unit script THE DOCUMENTED WAY: cwd is the wiki root — what
+    `llm-wiki-ops run` gives it — and every path argument is wiki-relative."""
+    assert not any(os.path.isabs(str(a)) for a in args), "the documented form takes wiki-relative paths"
+    return subprocess.run([sys.executable, str(script), *map(str, args)], cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def last_json(done: subprocess.CompletedProcess) -> dict:
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture
+def wiki_root(tmp_path) -> tuple[Path, str]:
+    """A bare wiki root holding one spawned ticket and its root capture:
+    `(root, the ticket's wiki-relative capture_dir)`."""
+    rel = "_raw/course/c-course-one--aaaaaaaa"
+    cap = tmp_path / rel
+    cap.mkdir(parents=True)
+    (cap / "ticket.json").write_text(json.dumps(ticket()), encoding="utf-8")
+    for name in ("page.html", "meta.json"):
+        shutil.copy(FIX / "root" / name, cap / name)
+    return tmp_path, rel
+
+
+def fill(root: Path, leaf: dict, fixture: str = "lesson-1", body: str | None = None) -> Path:
+    """What `capture_lesson.py --leaf` leaves in a leaf's dir — and, given a
+    `body`, what `render` would."""
+    directory = root / leaf["dir"]
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("page.html", "meta.json"):
+        shutil.copy(FIX / fixture / name, directory / name)
+    if body is not None:
+        (directory / "page.md").write_text(body, encoding="utf-8")
+    return directory
+
+
+# --- Rule 1: the title is a legal filename -------------------------------------
+
+
+def test_safe_title_is_what_the_hosts_filename_rule_accepts():
+    illegal = set('/\\:*?"<>|')  # `page/note.py::ILLEGAL`
+    assert mod.safe_title("Lesson 3: Pricing") == "Lesson 3 - Pricing"
+    assert mod.safe_title('What is "X"? A/B <test> | more*') == "What is 'X' A-B (test) - more"
+    assert mod.safe_title(".hidden. ") == "hidden" and mod.safe_title(" . ..dots") == "dots"
+    assert mod.safe_title("a\x00b\tc\nd\x7fe f") == "a b c d e f"  # control chars, newlines, tabs: a space
+    for empty in ("", None, "   ", "???", "\n", "..."):
+        assert mod.safe_title(empty) == "Untitled" and mod.safe_title(empty, fallback="Untitled lesson") == "Untitled lesson"
+    long = mod.safe_title("x" * 500)
+    assert len(long) == mod.TITLE_MAX + 1 and long.endswith("…")
+    cjk = mod.safe_title("課" * 100)  # 300 bytes: past what a filename holds, though only 100 characters
+    assert len(cjk.encode("utf-8")) <= mod.TITLE_MAX_BYTES + len("…".encode("utf-8")) and cjk.endswith("…")
+    assert len((cjk + ".md").encode("utf-8")) <= 255
+    assert mod.safe_title("Plain title") == "Plain title"  # untouched under every cap
+    for hostile in ('a/b\\c:d*e?f"g<h>i|j', "\x01.x", "..\\..\\etc"):
+        got = mod.safe_title(hostile)
+        assert not set(got) & illegal and not got.startswith(".") and all(ord(ch) >= 32 for ch in got)
+
+
+def test_the_plan_carries_the_safe_title_and_keeps_the_venues_own_beside_it():
+    meta = {"title": "C", "discovered_lesson_links": [
+        {"href": L1, "text": "Lesson 3: Pricing?\n\n04:07"}, {"href": L2, "text": "Reading the Room\n\n12:30"}]}
+    t = ticket()
+    leaves = mod.build_plan(t, meta, capture_rel=t["capture_dir"])["leaves"]
+    assert [(leaf["title"], leaf["source_title"]) for leaf in leaves] == [
+        ("Lesson 3 - Pricing", "Lesson 3: Pricing?"), ("Reading the Room", None)]
+
+
+def test_titles_differing_only_in_a_refused_character_collide_once_safe_and_are_told_apart(wiki_root):
+    """`A/B` and `A-B` are two titles at the venue and ONE filename: the safe
+    form is what `capture.json` holds BEFORE titles are settled, and what a
+    lesson that never landed reserves."""
+    root, rel = wiki_root
+    three = f"{TARGET}/sections/222/lessons/2003"
+    (root / rel / "meta.json").write_text(json.dumps({"title": "C", "discovered_lesson_links": [
+        {"href": f"{TARGET}/sections/111", "text": "Module One"}, {"href": L1, "text": "A/B testing\n\n01:00"},
+        {"href": L2, "text": "A-B testing\n\n01:00"},
+        {"href": f"{TARGET}/sections/222", "text": "Module Two"}, {"href": three, "text": "A:B testing\n\n01:00"},
+    ]}), encoding="utf-8")
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    # Leaf 1 never lands: it still RESERVES `A-B testing`, its safe form.
+    for leaf in plan["leaves"][1:]:
+        fill(root, leaf, body=f"# {leaf['source_title'] or leaf['title']}\n\nBody.\n")
+        assert cli(PLAN, "record", rel, "--leaf", leaf["order"], cwd=root).returncode == 0
+    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
+    titles = [c["title"] for c in report["captured"]]
+    # Lesson 2 shares lesson 1's section, so the section tells nothing apart: its url's hash does.
+    assert titles == [f"A-B testing ({hashlib.sha1(L2.encode()).hexdigest()[:8]})", "A -B testing"], (
+        "the unlanded namesake's SAFE title was not reserved")
+    assert not any(set(t) & set(mod.TITLE_ILLEGAL) for t in titles)
+
+
+def last_json_plan(done: subprocess.CompletedProcess) -> dict:
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_qualifier_never_pushes_a_title_back_over_the_byte_cap():
+    taken: dict = {}
+    base = mod.safe_title("課" * 100)
+    first = mod.fitted_title(base, ["Module One", "aaaaaaaa"], taken)
+    second = mod.fitted_title(base, ["Module Two — 第二部分の長い名前", "bbbbbbbb"], taken)
+    assert first == base and second != first and mod.page_key(first) != mod.page_key(second)
+    assert second.endswith("(Module Two — 第二部分の長い名前)"), "the QUALIFIER is kept; the base is what is trimmed"
+    assert len(second.encode("utf-8")) <= mod.TITLE_MAX_BYTES + len("…".encode("utf-8"))  # safe_title's own ceiling
+    assert len((second + ".md").encode("utf-8")) <= 255
+    # Settled once, it stays settled: the next pass hands every title back as it is.
+    again: dict = {}
+    assert [mod.fitted_title(t, ["x"], again) for t in (first, second)] == [first, second]
+    # A short title is exactly what `unique_title` answers.
+    a, b = {}, {}
+    assert mod.fitted_title("Intro", ["M1"], a) == mod.unique_title("Intro", ["M1"], b)
+    assert mod.fitted_title("Intro", ["M2"], a) == mod.unique_title("Intro", ["M2"], b) == "Intro (M2)" and a == b
+
+
+def test_refused_titles_and_a_long_cjk_title_all_land_through_the_real_extractor(ops, env, wiki):
+    """THE BLOCKER: `Lesson 3: Pricing` was written raw, harvest said ok, and
+    the process ticket was refused — `a title cannot carry ':'`."""
+    target = f"{BASE}/c/course-titles"
+    urls = [f"{target}/sections/1/lessons/{n}" for n in (1, 2, 3)]
+    venue = ['Lesson 3: Pricing? A/B "tests" <now>', ".hidden: a leading dot|pipe\\slash*", "課" * 100]
+    job = declared_job(ops, env, wiki, UNIT, target, slug="port-channel-circle-titles")
+    cap = ticket_in(wiki, job, f"c-course-titles--{hashlib.sha1(target.encode()).hexdigest()[:8]}", unit=UNIT, item=target)
+    (cap / "meta.json").write_text(json.dumps({"url": target, "title": "Course Titles", "discovered_lesson_links": [
+        {"href": urls[0], "text": f"{venue[0]}\n\n01:00"}, {"href": urls[1], "text": f"{venue[1]}\n\n02:00"},
+        {"href": urls[2], "text": ("課" * 100)[:80]},  # the capture's 80-char cap: it names no title; the H1 does
+    ]}), encoding="utf-8")
+    rel = str(cap.relative_to(wiki))
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=wiki))
+    for leaf, title in zip(plan["leaves"], venue):
+        fill(wiki, leaf, body=f"# {title}\n\nThe body of {leaf['order']}.\n")
+        assert cli(PLAN, "record", rel, "--leaf", leaf["order"], cwd=wiki).returncode == 0
+    report = json.loads(cli(PLAN, "report", rel, cwd=wiki).stdout)
+    assert report["outcome"] == "ok" and len(report["captured"]) == 3
+
+    for captured, title in zip(report["captured"], venue):
+        record = json.loads((wiki / captured["dir"] / "capture.json").read_text(encoding="utf-8"))
+        assert record["title"] == captured["title"] == mod.safe_title(title)
+        assert record["frontmatter"]["source_title"] == title  # the venue's own title is kept…
+        (page,) = extracted(ops, env, wiki, wiki / captured["dir"])  # …and the page LANDS
+        assert page.is_file() and page.is_relative_to(wiki / job.dest) and page.name == f"{record['title']}.md"
+        assert f"\n# {title}\n" in page.read_text(encoding="utf-8")  # …and stays the H1
+    assert [c["title"] for c in report["captured"]][:2] == [
+        "Lesson 3 - Pricing A-B 'tests' (now)", "hidden - a leading dot-pipe-slash"]
+
+
+# --- S11: a venue url is data, never shell --------------------------------------
+
+
+def test_a_hostile_href_never_reaches_a_plan(wiki_root):
+    root, rel = wiki_root
+    meta = root_meta()
+    meta["discovered_lesson_links"] += [
+        {"href": HOSTILE_HREF, "text": "Pwn\n\n00:01"},
+        {"href": f"{TARGET}/sections/111/lessons/2004?a=1&b=`id`", "text": "x"},
+        {"href": "https://user:pw@community.example.invalid/c/course-one/sections/111/lessons/2005", "text": "x"},
+        {"href": "javascript:alert(1)//lessons/1", "text": "x"},
+        {"href": "http://[::1/c/course-one/sections/1/lessons/1", "text": "x"},  # urlsplit raises on it
+        {"href": f"{BASE}:99999/c/course-one/sections/111/lessons/2006", "text": "x"},
+        {"href": f"{TARGET}/sections/111/lessons/2007 8", "text": "x"},
+    ]
+    (root / rel / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    done = cli(PLAN, "plan", rel, cwd=root)
+    plan = last_json_plan(done)
+    assert [leaf["url"] for leaf in plan["leaves"]] == [L1, L2]
+    unsafe = [d for d in plan["dropped"] if d["why"] == "unsafe_url"]
+    assert len(unsafe) == 7
+    # Nothing a plan WRITES DOWN is the hostile text either: not in plan.json, not on stdout.
+    for text in ((root / rel / "plan.json").read_text(encoding="utf-8"), done.stdout):
+        assert not re.search(r"[;$`(){}&]|\bid\b", "".join(d["url"] for d in json.loads(text)["dropped"]))
+        assert "$(touch" not in text and "`id`" not in text
+    for url in (L1, L2, f"{BASE}/c/x/sections/1/lessons/2?page=2"):
+        assert mod.clean_url(url) == url
+    for url in (HOSTILE_HREF, "ftp://h/x", "//h/x", "https:///nohost", "https://h/a b", "https://h/a'b", 'https://h/a"b',
+                "https://h/a|b", "https://h/a>b", "https://h/a\\b", "https://h/a\nb", None, 7, "https://" + "h" * 3000):
+        assert mod.clean_url(url) is None, url
+    # A hostile TARGET is refused outright rather than planned around.
+    with pytest.raises(ValueError, match="target"):
+        mod.build_plan(ticket(target=HOSTILE_HREF, item=HOSTILE_HREF), root_meta(), capture_rel="_raw/course/x--00000000")
+
+
+def test_no_documented_per_leaf_command_takes_a_url():
+    """The worker's command line is a shell. SKILL.md's per-leaf commands name
+    a lesson `--leaf <n>` and nothing in its code blocks interpolates a url."""
+    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    blocks = "\n".join(re.findall(r"^```[^\n]*\n(.*?)^```", skill, flags=re.M | re.S))
+    assert "--leaf <n>" in blocks
+    for placeholder in ("<leaf.url>", "<url>", "<lesson-url>", "--base-url", "<course-url>"):
+        assert placeholder not in blocks, placeholder
+
+
+def stub_front_door(tmp_path: Path, answer: dict, rc: int = 0) -> tuple[dict, Path]:
+    """A recording `llm-wiki-ops` first on PATH, as `test_scripts_front_door.py` does it."""
+    bin_dir, seen = tmp_path / "stub-bin", tmp_path / "seen.json"
+    bin_dir.mkdir()
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f"#!{sys.executable}\nimport json, os, sys\n"
+        f"json.dump({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'inherited': sorted(k for k in "
+        f"('LLM_WIKI_OPS_DISPATCHED', 'CLAUDE_PROJECT_DIR') if k in os.environ)}}, open({str(seen)!r}, 'w'))\n"
+        f"sys.stdout.write({json.dumps(answer)!r})\nsys.exit({rc})\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+           "LLM_WIKI_OPS_DISPATCHED": "1", "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")}
+    return env, seen
+
+
+def test_detect_hands_the_plugins_asset_script_the_planned_url_as_an_argument_list(wiki_root, tmp_path_factory):
+    root, rel = wiki_root
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    leaf = plan["leaves"][1]
+    env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {})
+    assert cli(PLAN, "detect", rel, "--leaf", 2, cwd=root, env=env).returncode == 0
+    got = json.loads(seen.read_text(encoding="utf-8"))
+    assert got["argv"] == ["run", "skills/harvest/scripts/assets.py", "detect", f"{leaf['dir']}/page.html", "--base-url", L2,
+                           "--network-log", f"{leaf['dir']}/net.json", "--out", f"{leaf['dir']}/assets.json"]
+    assert got["inherited"] == [] and Path(got["cwd"]) == root.resolve()  # a nested call is not a loop, and binds by cwd
+    assert cli(PLAN, "detect", rel, "--leaf", 9, cwd=root, env=env).returncode == 1  # not a leaf of this plan
+    # A plan.json somebody tampered with is still not a way to a shell word.
+    plan["leaves"][0]["url"] = HOSTILE_HREF
+    (root / rel / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    seen.unlink()
+    assert cli(PLAN, "detect", rel, "--leaf", 1, cwd=root, env=env).returncode == 1 and not seen.exists()
+
+
+def test_capture_lesson_reads_a_leafs_url_and_dir_off_the_plan(wiki_root):
+    root, rel = wiki_root
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    capture = load_capture()
+    url, out, is_target, refused = capture.resolve_job(root, plan=f"{rel}/plan.json", leaf=2)
+    assert (url, out, is_target, refused) == (L2, root / plan["leaves"][1]["dir"], False, None)
+    # With neither url nor leaf: the ticket's own target, into the ticket's own dir, resolved against the ROOT.
+    assert capture.resolve_job(root, out=rel) == (TARGET, root / rel, True, None)
+    assert capture.resolve_job(root, url=L1, out="_raw/course/by-hand")[:3] == (L1, root / "_raw/course/by-hand", False)
+    for kwargs, code in (({"plan": f"{rel}/plan.json", "leaf": 9}, 4), ({"leaf": 1}, 4), ({"plan": f"{rel}/nope.json", "leaf": 1}, 4),
+                         ({}, 4), ({"out": "_raw/course/empty"}, 4), ({"url": "file:///etc/passwd", "out": rel}, 4),
+                         ({"plan": f"{rel}/plan.json", "leaf": 1, "out": "_raw/course/elsewhere"}, 4)):
+        assert capture.resolve_job(root, **kwargs)[3][0] == code, kwargs
+
+
+def test_capture_lesson_the_documented_way_clears_a_stale_report_and_reads_the_profile_answer(wiki_root, tmp_path_factory):
+    """No browser here — and none is needed to reach the answer that matters:
+    `<root> --out <capture_dir>`, cwd the wiki root, relative paths."""
+    root, rel = wiki_root
+    (root / rel / "report.json").write_text('{"outcome": "ok", "captured": [{"dir": "stale"}]}', encoding="utf-8")
+    env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {"domain": "community.example.invalid", "path": "/nowhere/profile", "exists": False})
+    done = cli(CAPTURE, ".", "--out", rel, cwd=root, env=env)
+    assert done.returncode == 2 and "no auth profile" in done.stderr, done.stderr  # absent: a login is what fixes it
+    assert not (root / rel / "report.json").exists(), "a respawn must not be read as the success an earlier pull had"
+    assert json.loads(seen.read_text(encoding="utf-8"))["argv"] == ["--json", "credential", "profile-dir", "community.example.invalid"]
+    # The store unreachable — what a jail with no grant on it answers: 5, never 2.
+    env, _ = stub_front_door(tmp_path_factory.mktemp("door5"), {"error": "permission denied"}, rc=1)
+    assert cli(CAPTURE, ".", "--out", rel, cwd=root, env=env).returncode == 5
+    # `--leaf`, the documented way.
+    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    env, seen = stub_front_door(tmp_path_factory.mktemp("door2"), {"domain": "community.example.invalid", "path": "/nowhere", "exists": False})
+    done = cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 1, cwd=root, env=env)
+    assert done.returncode == 2 and (root / last_json_plan(cli(PLAN, "plan", rel, cwd=root))["leaves"][0]["dir"]).is_dir()
+    assert cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 7, cwd=root, env=env).returncode == 4
+
+
+# --- S5: stop before the cap, and make "resume" real ----------------------------
+
+
+def spawned_ago(root: Path, rel: str, seconds: float) -> None:
+    then = time.time() - seconds
+    os.utime(root / rel / "ticket.json", (then, then))
+
+
+def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, tmp_path):
+    root, rel = wiki_root
+    spawned_ago(root, rel, 100)
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    assert abs(plan["deadline_epoch"] - (time.time() - 100 + 1500)) < 5 and plan["deadline"].endswith("Z")
+    assert abs(last_json_plan(cli(PLAN, "plan", rel, "--budget-s", 60, cwd=root))["deadline_epoch"] - (time.time() - 40)) < 5
+    # A re-dispatch rewrites ticket.json: the next slice's deadline is its own.
+    spawned_ago(root, rel, 0)
+    assert last_json_plan(cli(PLAN, "plan", rel, cwd=root))["deadline_epoch"] > time.time() + 1400
+    hand = tmp_path / "hand" / "_raw" / "course" / "r--00000000"
+    hand.mkdir(parents=True)
+    shutil.copy(FIX / "root" / "meta.json", hand / "meta.json")
+    by_hand = cli(PLAN, "plan", "_raw/course/r--00000000", "--target", TARGET, "--slug", "course", cwd=tmp_path / "hand")
+    assert last_json_plan(by_hand)["deadline"] is None and not mod.past_deadline(last_json_plan(by_hand))
+
+
+def test_past_the_deadline_record_says_stop_and_no_new_lesson_is_started(wiki_root, tmp_path_factory):
+    root, rel = wiki_root
+    spawned_ago(root, rel, 1600)  # 100 s past the 1500 s budget, 200 s before the kill
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    fill(root, plan["leaves"][0], body="# Getting the Frame Right\n\nBody.\n")
+    done = cli(PLAN, "record", rel, "--leaf", 1, cwd=root)
+    answer = last_json(done)
+    assert done.returncode == 3 and answer["stop"] is True and answer["deadline_passed"] is True and answer["remaining"] == [2]
+    assert (root / plan["leaves"][0]["dir"] / "capture.json").is_file(), "exit 3 means recorded AND stop — the leaf landed"
+    # …and the next lesson is refused before any browser (or credential lookup) is started.
+    env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {"path": "/x", "exists": True})
+    refused = cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 2, cwd=root, env=env)
+    assert refused.returncode == 6 and "deadline" in refused.stderr and not seen.exists()
+    assert not (root / plan["leaves"][1]["dir"]).exists()
+
+    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
+    assert report["outcome"] == "partial" and [c["item"] for c in report["captured"]] == [L1]
+    # The reason tells the operator exactly what resumes an `every: once` job — nothing does by itself.
+    for said in ("1 of 2", "deadline passed", "pipeline queue retry 0123456789ab", "pipeline edit course every=1d", "NOT pulled again"):
+        assert said in report["reason"], said
+
+    # Inside the budget the same record is plain success.
+    spawned_ago(root, rel, 10)
+    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    inside = cli(PLAN, "record", rel, "--leaf", 1, cwd=root)
+    assert inside.returncode == 0 and last_json(inside)["stop"] is False and last_json(inside)["remaining"] == [2]
+
+
+def test_a_killed_slices_lessons_are_landed_in_the_next_plan_and_reported_by_it(wiki_root):
+    """The cap kills a slice with NO report: nothing is minted, `known[]` does
+    not grow, and the retry used to re-plan every lesson in the same order and
+    die at the same place. What survives the kill is the disk."""
+    root, rel = wiki_root
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    assert [leaf["landed"] for leaf in plan["leaves"]] == [False, False]
+    fill(root, plan["leaves"][0], body="# Getting the Frame Right\n\nBody.\n")
+    assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
+    # The report is cheap and re-runnable: written after EVERY leaf, it is already truthful when the kill comes.
+    early = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
+    assert early["outcome"] == "partial" and len(early["captured"]) == 1
+
+    spawned_ago(root, rel, 0)  # …killed; the operator re-queues; the spawner rewrites ticket.json; a new slice plans:
+    again = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    assert [leaf["landed"] for leaf in again["leaves"]] == [True, False]
+    assert not (root / rel / "report.json").exists(), "`plan` clears the last slice's report before anything else"
+    fill(root, again["leaves"][1], "lesson-2", body="# Reading the Room\n\nBody.\n")
+    assert cli(PLAN, "record", rel, "--leaf", 2, cwd=root).returncode == 0
+    final = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
+    assert final["outcome"] == "ok" and [c["item"] for c in final["captured"]] == [L1, L2]
+    # A record left in a leaf's dir by some OTHER url is not this lesson landed.
+    record_path = root / again["leaves"][1]["dir"] / "capture.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record_path.write_text(json.dumps({**record, "item": OTHER_SPACE}), encoding="utf-8")
+    assert [leaf["landed"] for leaf in last_json_plan(cli(PLAN, "plan", rel, cwd=root))["leaves"]] == [True, False]
+
+
+# --- S7: a refresh ticket re-fetches exactly one lesson --------------------------
+
+
+def refresh_ticket(**harvest) -> dict:
+    leaf = mod.leaf_dir("course", L1)  # `mint_refresh`: the capture dir is the resource's own
+    return ticket(target=L1, item=L1, capture_dir=leaf, refresh=True, resource=L1, prev_harvested_at="2026-09-01T00:00:00Z",
+                  known=[{"resource": L1, "harvested_at": "2026-09-01T00:00:00Z"}, {"resource": L2, "harvested_at": None}],
+                  harvest={"scope": "section", "access": "licensed", "exclude_urls": [], "refresh": "30d", **harvest})
+
+
+@pytest.mark.parametrize("scope", ["section", "domain", "page"])
+def test_a_refresh_plans_exactly_its_resource_though_known_holds_it(scope):
+    t = refresh_ticket(scope=scope)
+    plan = mod.build_plan(t, json.loads((FIX / "lesson-1" / "meta.json").read_text(encoding="utf-8")), capture_rel=t["capture_dir"])
+    assert plan["refresh"] is True and plan["dropped"] == []  # the rest of the section is another ticket's
+    assert [(leaf["url"], leaf["dir"], leaf["root"]) for leaf in plan["leaves"]] == [(L1, t["capture_dir"], True)]
+
+
+def test_a_refresh_forces_the_recapture_and_reports_it_captured(tmp_path):
+    t = refresh_ticket()
+    cap = tmp_path / t["capture_dir"]
+    cap.mkdir(parents=True)
+    (cap / "ticket.json").write_text(json.dumps(t), encoding="utf-8")
+    # What the FIRST pull left here — the directory is the page's own, stable across pulls.
+    (cap / "page.md").write_text("# Getting the Frame Right\n\nTHE OLD BODY.\n", encoding="utf-8")
+    (cap / "capture.json").write_text(json.dumps({"item": L1, "title": "Getting the Frame Right", "body": "page.md"}), encoding="utf-8")
+    (cap / "report.json").write_text('{"outcome": "ok"}', encoding="utf-8")
+    shutil.copy(FIX / "lesson-1" / "meta.json", cap / "meta.json")  # this run's root capture IS the lesson
+    plan = last_json_plan(cli(PLAN, "plan", t["capture_dir"], cwd=tmp_path))
+    assert [leaf["landed"] for leaf in plan["leaves"]] == [False]
+    assert not any((cap / name).exists() for name in ("capture.json", "page.md", "report.json"))
+    # Nothing fetched again -> nothing captured -> failed; never the old record read as this run's.
+    nothing = cli(PLAN, "report", t["capture_dir"], cwd=tmp_path)
+    assert nothing.returncode == 1 and json.loads(nothing.stdout)["outcome"] == "failed"
+    (cap / "page.md").write_text("# Getting the Frame Right\n\nThe body, fetched again.\n", encoding="utf-8")
+    assert cli(PLAN, "record", t["capture_dir"], "--leaf", 1, cwd=tmp_path).returncode == 0
+    report = json.loads(cli(PLAN, "report", t["capture_dir"], cwd=tmp_path).stdout)
+    # `ok` WITH the capture: `unchanged` is `apply`'s verdict, by hashing this body — never this unit's word.
+    assert report["outcome"] == "ok" and report["captured"] == [{"item": L1, "dir": t["capture_dir"], "title": "Getting the Frame Right"}]
+
+
+def test_gone_is_a_refresh_tickets_answer_alone(tmp_path, wiki_root):
+    t = refresh_ticket()
+    cap = tmp_path / "w" / t["capture_dir"]
+    cap.mkdir(parents=True)
+    (cap / "ticket.json").write_text(json.dumps(t), encoding="utf-8")
+    (cap / "meta.json").write_text(json.dumps({"url": L1, "title": "Not found", "http_status": 404}), encoding="utf-8")
+    assert cli(PLAN, "plan", t["capture_dir"], cwd=tmp_path / "w").returncode == 0
+    done = cli(PLAN, "report", t["capture_dir"], cwd=tmp_path / "w")
+    assert done.returncode == 0 and json.loads(done.stdout)["outcome"] == "gone" and json.loads(done.stdout)["captured"] == []
+    root, rel = wiki_root  # a first pull cannot say it
+    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    assert cli(PLAN, "report", rel, "--gone", cwd=root).returncode == 2 and not (root / rel / "report.json").exists()
+
+
+# --- Rule 2: venue text forges nothing -------------------------------------------
+
+
+def test_no_fact_value_forges_structure(wiki_root):
+    root, rel = wiki_root
+    meta = root_meta()
+    meta["title"] = "Course One\n---\n# Forged Course"
+    (root / rel / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    directory = fill(root, plan["leaves"][0], body="# Getting the Frame Right\n\nTopic 1 of 2\n\nBody.\n")
+    (directory / "assets.json").write_text(json.dumps([{"type": "hls", "status": "downloaded",
+                                                        "local_path": "../assets/a\n## Forged Media.mp4"}]), encoding="utf-8")
+    hostile = "A\n## Injected\n\n```\nfence"
+    done = subprocess.run([sys.executable, str(PLAN), "record", rel, "--leaf", "1", "--author", hostile], cwd=root, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    body = (directory / "page.md").read_text(encoding="utf-8")
+    assert "- **Author**: A ## Injected ``` fence\n" in body and "- **Course**: Course One --- # Forged Course\n" in body
+    assert not re.search(r"^(#{1,6} (Injected|Forged)|---|```)", body, flags=re.M)
+    assert [line for line in body.splitlines() if line.startswith("#")] == ["# Getting the Frame Right"]
+    front = json.loads((directory / "capture.json").read_text(encoding="utf-8"))["frontmatter"]
+    assert all("\n" not in item for value in front.values() for item in (value if isinstance(value, list) else [value]))
+    # The same name from `author.txt` — how a WORKER passes it, no shell between — is folded the same.
+    (directory / "author.txt").write_text(hostile, encoding="utf-8")
+    assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
+    assert "- **Author**: A ## Injected ``` fence\n" in (directory / "page.md").read_text(encoding="utf-8")
+
+
+def test_a_title_cannot_forge_a_rule_or_a_heading_and_captions_stay_words():
+    leaf = {"url": L1, "dir": "_raw/course/x--00000000", "title": None, "source_title": None}
+    title, venue = mod.leaf_titles(leaf, "Body with no heading.\n", {"title": "Real\n---\n# Forged: title"})
+    assert (title, venue) == ("Real --- # Forged - title", "Real --- # Forged: title")
+    body = mod.with_facts("Body with no heading.\n", venue, mod.facts_block({"type": "lesson"}, L1))
+    assert body.startswith("# Real --- # Forged: title\n\n- **Type**") and body.count("\n#") == 0 and "\n---" not in body
+    assert mod.valid_date("2026-02-30") is None and mod.valid_date("2026-9-1") is None and mod.valid_date("2026-09-01") == "2026-09-01"
+    assert mod.build_plan(ticket(min_date="2026-09-01\n# x"), root_meta(), capture_rel="_raw/course/r--00000000")["min_date"] is None
+    out = mod.with_transcript("# T\n\nBody.\n", "#### [00:00]\nhello\n# Forged\n```\n---\n=====\nafter\n", "captions/en.vtt`\n# x")
+    lines = out.split("## Transcript", 1)[1].splitlines()
+    assert "#### [00:00]" in lines and "\\# Forged" in lines and "\\```" in lines and "\\---" in lines and "\\=====" in lines
+    assert not any(re.match(r"(# |```|---$|=+$)", line) for line in lines) and "(`captions/en.vttx`)" in out
+
+
+# --- scope, exclusions -------------------------------------------------------------
+
+
+def test_www_is_not_a_second_host_and_a_path_prefix_is_whole_segments():
+    www = "https://www.community.example.invalid"
+    meta = {"title": "C", "discovered_lesson_links": [
+        {"href": f"{www}/c/course-one/sections/1/lessons/1", "text": "One"},
+        {"href": f"{www}/c/course-one-advanced/sections/1/lessons/2", "text": "Sibling space"},  # `/c/x` is not `/c/xy`
+        {"href": "https://wwwcommunity.example.invalid/c/course-one/sections/1/lessons/3", "text": "Another host"}]}
+    t = ticket()  # the APEX is the target
+    plan = mod.build_plan(t, meta, capture_rel=t["capture_dir"])
+    assert [leaf["url"] for leaf in plan["leaves"]] == [f"{www}/c/course-one/sections/1/lessons/1"]
+    assert sorted(why(plan).values()) == ["scope", "scope"]
+    back = ticket(target=f"{www}/c/course-one", item=f"{www}/c/course-one")  # and the other way round
+    assert [leaf["url"] for leaf in mod.build_plan(back, root_meta(), capture_rel=t["capture_dir"])["leaves"]] == [L1, L2]
+    assert mod.in_scope(f"{BASE}/c/course-one", TARGET, "section") and not mod.in_scope(f"{BASE}/c/course-on", TARGET, "section")
+
+
+def test_an_exclusion_is_whole_segments_and_this_units_own_reading():
+    assert not mod.excluded(f"{BASE}/c/ab/sections/1/lessons/1", [f"{BASE}/c/a"])
+    assert mod.excluded(f"{BASE}/c/a/sections/1/lessons/1", [f"{BASE}/c/a"]) and mod.excluded(f"{BASE}/c/a", [f"{BASE}/c/a/"])
+    assert mod.excluded(f"{BASE}/c/a/x", ["https://www.community.example.invalid/c/a"])  # `www.` told apart nowhere
+    assert mod.excluded(f"{BASE}/c/a/x", ["community.example.invalid/c/a"]) and mod.excluded(f"{BASE}/c/a/x", ["/c/a"])
+    assert not mod.excluded(f"{BASE}/c/a/x", ["/c/ab", "https://elsewhere.example.invalid/c/a", "", None, "http://[::1"])
+    assert "this unit's reading" in mod.excluded.__doc__.lower()
+
+
+# --- the report: what it says, and what it never leaves behind ------------------------
+
+
+def test_a_report_that_refuses_leaves_no_earlier_report_behind(wiki_root):
+    root, rel = wiki_root
+    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    stale = root / rel / "report.json"
+    for bad in (["--missing", "h", "https://h/x", "paywalled"], ["--missing", "h", HOSTILE_HREF, "denied"],
+                ["--missing-leaf", "9", "error"], ["--missing-host", "bad host;rm", "denied"], ["--gone"]):
+        stale.write_text('{"outcome": "ok", "captured": [{"dir": "an-earlier-run"}]}', encoding="utf-8")
+        done = cli(PLAN, "report", rel, *bad, cwd=root)
+        assert done.returncode == 2 and not stale.exists(), bad
+        assert "$(touch" not in done.stderr
+    # A directory that is not a ticket's is refused — nothing is written at the wiki root (Rule 3).
+    assert cli(PLAN, "report", ".", cwd=root).returncode == 2 and not (root / "report.json").exists()
+    assert cli(PLAN, "report", "_raw/course/typo", cwd=root).returncode == 2 and not (root / "_raw/course/typo").exists()
+
+
+def test_missing_is_named_by_leaf_number_or_by_host_never_by_a_typed_url(wiki_root):
+    root, rel = wiki_root
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    fill(root, plan["leaves"][0], body="# Getting the Frame Right\n\nBody.\n")
+    assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
+    report = json.loads(cli(PLAN, "report", rel, "--missing-leaf", 2, "error", "--missing-host", "Fast.Wistia.com", "denied", cwd=root).stdout)
+    assert report["outcome"] == "partial" and report["missing"] == [
+        {"host": "community.example.invalid", "url": L2, "why": "error"},
+        {"host": "fast.wistia.com", "url": "https://fast.wistia.com/", "why": "denied"}]
+    assert "not reached" not in report["reason"]  # lesson 2 is accounted for: it is missing, not unreached
+
+
+def test_the_report_says_a_min_date_was_not_applied(wiki_root):
+    root, rel = wiki_root
+    (root / rel / "ticket.json").write_text(json.dumps(ticket(min_date="2026-01-01")), encoding="utf-8")
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    assert plan["min_date"] == "2026-01-01" and len(plan["leaves"]) == 2  # no lesson is dropped for it
+    for leaf in plan["leaves"]:
+        fill(root, leaf, body=f"# {leaf['title']}\n\nBody.\n")
+        assert cli(PLAN, "record", rel, "--leaf", leaf["order"], cwd=root).returncode == 0
+    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
+    assert report["outcome"] == "ok" and "min_date 2026-01-01 NOT applied" in report["reason"]
+
+
+def test_the_docs_name_media_by_file_name_and_captions_by_their_real_name():
+    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    assert "wiki-relative paths of what" not in skill and "wiki-relative path" not in (mod.__doc__.split("record ")[1].split("report ")[0])
+    assert "captions/en.vtt --out" not in skill  # the capture names the file by `srclang`
+    assert mod.__doc__ in subprocess.run([sys.executable, str(PLAN), "-h"], capture_output=True, text=True).stdout
+
+
+def test_the_outage_probe_takes_its_url_off_the_ticket_too(wiki_root):
+    root, rel = wiki_root
+    spec_p = importlib.util.spec_from_file_location("circle_outage_probe", SCRIPTS / "outage_probe.py")
+    probe = importlib.util.module_from_spec(spec_p)
+    spec_p.loader.exec_module(probe)  # playwright is imported inside main(), never here
+    assert probe.ticket_target(root, rel) == TARGET  # wiki-relative, resolved against the ROOT
+    assert probe.ticket_target(root, None) is None and probe.ticket_target(root, "_raw/course/none") is None
+    (root / rel / "ticket.json").write_text(json.dumps(ticket(target="file:///etc/passwd")), encoding="utf-8")
+    assert probe.ticket_target(root, rel) is None

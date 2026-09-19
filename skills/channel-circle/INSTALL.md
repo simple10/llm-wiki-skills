@@ -30,7 +30,10 @@ is present:
    Circle the profile is the load-bearing half (Cloudflare's `cf_clearance`
    is fingerprint-bound to it; see the SKILL.md's Auth section).
    The credential store never syncs, so every harvesting machine repeats
-   this once.
+   this once. Tell the operator now: a SPAWNED slice's jail is granted no
+   profile directory today (llm-wiki-plugins#2117 item 12), so until it is,
+   this unit captures only where the worker itself runs unjailed — see the
+   SKILL.md's Auth section.
 3. Declare the job, naming the skill. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-circle`, which the
    operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
    defaults off the enabled copy, and answers `dest required` without it.
@@ -40,4 +43,8 @@ is present:
    and a `dest` of `sources/courses/<slug>`. Scope `section` means "under the
    job's url", so that url must be the space ROOT (`/c/<slug>`): from a
    lesson url every sibling lesson is outside it. Pass
-   `harvest.scope=domain` to take the whole community.
+   `harvest.scope=domain` to take the whole community. A course longer than
+   one 30-minute slice ends `partial`, and an `every=once` job is never
+   pulled again by itself: re-queue it with `llm-wiki-ops pipeline queue
+   retry <ticket-id>` (three attempts per ticket), or declare a period
+   (`every=1d`) until the course is held — each run skips what it already has.

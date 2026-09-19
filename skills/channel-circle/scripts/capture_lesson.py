@@ -28,18 +28,34 @@ harvest ticket runs it once for the job's target and once per planned lesson:
 
 Usage:
   llm-wiki-ops run ops/skills/channel-circle/scripts/capture_lesson.py \
-         <root> [<url>] --out <dir> [--headed] [--timeout-ms 45000]
+         <root> --out <capture_dir>                       # the ticket's target
+         <root> --plan <capture_dir>/plan.json --leaf N   # one planned lesson
+         <root> <url> --out <dir>                         # HAND RUNS ONLY
+         [--headed] [--timeout-ms 45000]
 
 `<root>` is the wiki root (`.` under `llm-wiki-ops run`, which starts a script
 there) — auth profiles are reached through the credential store's
-`profile-dir` lookup, keyed by domain. `<url>` may be left out when `<dir>`
-holds a `ticket.json`: its `target` is what is captured; a url given on the
-command line always wins. Outputs land in <dir>/. Exit 0 on capture, 2 if there is no auth profile yet or the session
+`profile-dir` lookup, keyed by domain. `--out` and `--plan` are WIKI-RELATIVE:
+a relative one is resolved against `<root>`, not against wherever the caller
+stands. A worker never types a url — a lesson's address is venue data and a
+command line is a shell: with no url, the `target` of `<capture_dir>/ticket.json`
+is captured; with `--leaf N`, leaf N of `plan.json` (its `order`) is captured
+into the `dir` the plan gave it. A url on the command line is for hand runs.
+
+Capturing the ticket's own target also REMOVES a stale `report.json` from the
+capture dir first — the directory is stable across pulls, and a respawn must
+never be read as a success it did not have.
+
+Exit 0 on capture, 2 if there is no auth profile yet or the session
 had expired (landed on a sign_in page) — either way, re-run the login
 helper. 3 on a Cloudflare challenge that didn't clear. 5 if the credential
 store itself could not be reached (denied/unreadable) — a REAL failure,
 distinct from "no profile yet"; re-running the login helper will not fix it.
-4 if no url was given and <dir> holds no `ticket.json` naming a target.
+4 if there is nothing usable to capture: no url and no `ticket.json` naming a
+target, a `--leaf` the plan does not hold, or a url that is not http(s).
+6 if `--leaf` was asked after the plan's `deadline`: NOTHING was started — run
+`section_plan.py report` and exit (the slice is killed at 30 minutes, and a
+killed slice leaves no report).
 
 History:
   2026-07-11  created — first Circle course capture.
@@ -51,6 +67,10 @@ History:
   2026-09-19  the url may come off the capture dir's `ticket.json`; sidebar
               links are what `section_plan.py` plans a section from — no
               host queues them any more.
+  2026-09-19  `--plan … --leaf N`: a lesson is named by number, never by a url
+              on a command line; paths resolve against <root>; refuses to start
+              a lesson past the plan's deadline; meta.json carries the
+              navigation's `http_status`.
 """
 
 import argparse
@@ -59,6 +79,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -134,6 +155,73 @@ def ticket_target(out: Path) -> str | None:
     return target if isinstance(target, str) and target else None
 
 
+EXIT_NOTHING_TO_CAPTURE = 4
+EXIT_PAST_DEADLINE = 6
+
+
+def under(root, given) -> Path:
+    """A path argument as the wiki sees it: relative means relative to the
+    wiki ROOT, which is what `capture_dir` and a leaf's `dir` are."""
+    path = Path(given)
+    return path if path.is_absolute() else Path(root) / path
+
+
+def is_http(url) -> bool:
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+    except ValueError:
+        return False
+    return bool(parts and parts.scheme.lower() in ("http", "https") and parts.hostname)
+
+
+def planned_leaf(plan_path: Path, number: int, now: float | None = None):
+    """`(leaf, None)` for leaf `number` of the plan, or `(None, (exit, why))`.
+
+    Refuses BEFORE a browser is started: a leaf the plan does not hold, and any
+    leaf once the plan's deadline has passed — what is on disk then is what the
+    report can truthfully say, and a lesson begun now is one the cap kills."""
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, (EXIT_NOTHING_TO_CAPTURE, f"{plan_path}: no readable plan ({e.__class__.__name__}) — run section_plan.py plan first")
+    leaves = plan.get("leaves") if isinstance(plan, dict) else None
+    leaf = next((one for one in leaves or [] if isinstance(one, dict) and one.get("order") == number), None)
+    if leaf is None or not is_http(leaf.get("url")) or not isinstance(leaf.get("dir"), str):
+        return None, (EXIT_NOTHING_TO_CAPTURE, f"{plan_path}: no leaf {number} — `order` in plan.json is the number")
+    deadline = plan.get("deadline_epoch")
+    if isinstance(deadline, (int, float)) and not isinstance(deadline, bool):
+        if (time.time() if now is None else now) >= deadline:
+            return None, (
+                EXIT_PAST_DEADLINE,
+                f"past the plan's deadline ({plan.get('deadline')}): leaf {number} NOT started — run section_plan.py report and exit",
+            )
+    return leaf, None
+
+
+def resolve_job(root, url=None, out=None, plan=None, leaf=None, now=None):
+    """`(url, out_dir, is_ticket_target, None)` or `(None, None, False, (exit, why))`
+    — everything `main` decides before it needs a browser."""
+    if leaf is not None:
+        if not plan:
+            return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "--leaf needs --plan <capture_dir>/plan.json")
+        found, refused = planned_leaf(under(root, plan), leaf, now=now)
+        if refused:
+            return None, None, False, refused
+        target_dir = under(root, found["dir"])
+        if out is not None and under(root, out).resolve() != target_dir.resolve():
+            return None, None, False, (EXIT_NOTHING_TO_CAPTURE, f"--out disagrees with leaf {leaf}'s dir in the plan; leave it out")
+        return found["url"], target_dir, False, None
+    if out is None:
+        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "--out <capture_dir> is required (wiki-relative) unless --plan/--leaf name a lesson")
+    out_dir = under(root, out)
+    chosen, from_ticket = (url, False) if url else (ticket_target(out_dir), True)
+    if not chosen:
+        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, f"no url given and {out_dir / 'ticket.json'} names no target")
+    if not is_http(chosen):
+        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "the url is not an http(s) address")
+    return chosen, out_dir, from_ticket, None
+
+
 def caption_records(tracks):
     """Map resolved <track> dicts to (meta record incl. text) list. Keeps only
     kind in {captions, subtitles} with non-empty text; names files by srclang,
@@ -154,23 +242,29 @@ def caption_records(tracks):
 
 
 def main() -> int:
-    from playwright.sync_api import sync_playwright
-
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("root", help="wiki root path")
-    ap.add_argument("url", nargs="?", help="page to capture; default: `target` of <out>/ticket.json")
-    ap.add_argument("--out", required=True, help="Output capture dir")
+    ap.add_argument("root", help="wiki root path (`.` under `llm-wiki-ops run`)")
+    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY. Default: `target` of <out>/ticket.json, or --leaf's url")
+    ap.add_argument("--out", help="capture dir, wiki-relative; not needed with --leaf (the plan names the dir)")
+    ap.add_argument("--plan", help="<capture_dir>/plan.json, wiki-relative — with --leaf")
+    ap.add_argument("--leaf", type=int, metavar="N", help="capture leaf N of --plan (its `order`)")
     ap.add_argument("--headed", action="store_true", help="Show the browser (safer vs Cloudflare; default headless)")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     args = ap.parse_args()
 
-    out = Path(args.out)
-    args.url = args.url or ticket_target(out)
-    if not args.url:
-        print(f"error: no url given and {out / 'ticket.json'} names no target", file=sys.stderr)
-        return 4
+    if args.leaf is not None and args.url:
+        print("error: a url and --leaf are two names for the lesson — give one", file=sys.stderr)
+        return EXIT_NOTHING_TO_CAPTURE
+    args.url, out, is_ticket_target, refused = resolve_job(args.root, args.url, args.out, args.plan, args.leaf)
+    if refused:
+        print(f"error: {refused[1]}", file=sys.stderr)
+        return refused[0]
     domain = domain_of(args.url)
     out.mkdir(parents=True, exist_ok=True)
+    if is_ticket_target:
+        # The flow's FIRST act: whatever an earlier pull — or the extractor —
+        # left here as `report.json` is not this run's answer.
+        (out / "report.json").unlink(missing_ok=True)
 
     try:
         profile, refused = profile_dir(args.root, domain)
@@ -184,7 +278,10 @@ def main() -> int:
         print(f"error: {why}", file=sys.stderr)
         return 2 if kind == "absent" else 5
 
+    from playwright.sync_api import sync_playwright  # here: everything above runs, and is tested, without it
+
     net = []
+    http_status = None
 
     with sync_playwright() as p:
         launch_kw = dict(
@@ -211,7 +308,8 @@ def main() -> int:
             # "commit" fires on navigation start — Circle rarely settles
             # domcontentloaded/networkidle (long-poll + beacons), so don't block
             # on it; the content-selector wait below is the real readiness gate.
-            page.goto(args.url, wait_until="commit", timeout=args.timeout_ms)
+            response = page.goto(args.url, wait_until="commit", timeout=args.timeout_ms)
+            http_status = response.status if response is not None else None
         except Exception as e:
             print(f"(goto {e.__class__.__name__}; proceeding to content wait)", file=sys.stderr)
         # Let the SPA hydrate + video players attach. networkidle is flaky on
@@ -302,6 +400,7 @@ def main() -> int:
                 {
                     "url": args.url,
                     "final_url": final_url,
+                    "http_status": http_status,  # 404/410 on a refresh ticket is `gone`
                     "title": title,
                     "canonical": canonical,
                     "domain": domain,

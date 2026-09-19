@@ -23,9 +23,14 @@ per-domain profile that earned cf_clearance; created by the plugin's
 and measures the wrapper's rendered size.
 
 Usage:
-  uv run outage_probe.py <root> <course-url> [--headed] [--timeout-ms 45000]
+  llm-wiki-ops run ops/skills/channel-circle/scripts/outage_probe.py \
+         <root> --ticket-dir <capture_dir> [--headed] [--settle-ms 8000]
+         <root> <course-url> …                       # HAND RUNS ONLY
 
-`<root>` is the wiki root. Always exits 0 (it's a probe, not a gate).
+`<root>` is the wiki root (`.` under `llm-wiki-ops run`). With `--ticket-dir`
+(wiki-relative: resolved against `<root>`) the url probed is the `target` of
+that directory's `ticket.json` — a worker never types a venue url onto a
+command line. Always exits 0 (it's a probe, not a gate).
 Prints a JSON verdict on stdout:
   {fixed, wrapper_children, wrapper_chars, http_5xx, sample_5xx,
    final_url, title, auth_ok}
@@ -38,6 +43,7 @@ History:
               auth directory.
   2026-08-04  auth profile lookup moves through the credential store's
               `profile-dir` verb instead of a hardcoded path.
+  2026-09-19  `--ticket-dir`: the url comes off the ticket, never a command line.
 """
 
 import argparse
@@ -104,17 +110,35 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
+def ticket_target(root, ticket_dir) -> str | None:
+    """The http(s) `target` of `<root>/<ticket_dir>/ticket.json`, or None."""
+    if not ticket_dir:
+        return None
+    base = Path(ticket_dir) if Path(ticket_dir).is_absolute() else Path(root) / ticket_dir
+    try:
+        ticket = json.loads((base / "ticket.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    target = ticket.get("target") if isinstance(ticket, dict) else None
+    return target if isinstance(target, str) and urlsplit(target).scheme in ("http", "https") else None
+
+
 def main() -> int:
     from playwright.sync_api import sync_playwright
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="wiki root path")
-    ap.add_argument("url")
+    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY; default: `target` of <ticket-dir>/ticket.json")
+    ap.add_argument("--ticket-dir", help="the ticket's capture dir, wiki-relative — its ticket.json names the url")
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     ap.add_argument("--settle-ms", type=int, default=8000, help="Wait after load for XHRs to fire / content to render")
     args = ap.parse_args()
 
+    args.url = args.url or ticket_target(args.root, args.ticket_dir)
+    if not args.url:
+        print(json.dumps({"fixed": False, "error": "no url: give --ticket-dir <capture_dir> (its ticket.json names the target)"}))
+        return 0
     domain = domain_of(args.url)
 
     try:
