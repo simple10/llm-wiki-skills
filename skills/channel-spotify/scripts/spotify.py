@@ -97,9 +97,8 @@ def wiki_root(start=None):
     # NOT `Path.is_file()`: it swallows `PermissionError` and reports False,
     # which would make a denied `.llm-wiki.toml` look like "no wiki here" —
     # walking on to the next parent and eventually degrading keyless —
-    # instead of surfacing the real problem. Same distinction
-    # `credentials.py`'s `profile_dir` draws by name (`os.stat`, not
-    # `Path.is_dir()`): FileNotFoundError means genuinely absent, any other
+    # instead of surfacing the real problem. `os.stat`, not
+    # `Path.is_file()`: FileNotFoundError means genuinely absent, any other
     # OSError means something IS there and could not be reached.
     p = Path(start or ".").resolve()
     for cand in (p, *p.parents):

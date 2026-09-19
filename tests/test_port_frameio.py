@@ -425,7 +425,8 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki):
     assert "title: Q3 Roadmap.pdf" in front and "status: draft" in front and fresh["view_url"] in front
     assert "# Q3 Roadmap.pdf" in rendered and "*Decks*" in rendered
     assert "- **Type:** doc" in rendered and "- **Author:** Ada Lovelace" in rendered
-    assert f"`{planned['dir']}/document.pdf`" in rendered and "`Q3 Roadmap.pdf` (pdf, 614 bytes)" in rendered
+    assert "`Q3 Roadmap.pdf` (pdf, 614 bytes)" in rendered
+    assert "_raw/" not in rendered, "a committed page names the captured file and never points into `_raw/`"
     assert "> [!note]- Extracted text" in rendered
     if importlib.util.find_spec("pypdf"):  # the script's own PEP 723 dependency; absent under a bare interpreter
         assert "Quarterly roadmap for the fixture share" in rendered
