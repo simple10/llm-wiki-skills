@@ -783,10 +783,14 @@ def _front_door(tmp, ops, env):
     """
     bin_dir = Path(tempfile.mkdtemp(prefix="front-door-", dir=tmp))
     stub = bin_dir / "llm-wiki-ops"
+    # `execve` takes a PATH, never a name: `LLM_WIKI_OPS` is a command LINE, and
+    # its first word is `uv` wherever the CLI is run out of a checkout. Resolved
+    # here, where PATH is still this process's.
+    runner = shutil.which(ops[0]) or ops[0]
     stub.write_text(
         f"#!{sys.executable}\n"
         "import os, sys\n"
-        f"os.execve({ops[0]!r}, [{ops[0]!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
+        f"os.execve({runner!r}, [{runner!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}"}
@@ -984,6 +988,7 @@ def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki,
     text = page.read_text(encoding="utf-8")
     assert page.is_relative_to(wiki / job.dest) and page.name == "Real Title - Fixture Share.md"
     assert "extracted: queued" in text and url in text
+    assert "type: video" in text, "the note format requires a type, and a video stub is not a `note`"
     assert f"media: {rel}/video.mp4" in text, "the page names the media the transcriber is owed"
     assert text.rstrip().endswith("---"), "an empty body: the transcript is what fills it"
 
@@ -1022,6 +1027,7 @@ def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_
     text = page.read_text(encoding="utf-8")
     assert "> **Page 1**" in text and "Quarterly roadmap for the fixture share" in text
     assert "extraction failed" not in text
+    assert "type: doc" in text, "the note format requires a type, and a document is not a `note`"
 
 
 # ---- Rule 1: the title names a FILE ----------------------------------------------------
@@ -1031,7 +1037,7 @@ def test_safe_title_is_a_title_the_hosts_filename_rule_holds():
     """`page/note.py::filename_for` refuses `/\\:*?"<>|`, a control character and
     a leading dot, and checks no length — the filesystem does, in BYTES."""
     rec = _module("capture_record")
-    assert rec.safe_title('Lesson 3: "Pricing"? A/B <draft> | v2*') == "Lesson 3 - 'Pricing' A-B (draft) - v2"
+    assert rec.safe_title('Lesson 3: "Pricing"? A/B <draft> | v2*') == "Lesson 3 - \u2019Pricing\u2019 A-B (draft) - v2"
     assert rec.safe_title("...hidden.pdf") == "hidden.pdf" and rec.safe_title(" . ") == "Untitled"
     assert rec.safe_title("a\nb\tc\x00d\x7fe\u2028f") == "a b c d e f"
     assert rec.safe_title("C:\\decks\\q3.pdf") == "C --decks-q3.pdf"
@@ -1070,7 +1076,7 @@ def test_a_qualified_title_still_fits_a_filename_and_keeps_its_qualifier():
 
 
 HOSTILE_TITLES = [
-    ('Lesson 3: "Pricing"? A/B.pdf', "Lesson 3 - 'Pricing' A-B.pdf"),
+    ('Lesson 3: "Pricing"? A/B.pdf', "Lesson 3 - ’Pricing’ A-B.pdf"),
     ('.hidden: what/why?.pdf', "hidden - what-why.pdf"),
     ("路" * 100 + ".pdf", None),  # 300 bytes of CJK: the host checks no length, the filesystem does
 ]
@@ -1186,3 +1192,28 @@ def test_the_real_argv_chain_carries_a_file_named_like_an_option(tmp_path):
     (call,) = [json.loads(line) for line in seen.read_text().splitlines()]
     assert call["argv"][:4] == ["--json", "page", "create", "title=-rf.pdf"], "a title opening with `-` is no option"
     assert "dest=sources/decks" in call["argv"] and call["stdin"] == body
+
+
+@pytest.mark.parametrize("bundle, under_dest", [(True, True), (False, False)])
+def test_bundle_media_decides_where_the_stub_points(ops, env, wiki, monkeypatch, capsys, tmp_path, bundle, under_dest):
+    """`process.bundle_media` is on the ticket and the host no longer acts on
+    it: the unit writes this page, so the copy is the unit's. True puts the
+    media under `<dest>/assets/` beside the page; false leaves it in `_raw`."""
+    job = declared_job(ops, env, wiki, UNIT, SHARE, "dest=sources/scrapes/port-frameio")
+    url = f"{SHARE}/view/bundle{int(bundle)}"
+    leaf_dir = wiki / "_raw" / job.slug / f"bundled{int(bundle)}--{hashlib.sha1(url.encode()).hexdigest()[:8]}"
+    code, _calls, _io = _capture_leaf(monkeypatch, capsys, wiki, leaf_dir, url, "video",
+                                      "--slug", job.slug, "--name", f"Bundle{int(bundle)}.mov")
+    assert code == 0
+    rel = str(leaf_dir.relative_to(wiki))
+    ticket = json.loads((leaf_dir / "ticket.json").read_text()) if (leaf_dir / "ticket.json").exists() else {}
+    ticket["process"] = {"embeds": True, "bundle_media": bundle, "on_change": "replace", "exclude_rules": []}
+    (leaf_dir / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
+
+    code, out, err = _process(wiki, rel, job.dest, env=_front_door(tmp_path, ops, env))
+    assert code == 0, err + out
+    page = wiki / json.loads((leaf_dir / "report.json").read_text())["written"][0]
+    named = re.search(r"^media: (.+)$", page.read_text(encoding="utf-8"), re.M).group(1)
+    assert (wiki / named).is_file(), named
+    assert named.startswith(f"{job.dest}/assets/") is under_dest, named
+    assert named.startswith("_raw/") is not under_dest, named
