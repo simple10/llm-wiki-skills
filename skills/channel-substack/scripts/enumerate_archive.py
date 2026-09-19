@@ -28,9 +28,13 @@ and keeps a post only if it passes, in this order:
                    archive target only `domain` keeps anything — the unit's
                    manifest defaults to it, and a walk that scope emptied says
                    so on stderr and in `summary.skipped_by_scope`.
-- `harvest.exclude_urls`  an entry drops a post whose URL it equals, is a
-                   prefix of, or matches as a shell glob (`*`, `?`). The host
-                   defines no matching rule for this list; that one is this unit's.
+- `harvest.exclude_urls`  THIS UNIT'S READING — the host defines no matching
+                   rule for this list. An entry drops a post whose URL it
+                   equals (a trailing `/` aside); or that it is a PATH PREFIX
+                   of, ending on a segment boundary (`…/p/a` drops `…/p/a/x`
+                   and `…/p/a?x=1`, never `…/p/ab`); or, when it carries a
+                   `*`, that it matches as a glob over the whole URL. `*` is
+                   the only wildcard: `?` and `[` are URL characters here.
 - `harvest.access` `free` keeps only `audience: everyone`. Paid-tier posts are
                    counted, never fetched. `licensed` keeps every tier.
 - `known[]`        a post whose URL is the `resource` of a page this job
@@ -58,17 +62,29 @@ does not count against `--max-leaves`.
 Two tickets are not an archive walk, and both plan ONE leaf into the ticket's
 own `capture_dir`, with no API call:
 
-- a **refresh** ticket (`refresh: true`) — the leaf is its `resource`, and
-  `known[]` is not consulted, since re-fetching a known page is the job;
+- a **refresh** ticket (`refresh: true`) — the leaf is its `resource` (else its
+  `item`), exactly that, and `known[]` is not consulted, since re-fetching a
+  known page is the job;
 - a ticket whose `target` is itself a post (`/p/<slug>`).
 
-Inputs come from `ticket.json` in `--capture-dir` (default: the directory you
-stand in, which is where a worker is started). Every flag is an override for
-a hand run; with no `ticket.json` give the domain or archive URL positionally.
+That directory is STABLE across pulls, and the extractor writes into it too.
+So for such a plan the old `page.html`, `page.md`, `capture.json` and
+`results.json` are removed here, before anything is fetched: a refresh that
+found yesterday's `page.html` would never fetch, and `apply` would stamp the
+page `unchanged` on bytes nobody re-read. And on EVERY ticket the first thing
+this does is remove a stale `report.json` — `apply` does not check whose
+report it reads, so a respawn must not be read as a success it did not have.
+
+`--capture-dir` is REQUIRED and is the ticket's `capture_dir` VERBATIM —
+wiki-relative, because `llm-wiki-ops run` starts a script at the WIKI ROOT,
+not in the directory the worker stands in. Inputs come from `ticket.json` in
+it. Every other flag is an override for a hand run; with no `ticket.json` give
+the domain or archive URL positionally, and `--slug`. A relative `--out` is
+resolved INSIDE the capture directory, never against the wiki root.
 
 Output: one JSON object on stdout, `{"v", "ticket", "slug", "newsletter",
-"capture_dir", "leaves": [...], "summary": {...}}`, and — when there is a
-`ticket.json`, or `--out` names a file — the same object written as
+"capture_dir", "refresh", "leaves": [...], "summary": {...}}`, and — when
+there is a `ticket.json`, or `--out` names a file — the same object written as
 `leaves.json`, which `capture_posts.py` and `write_report.py` read. `summary`:
 {"total_posts", "by_audience", "skipped_paywalled", "skipped_known",
 "skipped_excluded", "skipped_by_scope", "skipped_newer",
@@ -90,6 +106,14 @@ History:
   `--max-leaves` and is optional (the ceiling it restated was the host's);
   `resume_max_date` and `stalled` are gone with the date-resume they served,
   because `known[]` is what resumes a walk now and it cannot stall.
+- 2026-09-19 (review): `--capture-dir` is required and wiki-relative, and a
+  relative `--out` lands inside it — under `llm-wiki-ops run` the cwd is the
+  wiki root, so the old `.` default read and wrote in the wrong place. A
+  stale `report.json` is removed first; a single-leaf plan clears its own
+  directory so a refresh really re-fetches. An archive answer that is not
+  JSON (a challenge page) is `fetch_failed`, not a traceback.
+  `exclude_urls` prefixes end on a path-segment boundary, and `?` is no
+  longer a wildcard.
 """
 
 import argparse
@@ -109,6 +133,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; llm-wiki-harvest/1.0)"
 TICKET_NAME = "ticket.json"
 PLAN_NAME = "leaves.json"
 CAPTURE_NAME = "capture.json"
+REPORT_NAME = "report.json"
+# What one leaf's capture is made of. Cleared from the ticket's own directory
+# when the plan is that one leaf: see "STABLE across pulls" above.
+OWN_LEAF_FILES = ("page.html", "page.md", CAPTURE_NAME, "results.json")
 RAW_DIRNAME = "_raw"
 SCOPES = ("page", "section", "domain")
 
@@ -181,12 +209,23 @@ def in_scope(url, target, scope):
 
 
 def excluded(url, patterns):
+    """This unit's reading of `harvest.exclude_urls` — the host defines none.
+
+    Exact (a trailing `/` aside); a path prefix that ends on a SEGMENT
+    boundary, so `/p/a` drops `/p/a/x` and `/p/a?x` but never `/p/ab`; or a
+    `*` glob over the whole URL. `?` and `[` are URL characters, not wildcards.
+    """
     for pattern in patterns or []:
         if not isinstance(pattern, str) or not pattern:
             continue
-        if url.rstrip("/") == pattern.rstrip("/") or url.startswith(pattern):
+        if "*" in pattern:
+            if fnmatch.fnmatchcase(url, pattern.replace("[", "[[]").replace("?", "[?]")):
+                return True
+            continue
+        stem = pattern.rstrip("/")
+        if url.rstrip("/") == stem:
             return True
-        if any(ch in pattern for ch in "*?") and fnmatch.fnmatchcase(url, pattern):
+        if url.startswith(stem) and url[len(stem)] in "/?#":
             return True
     return False
 
@@ -228,8 +267,9 @@ def main():
     )
     ap.add_argument(
         "--capture-dir",
-        default=".",
-        help="the ticket's capture directory — where ticket.json is read and leaves.json is written (default: .)",
+        required=True,
+        help="REQUIRED: ticket.json's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
+        "this script at the wiki root — and is where ticket.json is read and leaves.json is written",
     )
     ap.add_argument("--slug", default=None, help="the job's slug, which names the leaf dirs. Default: ticket.json's `slug`")
     ap.add_argument(
@@ -274,11 +314,21 @@ def main():
     ap.add_argument(
         "--out",
         default=None,
-        help="write the plan here as well as stdout. Default: <capture-dir>/leaves.json when a ticket.json is there",
+        help="write the plan here as well as stdout; a relative path is resolved INSIDE --capture-dir. "
+        "Default: <capture-dir>/leaves.json when a ticket.json is there",
     )
     args = ap.parse_args()
 
     capture_dir = Path(args.capture_dir)
+    if not capture_dir.is_dir():
+        ap.error(
+            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give ticket.json's "
+            f"`capture_dir` verbatim: it is wiki-relative, and `llm-wiki-ops run` starts a script at the wiki root"
+        )
+    capture_dir = capture_dir.resolve()
+    # First, before anything can fail: a report left by an earlier spawn (or
+    # by the extractor, which writes its own here) is not THIS run's answer.
+    (capture_dir / REPORT_NAME).unlink(missing_ok=True)
     ticket = load_ticket(capture_dir)
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
 
@@ -313,11 +363,16 @@ def main():
     def on_disk(rel):
         # Leaves are siblings of the ticket's own directory: both are
         # `_raw/<slug>/<one>`, so no wiki root has to be found to look.
-        return holds_capture(capture_dir.resolve().parent / rel.rsplit("/", 1)[-1])
+        return holds_capture(capture_dir.parent / rel.rsplit("/", 1)[-1])
 
     single = None
-    if ticket.get("refresh") and isinstance(ticket.get("resource"), str):
-        single, known = ticket["resource"], set()
+    refresh = bool(ticket.get("refresh"))
+    if refresh:
+        # Exactly the page the ticket names — never the archive its job walks.
+        single = next((ticket[key] for key in ("resource", "item") if isinstance(ticket.get(key), str) and ticket[key]), None)
+        if single is None:
+            ap.error(f"{TICKET_NAME} is a refresh ticket and names no `resource`")
+        known = set()
     elif "://" in target and _POST_PATH.match(urlsplit(target).path):
         single = target
 
@@ -339,6 +394,12 @@ def main():
                 }
             )
             planned = 1
+            if own_dir:
+                # Its own, stable directory: what an earlier pull left there is
+                # not this run's capture, and a `page.html` found there would
+                # never be re-fetched.
+                for name in OWN_LEAF_FILES:
+                    (capture_dir / name).unlink(missing_ok=True)
 
     offset = 0
     stop = single is not None
@@ -348,6 +409,14 @@ def main():
         except (urllib.error.URLError, TimeoutError) as e:
             # A mid-read socket timeout escapes as TimeoutError, not URLError.
             fetch_failed = f"offset {offset}: {e}"
+            print(f"fetch failed at {fetch_failed}", file=sys.stderr)
+            break
+        except ValueError:
+            # 200 and not JSON (JSONDecodeError is a ValueError): a challenge
+            # page, a login wall, a custom domain with no Substack behind it.
+            page = None
+        if not isinstance(page, list) or not all(isinstance(post, dict) for post in page):
+            fetch_failed = f"offset {offset}: the archive API did not answer a JSON list of posts (a challenge or login page?)"
             print(f"fetch failed at {fetch_failed}", file=sys.stderr)
             break
 
@@ -446,6 +515,7 @@ def main():
         "newsletter": domain,
         "capture_dir": own_dir,
         "access": access,
+        "refresh": refresh,
         "leaves": leaves,
         "summary": {
             "total_posts": total_posts,
@@ -461,7 +531,8 @@ def main():
         },
     }
     text = json.dumps(plan, indent=2)
-    out = Path(args.out) if args.out else (capture_dir / PLAN_NAME if ticket else None)
+    # `capture_dir / <absolute>` is the absolute path; a relative one lands inside.
+    out = capture_dir / args.out if args.out else (capture_dir / PLAN_NAME if ticket else None)
     if out is not None:
         out.write_text(text + "\n", encoding="utf-8")
     print(text)

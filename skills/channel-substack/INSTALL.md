@@ -12,6 +12,13 @@ Customize the wiki's copy now, while the operator is present:
 2. Ask free-only vs licensed. Free needs no auth; licensed needs a
    Playwright storage state for the newsletter's own domain (custom-domain
    newsletters may not share substack.com cookies).
+   **Licensed also needs the unit to DECLARE a credential**, which the
+   shipped manifest does not (`requires.credential: false`, so that free jobs
+   need no binding): a slice is granted a secret only when the unit declares
+   the need and the job is bound. SKILL.md's "Auth" lists the steps — set
+   `requires.credential` to `true` in this wiki's copy, re-enable,
+   `llm-wiki-ops credential set <name>`, `llm-wiki-ops credential bind <slug>
+   <name>` — and their cost: every job on this unit then needs a binding.
 3. Ask for an age floor (e.g. only posts from the last 3 months) — that
    becomes `harvest.max_age` on the job, and rides each ticket as `min_date`.
 4. Declare the job, naming the skill. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-substack`, which the

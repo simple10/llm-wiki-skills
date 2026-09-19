@@ -45,12 +45,16 @@ def _urls(out):
     return [leaf["item"] for leaf in out["leaves"]]
 
 
-def _run(monkeypatch, capsys, pages, *argv, ticket=None, tmp_path=None):
+def _run(monkeypatch, capsys, pages, *argv, ticket=None, tmp_path):
     """One walk over `pages`. With `ticket`, the inputs come from a
-    `ticket.json` in `tmp_path`, the way a worker's do; without, from flags."""
+    `ticket.json` in `tmp_path`, the way a worker's do; without, from flags.
+    `--capture-dir` is REQUIRED either way (2026-09-19: its `.` default read
+    and wrote at the wiki root under `llm-wiki-ops run`), so every case names
+    a directory; the wiki-relative, cwd-is-the-wiki-root form is driven in
+    `test_port_substack.py`."""
     mod = _module()
     served = list(pages)
-    base = ["ex.substack.com", "--slug", "w1"]
+    base = ["ex.substack.com", "--slug", "w1", "--capture-dir", str(tmp_path)]
     if ticket is not None:
         (tmp_path / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
         base = ["--capture-dir", str(tmp_path)]
@@ -65,12 +69,12 @@ def _run(monkeypatch, capsys, pages, *argv, ticket=None, tmp_path=None):
     return json.loads(capsys.readouterr().out)
 
 
-def test_it_plans_leaves_and_emits_no_discovered_row(monkeypatch, capsys):
+def test_it_plans_leaves_and_emits_no_discovered_row(monkeypatch, capsys, tmp_path):
     """WAS `test_it_emits_one_report_row_and_queues_nothing`, which pinned the
     `{"parent", "watch_id", "urls"}` row. Nothing applies such a row any more
     — `discovered[]` does nothing for pages — so emitting one would be a
     harvest that silently captures nothing. The plan is what replaced it."""
-    out = _run(monkeypatch, capsys, [[_post(1), _post(2)]])
+    out = _run(monkeypatch, capsys, [[_post(1), _post(2)]], tmp_path=tmp_path)
     assert "discovered" not in out
     assert _urls(out) == ["https://ex.substack.com/p/post-1",
                           "https://ex.substack.com/p/post-2"]
@@ -108,23 +112,23 @@ def test_the_script_shells_nothing():
     assert not called & {"eval", "exec", "compile", "__import__", "open"}
 
 
-def test_free_access_emits_only_everyone(monkeypatch, capsys):
+def test_free_access_emits_only_everyone(monkeypatch, capsys, tmp_path):
     out = _run(monkeypatch, capsys,
-               [[_post(1), _post(2, audience="only_paid"), _post(3)]])
+               [[_post(1), _post(2, audience="only_paid"), _post(3)]], tmp_path=tmp_path)
     assert out["summary"]["skipped_paywalled"] == 1
     assert len(out["leaves"]) == 2
 
 
-def test_min_date_stops_the_walk(monkeypatch, capsys):
+def test_min_date_stops_the_walk(monkeypatch, capsys, tmp_path):
     out = _run(monkeypatch, capsys,
                [[_post(1, date="2026-08-01"), _post(2, date="2025-01-01")]],
-               "--min-date", "2026-01-01")
+               "--min-date", "2026-01-01", tmp_path=tmp_path)
     assert out["summary"]["stopped_at_min_date"] is True
     assert len(out["leaves"]) == 1
     assert out["summary"]["truncated"] is False
 
 
-def test_one_run_never_plans_past_its_cap(monkeypatch, capsys):
+def test_one_run_never_plans_past_its_cap(monkeypatch, capsys, tmp_path):
     """WAS `test_the_emission_never_exceeds_the_hosts_ceiling`: the cap used to
     restate the host's `max_discovered_urls`, past which a report was refused
     whole. That ceiling is gone with the row. The bound stays for a different
@@ -132,7 +136,7 @@ def test_one_run_never_plans_past_its_cap(monkeypatch, capsys):
     report — so `--max-urls` became `--max-leaves`."""
     pages = [[_post(i, date="2026-08-01") for i in range(p * 50, p * 50 + 50)]
              for p in range(10)]
-    out = _run(monkeypatch, capsys, pages, "--max-leaves", "120")
+    out = _run(monkeypatch, capsys, pages, "--max-leaves", "120", tmp_path=tmp_path)
 
     # Exact, not `<=`: halving the cap plans 60 and a `<=` assertion still
     # passes, pinning "never over" rather than "stops at the cap".
@@ -142,9 +146,9 @@ def test_one_run_never_plans_past_its_cap(monkeypatch, capsys):
     assert "resume_max_date" not in out["summary"]
 
 
-def test_an_untruncated_walk_is_not_flagged(monkeypatch, capsys):
+def test_an_untruncated_walk_is_not_flagged(monkeypatch, capsys, tmp_path):
     """WAS `..._names_no_resume_ceiling`; the flag half still holds."""
-    out = _run(monkeypatch, capsys, [[_post(1)]], "--max-leaves", "100")
+    out = _run(monkeypatch, capsys, [[_post(1)]], "--max-leaves", "100", tmp_path=tmp_path)
     assert out["summary"]["truncated"] is False
 
 
@@ -204,13 +208,13 @@ def test_a_same_day_flood_cannot_stall_the_walk(monkeypatch, capsys, tmp_path):
     assert second["summary"]["truncated"] is False
 
 
-def test_min_date_is_not_a_resume(monkeypatch, capsys):
+def test_min_date_is_not_a_resume(monkeypatch, capsys, tmp_path):
     """Kept: a lower floor on a truncated walk plans exactly the same posts.
     The walk always restarts at `offset=0`, under either contract."""
     pages = [_dated_archive(300)[i:i + 50] for i in range(0, 300, 50)]
-    first = _run(monkeypatch, capsys, pages, "--max-leaves", "50")
+    first = _run(monkeypatch, capsys, pages, "--max-leaves", "50", tmp_path=tmp_path)
     again = _run(monkeypatch, capsys, pages, "--max-leaves", "50",
-                 "--min-date", "2020-01-01")
+                 "--min-date", "2020-01-01", tmp_path=tmp_path)
     assert _urls(again) == _urls(first)
 
 

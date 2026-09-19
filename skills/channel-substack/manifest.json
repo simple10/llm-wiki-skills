@@ -12,7 +12,8 @@
     "credential": false,
     "network": [
       "*.substack.com",
-      "substack.com"
+      "substack.com",
+      "substackcdn.com"
     ],
     "ops": ">=1.88"
   },
