@@ -1,13 +1,7 @@
-# channel-spotify — install notes (for the installing agent)
-
-## Customizing this unit
-
-Install this package's `writing-skills` first — `llm-wiki-ops skills install simple10/llm-wiki-skills@writing-skills` (over an unedited copy this just refreshes it; a refusal means this wiki customized its copy, which is fine) — then invoke `writing-skills` to customize this unit against the questions below. Without it, `llm-wiki-ops reference skill-authoring` is the contract; customize the wiki's copy by hand.
-
-Customize and set up now, while the operator is present:
+# channel-spotify — after enabling
 
 1. **API credentials** — needed for search and guaranteed-complete item
-   lists (public catalog only; no user login exists in this unit). Have
+   lists (public catalog only; no user login exists in this skill). Have
    the operator create an app at developer.spotify.com → Dashboard, then
    store per machine — the OPERATOR runs this, at a terminal:
    `llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py auth --client-id <id>`
@@ -20,21 +14,19 @@ Customize and set up now, while the operator is present:
    **Read "Credentials under a confined harvest" below** — stored
    credentials alone do not reach a scheduled, confined run.
 2. **Non-URL requests** ("add the Lex Fridman podcast episode 400")
-   resolve through the unit's search before anything is watched:
+   resolve through the skill's search before anything is watched:
    `llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py search "lex fridman #400" --type episode`
    — confirm the match with the operator, then watch the chosen URL.
-3. **Declare the job**: one per entity URL. The unit must be ENABLED on this machine first — `llm-wiki-ops skills enable channel-spotify`, which the
-   operator runs (an unattended session is refused): `pipeline add` reads `dest` and the
-   defaults off the enabled copy, and answers `dest required` without it.
+3. **Declare the job**: one per entity URL.
    `llm-wiki-ops pipeline add <entity-url> slug=<content-name>
    description="<what this is>" skill=channel-spotify
    meta.group="<name>" meta.group_type=playlist|series` — a playlist or show
    is a bundle. open.spotify.com is a generic share host carrying no source
-   identity, so name the slug after the content. The unit's manifest supplies
+   identity, so name the slug after the content. The skill's manifest supplies
    `every=once`, `harvest.scope=page` (the capture enumerates the entity's
    items itself — there is no link crawling), `harvest.assets=download` and a
    `dest` of `sources/podcasts/<slug>`; pass `dest=` to land it elsewhere.
-   One `skill=channel-spotify` covers both stages: this unit renders its own
+   One `skill=channel-spotify` covers both stages: this skill renders its own
    venue's page into `dest`.
    **A show or playlist the operator wants RE-pulled for new episodes needs
    two more keys**: `every=<period> harvest.refresh=<period>`. The container
@@ -66,8 +58,8 @@ deliberate — do not try to finish the allowlist.
 Established from the host source (`pipeline/slicing.py::credential_for`,
 `schedule/runner/slice.py::compose_slice`, `common/wiki/secrets.py::get`), not
 yet from a live run. A slice is granted read on ONE credential payload, and
-only when the unit declares `requires.credential: true` and the job has a
-binding. This unit ships `requires.credential: false`, so inside a slice:
+only when the skill declares `requires.credential: true` and the job has a
+binding. This skill ships `requires.credential: false`, so inside a slice:
 
 - a machine with **no** `spotify` credential captures keyless, as documented
   (`partial`, possibly-truncated list);
