@@ -86,6 +86,11 @@ jobs:
             grep -q '^# /// script' "$script" || continue
             uv run --quiet --script "$script" -h > /dev/null 2>&1 || echo "::warning::could not warm $script"
           done
+      # `skills enable` refuses a skill whose `requires.bins` are not on PATH
+      # and installs nothing itself, so the runner supplies what the manifests
+      # declare. `uv tool` puts the binary where setup-uv already put PATH.
+      - name: Install the binaries the manifests declare
+        run: uv tool install yt-dlp
       - name: Check the manifest
         run: python3 scripts/check-manifest.py
       # `-rs`: every skip prints its reason, so a harness that skipped its
