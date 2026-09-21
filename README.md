@@ -9,7 +9,7 @@ source = "simple10/llm-wiki-skills"
 version = "latest"
 ```
 
-- `skills/<name>/` — a skill unit: `SKILL.md`, `manifest.json`, `INSTALL.md`, `scripts/`
+- `skills/<name>/` — a skill unit: `SKILL.md`, `manifest.json`, `references/enable.md`, `references/customize.md`, `scripts/`
 - `tactics/<name>.md` — a venue-tactics playbook
 - `scripts/check-manifest.py` — the manifest agrees with the tree
 
