@@ -148,7 +148,9 @@ def _wrong(cli, job_record, text: str, unit: str | None) -> list:
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
 def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
-    unit = doc.parent.name if doc.parent.parent.name == "skills" else None
+    # `skills/<unit>/SKILL.md` and `skills/<unit>/references/*.md` both name a unit.
+    parts = doc.relative_to(ROOT).parts
+    unit = parts[1] if parts[0] == "skills" else None
     wrong = _wrong(cli, job_record, doc.read_text(encoding="utf-8"), unit)
     assert not wrong, f"{doc.relative_to(ROOT)}:\n  " + "\n  ".join(wrong)
 
