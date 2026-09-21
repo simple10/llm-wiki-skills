@@ -156,8 +156,8 @@ is the JOB's slug, so two mailboxes make two ledgers on the same day.
 is an MCP tool whose name depends on which client this machine
 authenticated, so a pattern written here would match nothing while looking
 correct. Access is session-level and PER MAILBOX, so expect harvest to work
-only where `llm-wiki-ops whereami` reports `spawn: none` — INSTALL.md says
-why. The process step has no such limit; it reads files.
+only where `llm-wiki-ops whereami` reports `spawn: none` — `references/enable.md`
+says why. The process step has no such limit; it reads files.
 
 **With no connector** (no Gmail tool in your tool list, or every call
 refused): do not look for another way to the mailbox — no browser, no IMAP,
@@ -177,7 +177,7 @@ The manifest declares `requires.credential: true` and **the value is never
 read** — not by this unit, not by its script. `credential bind <slug> <name>`
 is the operator's per-machine consent: "this machine's session is signed into
 THIS mailbox", and a machine without one skips this job's harvest. How to
-make one: this unit's INSTALL.md.
+make one: this unit's `references/enable.md`.
 
 This copy is wiki-owned, and **customized is the intended state**: the
 filters and the junk rules above are the wiki's to write.

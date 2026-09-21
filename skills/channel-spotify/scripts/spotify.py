@@ -1203,7 +1203,7 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
         why_partial.append(
             f"API credentials exist on this machine and could not be read here ({auth.get('said')}), so the API was "
             f"not used. Fix: a confined slice is granted no credential payload for this unit — see the unit's "
-            f"INSTALL.md, 'Credentials under a confined harvest'"
+            f"references/enable.md, 'Credentials under a confined harvest'"
         )
     if meta.get("keyless"):
         why_partial.append("keyless capture: the item list may be truncated")
@@ -1357,7 +1357,7 @@ def render_page_md(meta):
         L.append("")
         L.append(
             "> [!warning] API credentials exist on this machine but could not be read from this run, "
-            "so the API was not used — see the unit's INSTALL.md, 'Credentials under a confined harvest'."
+            "so the API was not used — see the unit's references/enable.md, 'Credentials under a confined harvest'."
         )
     cut = meta.get("truncated")
     if isinstance(cut, dict):

@@ -316,10 +316,11 @@ def test_no_doc_or_manifest_names_the_extract_block_any_more():
     """`skills doctor` fails a manifest carrying a key the contract does not name, and nothing read it."""
     manifest = json.loads((ROOT / "skills" / UNIT / "manifest.json").read_text(encoding="utf-8"))
     assert "extract" not in manifest
-    for name in ("SKILL.md", "INSTALL.md"):
+    for name in ("SKILL.md", "references/customize.md", "references/enable.md"):
         text = (ROOT / "skills" / UNIT / name).read_text(encoding="utf-8")
         assert '"extract"' not in text and "fill the manifest" not in text, name  # no doc shows or asks for the key
-        assert "references/sites.json" in text, name
+    for name in ("SKILL.md", "references/enable.md"):
+        assert "references/sites.json" in (ROOT / "skills" / UNIT / name).read_text(encoding="utf-8"), name
 
 
 def test_the_stages_speak_the_new_contract():

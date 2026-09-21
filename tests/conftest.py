@@ -143,8 +143,9 @@ class Job:
 
 
 def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
-    """A real job for `unit` in the session wiki, declared the way INSTALL.md
-    says to — `pipeline extract` reads the job a capture belongs to, so a
+    """A real job for `unit` in the session wiki, declared the way
+    references/enable.md says to — `pipeline extract` reads the job a capture
+    belongs to, so a
     capture with no job behind it is refused. Idempotent for one
     (slug, target) pair; a wiki holds ONE job per target and a slug names one
     source for good, so a case wanting a job of its own passes both."""

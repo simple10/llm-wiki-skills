@@ -2,10 +2,10 @@
 has: the group, the verb and each `--flag`, read off `--help`, and each dotted
 `section.key=` of a job, read off a real job record.
 
-The docs are the interface. An agent follows INSTALL.md and SKILL.md to the
-letter, so `watch add --slug …` after the CLI became `pipeline add slug=…` is
-a unit that does not work, however green its scripts are — and nothing else
-here reads prose.
+The docs are the interface. An agent follows SKILL.md and its references to
+the letter, so `watch add --slug …` after the CLI became `pipeline add
+slug=…` is a unit that does not work, however green its scripts are — and
+nothing else here reads prose.
 """
 
 from __future__ import annotations
