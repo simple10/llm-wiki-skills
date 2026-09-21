@@ -10,12 +10,22 @@
   "kind": "channel",
   "name": "channel-frameio",
   "requires": {
+    "bins": [
+      {
+        "bin": "yt-dlp",
+        "source": "https://github.com/yt-dlp/yt-dlp",
+        "installers": {
+          "brew": "yt-dlp",
+          "pip": "yt-dlp"
+        }
+      }
+    ],
     "credential": false,
     "network": [
       "*.frame.io",
       "frame.io"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -24,7 +34,7 @@
   "usage": "/channel-frameio ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "frameio",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "watch": {
     "defaults": {
       "every": "once",

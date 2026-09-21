@@ -10,6 +10,16 @@
   "kind": "channel",
   "name": "channel-youtube",
   "requires": {
+    "bins": [
+      {
+        "bin": "yt-dlp",
+        "source": "https://github.com/yt-dlp/yt-dlp",
+        "installers": {
+          "brew": "yt-dlp",
+          "pip": "yt-dlp"
+        }
+      }
+    ],
     "credential": false,
     "network": [
       "*.youtube.com",
@@ -18,7 +28,7 @@
       "*.googlevideo.com",
       "*.ytimg.com"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -27,7 +37,7 @@
   "usage": "/channel-youtube ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "youtube",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "watch": {
     "defaults": {
       "every": "once",
