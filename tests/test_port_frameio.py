@@ -157,7 +157,34 @@ def test_known_excluded_and_duplicate_leaves_are_not_planned_and_order_holds():
     plan = mod.plan_leaves(leaves, ticket)
 
     assert [p["item"] for p in plan["leaves"]] == [leaves[i]["view_url"] for i in (1, 4, 5)]
-    assert plan["skipped"] == {"known": 1, "excluded": 2, "scope": 0, "duplicate": 1}
+    assert plan["skipped"] == {"known": 1, "excluded": 2, "scope": 0, "duplicate": 1, "reference": 0}
+
+
+def test_an_explicit_reference_plans_no_media_leaf_and_every_document():
+    """The only reference this venue offers is a signed HLS URL that is dead
+    by the next day, and nothing transcribes a video that was never fetched —
+    so `reference` keeps a share's documents and leaves its media unplanned.
+    A leaf with no card name is captured whatever the value says: its kind
+    is known only once fetched."""
+    mod = _module("harvest_share")
+    leaves = [_leaf(1, "Keynote.MOV"), _leaf(2), _leaf(3, "Intro.mp4"), _leaf(4, "Q&A.m4a"), _leaf(5, "Brief.pdf.mp4"), _leaf(6, "")]
+    leaves[5]["name"] = None
+    plan = mod.plan_leaves(leaves, _ticket(harvest=_harvest(assets="reference")))
+    assert [p["item"] for p in plan["leaves"]] == [leaves[i]["view_url"] for i in (1, 5)]
+    assert plan["skipped"]["reference"] == 4
+    for assets in ("download", "download-audio", None):
+        plan = mod.plan_leaves(leaves, _ticket(harvest=_harvest(assets=assets)))
+        assert len(plan["leaves"]) == 6 and plan["skipped"]["reference"] == 0, assets
+    # a single-leaf ticket carries no card name: planned, under every value
+    single = mod.single_leaf_plan(_ticket(target=leaves[0]["view_url"], harvest=_harvest(assets="reference")))
+    assert len(single["leaves"]) == 1 and single["skipped"]["reference"] == 0
+
+
+def test_a_share_that_is_all_media_under_reference_is_skipped_and_says_why():
+    mod = _module("harvest_share")
+    plan = mod.plan_leaves([_leaf(1, "a.mp4"), _leaf(2, "b.mov")], _ticket(harvest=_harvest(assets="reference")))
+    report = mod.report_of(_ticket(), plan, {})
+    assert report["outcome"] == "skipped" and "harvest.assets=reference" in report["reason"] and "2 leaves" in report["reason"]
 
 
 @pytest.mark.parametrize(
@@ -189,7 +216,7 @@ def test_a_manifest_without_leaves_is_refused():
 
 def _report(plan_leaves, states, ticket=None, **skipped):
     mod = _module("harvest_share")
-    plan = {"scope": "domain", "leaves": plan_leaves, "skipped": {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0, **skipped}}
+    plan = {"scope": "domain", "leaves": plan_leaves, "skipped": {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0, "reference": 0, **skipped}}
     return mod.report_of(ticket or _ticket(), plan, states)
 
 

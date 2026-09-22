@@ -39,11 +39,15 @@ else applies them:
   of a FOLDER target, and `page` excludes every leaf of any share or folder.
   A plan that scope emptied is reported `failed` with that reason — loud,
   where the old host-side filter dropped the leaves in silence.
-- `harvest.access`, `min_date` and `harvest.assets` are not consulted: a
-  guest share has no free/paid split, its listing carries no dates, and on
-  this venue the asset IS the item rather than an attachment of a page (a
-  ticket carries the RESOLVED `assets` value, so an operator's explicit
-  `reference` cannot be told from the default — SKILL.md says what to do).
+- `harvest.assets` — `download` (the unit's shipped default) captures every
+  leaf. `reference` plans no MEDIA leaf: the only reference this venue offers
+  is a signed HLS URL that expires within hours, and nothing transcribes a
+  video that was never fetched, so a referenced video is a page pointing at
+  nothing. A leaf is media by the extension of its card name; a nameless
+  leaf is captured whatever the value says, since its kind is known only
+  once fetched. Documents are captured under every value — they ARE the page.
+- `harvest.access` and `min_date` are not consulted: a guest share has no
+  free/paid split and its listing carries no dates.
 
 **The run is bounded and resumable.** A slice is killed at thirty minutes,
 and a killed slice that left no report is a failed ticket. So leaves are
@@ -100,7 +104,7 @@ is no kill to stay ahead of, and the old spawn's clock is long spent.
 
 Outputs one JSON summary on stdout: {"outcome", "reason", "planned",
 "captured", "failed", "remaining", "skipped": {"known", "excluded", "scope",
-"duplicate"}, "stop": "done|budget|slice|plan-only", "report"}.
+"duplicate", "reference"}, "stop": "done|budget|slice|plan-only", "report"}.
 Exit 0 when the report's outcome is `ok`, `partial` or `skipped`; 1 when it
 is `failed`; 2 when the inputs do not add up and no report could be written.
 A refusal also REMOVES any `report.json` an earlier run left in the capture
@@ -162,6 +166,13 @@ ERROR_NAME = "error.json"
 RAW_DIRNAME = "_raw"
 
 SCOPES = ("page", "section", "domain")
+#: What `harvest.assets: reference` leaves unplanned, by the card name's
+#: extension: a video or audio asset, the one kind of leaf `reference` would
+#: reduce to a signed URL that is dead by the next day.
+MEDIA_EXTS = frozenset(
+    "mp4 m4v mov mkv webm avi wmv mpg mpeg mxf mts m2ts ts 3gp mp3 m4a aac wav aif aiff flac ogg opus wma".split()
+)
+SKIPPED = ("known", "excluded", "scope", "duplicate", "reference")
 
 #: One pass stays under a ten-minute tool call; the slice is killed at 1800 s,
 #: so no new leaf starts past 1500 — a video still has to finish downloading —
@@ -227,6 +238,16 @@ def excluded(view_url: str, patterns) -> bool:
     return False
 
 
+def is_media_name(name) -> bool:
+    """Whether a card name says the leaf is a video or audio asset."""
+    return isinstance(name, str) and "." in name and name.rsplit(".", 1)[1].lower() in MEDIA_EXTS
+
+
+def unplanned_by_reference(leaf: dict, harvest: dict) -> bool:
+    """`harvest.assets: reference` and a leaf whose name says media."""
+    return harvest.get("assets") == "reference" and is_media_name(leaf.get("name"))
+
+
 def known_resources(ticket: dict) -> set:
     entries = ticket.get("known")
     if not isinstance(entries, list):
@@ -248,7 +269,7 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
     scope = harvest.get("scope") if harvest.get("scope") in SCOPES else "domain"
     known = known_resources(ticket)
-    skipped = {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0}
+    skipped = dict.fromkeys(SKIPPED, 0)
     planned, seen = [], set()
     paths = [[p for p in (leaf.get("path") or []) if isinstance(p, str)] for leaf in leaves]
     skip = shared_top(paths)
@@ -262,6 +283,8 @@ def plan_leaves(leaves, ticket: dict) -> dict:
             skipped["excluded"] += 1
         elif url in known:
             skipped["known"] += 1
+        elif unplanned_by_reference(leaf, harvest):
+            skipped["reference"] += 1
         else:
             path_bits = [p for p in (leaf.get("path") or []) if isinstance(p, str)]
             planned.append(
@@ -289,9 +312,11 @@ def refresh_resource(ticket: dict):
 
 def single_leaf_plan(ticket: dict) -> dict:
     """A target that IS a leaf viewer: one leaf, in the ticket's own dir. A
-    refresh ticket is always this — exactly the refreshed resource."""
+    refresh ticket is always this — exactly the refreshed resource. No card
+    name reaches a single-leaf ticket, so `harvest.assets: reference` leaves
+    it planned: its kind is known only once fetched."""
     url = refresh_resource(ticket) or ticket["target"]
-    skipped = {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0}
+    skipped = dict.fromkeys(SKIPPED, 0)
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
     leaves = []
     if url in known_resources(ticket) and not ticket.get("refresh"):
@@ -383,6 +408,8 @@ def report_of(ticket: dict, plan: dict, states: dict) -> dict:
             )
         elif skipped["excluded"]:
             outcome, reason = "skipped", f"harvest.exclude_urls excludes all {skipped['excluded']} leaves"
+        elif skipped["reference"]:
+            outcome, reason = "skipped", f"harvest.assets=reference keeps nothing of media, and all {skipped['reference']} leaves are media"
         else:
             outcome, reason = "failed", "the share enumerated no leaves"
     elif len(captured) == planned:
@@ -545,7 +572,7 @@ def main() -> int:
 
     if plan is None:
         reason = f"refresh_unsupported: {refreshing} is not a Frame.io leaf viewer (.../share/<share-id>/view/<asset-id>)"
-        report = report_of(ticket, {"scope": None, "leaves": [], "skipped": dict.fromkeys(("known", "excluded", "scope", "duplicate"), 0)}, {})
+        report = report_of(ticket, {"scope": None, "leaves": [], "skipped": dict.fromkeys(SKIPPED, 0)}, {})
         report["reason"] = reason
         if not args.plan_only:
             write_json(directory / REPORT_NAME, report)

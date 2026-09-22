@@ -34,11 +34,16 @@ itself, literally, against the ticket's `target`, and a leaf viewer is
 `domain` is the unit's shipped default (`watch.defaults`); never override it.
 A plan that scope emptied is reported `failed` with a `reason` naming the fix.
 
-**This unit ALWAYS downloads the asset — video included — whatever
-`harvest.assets` says.** That key is about a page's attachments; here the
-asset IS the item. An operator who wants a share's videos left alone lists
-those view URLs in `harvest.exclude_urls` (`harvest_share.py <capture_dir>
---plan-only` writes every leaf's view URL to `plan.json`).
+**`harvest.assets` is `download` here, the unit's shipped default.** The
+asset IS the item, and the only reference this venue offers is a signed HLS
+URL that is dead within hours — a referenced video is a page pointing at
+nothing, and nothing transcribes a video that was never fetched. An explicit
+`reference` on the job is honored: media leaves (by the extension of their
+card name) are left unplanned and counted in `skipped.reference`; documents
+are captured under every value, because they ARE the page. To leave
+particular videos alone under `download`, list their view URLs in
+`harvest.exclude_urls` (`harvest_share.py <capture_dir> --plan-only` writes
+every leaf's view URL to `plan.json`).
 
 ## Stages
 
@@ -82,13 +87,14 @@ ONE process ticket per `captured[].dir`.
 | `capture_dir` | the TICKET's directory, `_raw/<slug>/<one>` — `tree.json`, `plan.json` and `report.json` go here. Never compose it |
 | `hosts` | your egress: `*.frame.io` and `frame.io`. The HLS and document-proxy hosts are under it; a host outside it is refused by the proxy — report it, never route around it |
 | `harvest.scope` | applied by this unit — see above. Must be `domain` |
+| `harvest.assets` | `download` captures every leaf; `reference` plans no media leaf — see above. `download-audio` is not told from `download`: the whole asset is kept |
 | `harvest.exclude_urls` | leaf view URLs never to capture: an entry matches when it equals the URL, is a prefix of it, or (written with a `*`) globs it. The pipeline defines no matching rule for this key, so that reading is this unit's own |
 | `known[]` | pages this job already holds, by `resource` (the leaf's view URL, matched exactly) — skipped, which is also how a share too big for one slice resumes |
 | `refresh`, `resource` | a refresh ticket: re-capture exactly that one leaf viewer — see below |
 
 Not consulted, and why: `harvest.access` (a guest share has no free/paid
-split), `min_date` (a listing card carries no date), `harvest.assets` (above),
-`credential` (always null; the link authorizes), `dest` (null here).
+split), `min_date` (a listing card carries no date), `credential` (always
+null; the link authorizes), `dest` (null here).
 
 **`ticket` is NOT what tells one run from the next.** The id is identical on
 every pull, retry and respawn, into the same `capture_dir`, so the last

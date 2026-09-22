@@ -16,8 +16,13 @@
 2. Declare the job, naming the skill: `llm-wiki-ops pipeline add
    <space-root-url> slug=<community> description="<what this is>"
    skill=channel-circle` — the skill's manifest supplies `every=once`,
-   `harvest.scope=section`, `harvest.access=licensed` and a `dest` of
-   `sources/courses/<slug>`. Scope `section` means "under the
+   `harvest.scope=section`, `harvest.access=licensed`,
+   `harvest.assets=download` and a `dest` of `sources/courses/<slug>`.
+   **`download` is what keeps a lesson's video**: the only reference Circle
+   serves is a signed HLS manifest that is dead within hours, and a video
+   that was never fetched is never transcribed. Pass
+   `harvest.assets=reference` only for a community whose lessons are text —
+   and know that a course is often many GB under `download`. Scope `section` means "under the
    job's url", so that url must be the space ROOT (`/c/<slug>`): from a
    lesson url every sibling lesson is outside it. Pass
    `harvest.scope=domain` to take the whole community. A course longer than

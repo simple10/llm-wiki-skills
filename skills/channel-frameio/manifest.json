@@ -34,12 +34,13 @@
   "usage": "/channel-frameio ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "frameio",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "watch": {
     "defaults": {
       "every": "once",
       "harvest": {
-        "scope": "domain"
+        "scope": "domain",
+        "assets": "download"
       }
     },
     "dest": "sources/courses/{slug}",
