@@ -18,13 +18,18 @@ BRITISH = (
     "organise", "organised", "organisation", "analyse", "analysed", "honour",
     "honours", "honoured", "initialise", "normalise", "serialise", "optimise",
     "customise", "synchronise", "summarise", "catalogue", "centre", "cancelled",
-    "modelling", "labelled", "travelling",
+    "modelling", "labelled", "travelling", "whilst", "amongst", "defence",
+    "programme", "practise", "authorise", "apologise", "fulfil", "grey",
 )
 PATTERN = re.compile(r"(?<![\w-])(" + "|".join(BRITISH) + r")(?![\w-])", re.I)
 FILES = sorted(  # this file spells them all, on purpose
-    p for tree in ("skills", "tests") for p in (ROOT / tree).rglob("*")
-    if p.is_file() and p.suffix in {".md", ".py", ".json"}
-    and "__pycache__" not in p.parts and p.name != "test_american_spelling.py"
+    [
+        *(p for tree in ("skills", "tests", "scripts", ".github") for p in (ROOT / tree).rglob("*")
+          if p.is_file() and p.suffix in {".md", ".py", ".json", ".yml", ".yaml"}
+          and "__pycache__" not in p.parts and p.name != "test_american_spelling.py"),
+        ROOT / "README.md",
+        ROOT / "llm-wiki-package.json",
+    ]
 )
 
 

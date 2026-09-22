@@ -136,7 +136,7 @@ def test_the_body_never_opens_with_a_frontmatter_fence_and_has_no_summary_placeh
     assert "[!summary]" not in full and "TODO-SUMMARY" not in full
     assert full.index("![thumbnail]") < full.index("<iframe") < full.index("- **Channel**") < full.index("## Description") < full.index("## Transcript")
     # the description's own conversions survived the port
-    assert "<https://example.com/programme>" in full and "- `1:30` How to progress" in full and "#strength" not in full
+    assert "<https://example.com/plan>" in full and "- `1:30` How to progress" in full and "#strength" not in full
 
 
 def test_a_report_derives_captured_from_the_capture_and_never_claims_it(reporter, tmp_path):
@@ -774,12 +774,27 @@ def test_the_report_reads_the_pages_off_a_file_not_off_a_command_line(tmp_path):
     assert json.loads((cap / "report.json").read_text())["written"] == out["written"]
 
 
-@pytest.mark.parametrize("embeds, iframe", [(True, True), (False, False), (None, True)])
+@pytest.mark.parametrize("embeds, iframe", [(True, True), (False, False)])
 def test_process_embeds_false_takes_the_iframe_out(builder, embeds, iframe):
     """`process.embeds` is a key on the process ticket. No extractor sees this
-    page any more, so the unit is the only thing that can honor it; absent, the
-    embed stays, which is the record's own default."""
+    page any more, so the unit is the only thing that can honor it."""
     front = builder.frontmatter_for(META)
     body, _has_desc = builder.build_body(META, front, ITEM, "", embeds=embeds)
     assert ("<iframe" in body) is iframe, body[:200]
     assert "![thumbnail]" in body, "only the embed goes; the thumbnail is a plain image"
+
+
+@pytest.mark.parametrize("process, iframe", [({"embeds": False}, False), ({"embeds": True}, True), ({}, True), (None, True), ("nope", True)])
+def test_the_tickets_embeds_key_reaches_the_page_the_script_writes(tmp_path, process, iframe):
+    """The shipped path: `ticket.json`'s `process.embeds`, read by the script
+    itself (`embeds_of`), not a `build_body(embeds=)` a test hands over — a
+    wrong key there stays green above. Absent, the embed stays: the record's
+    own default."""
+    cap = _ticketed(tmp_path)
+    ticket = json.loads((cap / "ticket.json").read_text())
+    if process is not None:
+        ticket["process"] = process
+    (cap / "ticket.json").write_text(json.dumps(ticket))
+    _build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    body = (cap / "page.md").read_text()
+    assert ("<iframe" in body) is iframe, body[:200]

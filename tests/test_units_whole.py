@@ -186,9 +186,24 @@ def _code(path) -> str:
     return "\n".join(re.sub(r"(?<!:)#.*$", "", line) for line in text.splitlines())
 
 
+# The module-level names a shared function reads: part of the piece of code,
+# outside the `def` — `_TITLE_SWAPS` changed in the port and the scan that
+# compared from `def safe_title(` on could not see it. Compared by value, not
+# by the comment beside it: the copies differ only in where their comments sit.
+READS = {
+    "safe_title": ("_TITLE_SWAPS", "TITLE_MAX", "TITLE_MAX_BYTES"),
+    "qualifier": ("TITLE_ILLEGAL", "QUALIFIER_MAX"),
+    "front_door": ("OPS",),
+}
+
+
 def _function(path, name: str) -> str:
-    found = re.search(rf"^def {name}\(.*?(?=^\S)", path.read_text(encoding="utf-8"), re.M | re.S)
-    return found.group(0).strip() if found else ""
+    text = path.read_text(encoding="utf-8")
+    found = re.search(rf"^def {name}\(.*?(?=^\S)", text, re.M | re.S)
+    if not found:
+        return ""
+    reads = [re.search(rf"^{constant} = (.*?)(?:\s+#.*)?$", text, re.M) for constant in READS.get(name, ())]
+    return "\n".join([*(f"{c} = {m.group(1).strip()}" if m else f"{c} = <absent>" for m, c in zip(reads, READS.get(name, ()))), found.group(0).strip()])
 
 
 def _holders(name: str) -> list:
@@ -208,6 +223,7 @@ def test_code_the_units_share_by_copying_is_one_piece_of_code(name, at_least):
     assert len(holders) >= at_least, [str(p.relative_to(ROOT)) for p in holders]
     bodies = {_function(p, name) for p in holders}
     assert len(bodies) == 1, f"`{name}` differs between: " + ", ".join(str(p.relative_to(ROOT)) for p in holders)
+    assert not any("<absent>" in body for body in bodies), f"`{name}`: a constant READS names is in no copy"
 
 
 def test_the_shared_title_rule_holds_what_the_host_refuses():

@@ -334,14 +334,13 @@ def to_markdown(directory: Path) -> str:
 
 
 def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "create") -> subprocess.CompletedProcess:
-    """SKILL.md's process step 3: the title and the url off `capture.json`,
-    each ONE argument, the body on stdin."""
+    """SKILL.md's process step 3, as the shell line a worker TYPES: the title
+    and the url off `capture.json`, each single-quoted as the documented line
+    has them, the body on stdin — so every content case is a quoting case."""
     record = json.loads((capture_dir / "capture.json").read_text(encoding="utf-8"))
-    where = [f"title={record['title']}", f"dest={dest}"] if verb == "create" else [f"{dest}/{record['title']}.md"]
-    return subprocess.run(
-        [*ops, "--json", "page", verb, *where, f"resource={record['item']}", "type=lesson", "extracted=true",
-         "--stdin"],
-        env=rooted(env, wiki), input=body, capture_output=True, text=True, check=False)
+    where = [f"'title={record['title']}'", f"'dest={dest}'"] if verb == "create" else [f"'{dest}/{record['title']}.md'"]
+    line = " ".join([shlex.join([*ops, "--json", "page", verb]), *where, f"'resource={record['item']}'", "type=lesson", "extracted=true", "--stdin"])
+    return subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), input=body, capture_output=True, text=True, check=False)
 
 
 def written(ops, env, wiki, capture_dir: Path, dest: str, body: str) -> Path:
