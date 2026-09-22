@@ -6,8 +6,14 @@ the unit — so a case here reads exactly as it did beside them.
 
 from __future__ import annotations
 
+import json
+import shlex
+import shutil
+import subprocess
+
 from conftest import ROOT, declared_job, rooted, run, ticket_in, unit_tests
 
+# The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-hubspot-video", "test_hubspot"))
 
 

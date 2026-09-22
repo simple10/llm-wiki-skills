@@ -19,7 +19,6 @@ import os
 import re
 import shutil
 import stat
-import shlex
 import subprocess
 import sys
 import time

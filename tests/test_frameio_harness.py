@@ -6,8 +6,15 @@ the unit — so a case here reads exactly as it did beside them.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import pytest
+import re
+import shutil
+
 from conftest import declared_job, ticket_in, unit_tests
 
+# The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-frameio", "test_frameio"))
 
 

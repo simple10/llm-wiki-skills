@@ -587,9 +587,6 @@ def test_a_capture_dir_that_is_not_the_tickets_is_refused_before_anything_runs(m
     assert mod.main() == 2 and calls == [] and not (elsewhere / "report.json").exists()
 
 
-# ------------------------------------------------- one leaf: capture_job.py
-
-
 # ---- page names: one page per asset, whatever two assets are called -------------------
 
 

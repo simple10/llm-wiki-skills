@@ -6,8 +6,18 @@ the unit — so a case here reads exactly as it did beside them.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import pytest
+import shlex
+import shutil
+import subprocess
+
+from pathlib import Path
+
 from conftest import declared_job, rooted, ticket_in, unit_tests
 
+# The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-substack", "test_substack"))
 
 

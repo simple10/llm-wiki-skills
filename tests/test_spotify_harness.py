@@ -6,8 +6,14 @@ the unit — so a case here reads exactly as it did beside them.
 
 from __future__ import annotations
 
+import json
+import types
+
+from pathlib import Path
+
 from conftest import declared_job, ticket_in, unit_tests
 
+# The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-spotify", "test_spotify"))
 
 
