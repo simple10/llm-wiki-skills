@@ -343,18 +343,20 @@ def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
     keys = [f"resource={record['item']}", "type=article", *keys]
     keys += [f"published={said['published']}"] if said.get("published") else []
     keys += [f"audience={said['audience']}"] if said.get("audience") else []
-    created = subprocess.run(
-        [*ops, "page", "create", f"title={record['title']}", f"dest={dest}", *keys, "--stdin"],
-        input=body, capture_output=True, text=True, cwd=wiki, env=env,
-    )
+    # The documented lines, as a worker TYPES them: every venue value single-quoted,
+    # so every content case is a quoting case too.
+    quoted = [f"'{k}'" for k in keys]
+
+    def sh(*words):
+        return subprocess.run(["/bin/sh", "-c", " ".join(words)], input=body, capture_output=True, text=True, cwd=wiki, env=env)
+
+    created = sh(shlex.join([*ops, "page", "create"]), f"'title={record['title']}'", f"'dest={dest}'", *quoted, "--stdin")
     if created.returncode != 0:
         # The one refusal SKILL.md names: that title is already filed, so edit its page.
         assert created.returncode == 2 and "already exists" in created.stderr, created.stdout + created.stderr
-        created = subprocess.run([*ops, "page", "edit", page, *keys, "--stdin"],
-                                 input=body, capture_output=True, text=True, cwd=wiki, env=env)
+        created = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", *quoted, "--stdin")
         assert created.returncode == 0, created.stdout + created.stderr
-    done = subprocess.run([*ops, "page", "edit", page, "extracted=true"],
-                          capture_output=True, text=True, cwd=wiki, env=env)
+    done = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", "extracted=true")
     assert done.returncode == 0, done.stdout + done.stderr
     return wiki / page
 

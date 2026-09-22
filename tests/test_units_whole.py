@@ -186,9 +186,19 @@ def _code(path) -> str:
     return "\n".join(re.sub(r"(?<!:)#.*$", "", line) for line in text.splitlines())
 
 
+# The module-level names a shared function reads: part of the piece of code,
+# outside the `def` — `_TITLE_SWAPS` changed in the port and the scan that
+# compared from `def safe_title(` on could not see it.
+READS = {"safe_title": ("_TITLE_SWAPS", "TITLE_MAX", "TITLE_MAX_BYTES")}
+
+
 def _function(path, name: str) -> str:
-    found = re.search(rf"^def {name}\(.*?(?=^\S)", path.read_text(encoding="utf-8"), re.M | re.S)
-    return found.group(0).strip() if found else ""
+    text = path.read_text(encoding="utf-8")
+    found = re.search(rf"^def {name}\(.*?(?=^\S)", text, re.M | re.S)
+    if not found:
+        return ""
+    reads = [re.search(rf"^{constant} = (.*?)(?:\s+#.*)?$", text, re.M) for constant in READS.get(name, ())]  # the value, not its comment
+    return "\n".join([*(f"{c} = {m.group(1).strip()}" if m else f"{c} = <absent>" for m, c in zip(reads, READS.get(name, ()))), found.group(0).strip()])
 
 
 def _holders(name: str) -> list:
