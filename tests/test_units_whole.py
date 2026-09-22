@@ -172,9 +172,10 @@ def test_a_units_tests_ship_with_it_and_stand_alone(name, tmp_path):
     unit, where an agent runs it from the enabled copy. So it may reach
     nothing of this repo: not the harness (`conftest`, `harness`), not the
     checkout (`ROOT`, another unit, `tests/fixtures`), and it finds the unit
-    by its own place in the tree — `Path(__file__)` climbs one level, never
-    more. Read for those reaches, then the real thing: the unit copied out
-    on its own, and its tests collected there. The harness tier for the unit
+    by its own place in the tree — a `Path(__file__)` chain climbs one level,
+    never more. Read for those reaches, then the real thing: the unit copied
+    out on its own, and its tests collected there as the README says to run
+    them. The harness tier for the unit
     is `tests/test_<venue>_harness.py`."""
     import ast
     import shutil
@@ -203,7 +204,7 @@ def test_a_units_tests_ship_with_it_and_stand_alone(name, tmp_path):
     alone = tmp_path / name
     shutil.copytree(ROOT / "skills" / name, alone, ignore=shutil.ignore_patterns("__pycache__"))
     done = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "--import-mode=importlib", "--rootdir", str(alone), str(alone / "tests")],
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "--rootdir", str(alone), str(alone / "tests")],
         capture_output=True, text=True, cwd=tmp_path, check=False,
     )
     assert done.returncode == 0 and re.search(r"^\d+ tests? collected", done.stdout, re.M), f"{name}'s tests do not collect on their own:\n{done.stdout}{done.stderr}"

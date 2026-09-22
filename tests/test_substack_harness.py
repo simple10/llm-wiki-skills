@@ -181,12 +181,6 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
 
 
 # --- Rule 1: the title is a legal filename ------------------------------------
-#
-# `llm-wiki-ops run` starts a script with the wiki root as its cwd
-# (`commands/run/run.py::_exec`), NOT in the capture directory the worker
-# stands in. Every case above this line passes an absolute `--capture-dir`,
-# which is how a `.` default got through review: `write_report.py` wrote a
-# fabricated `failed` report with a null ticket AT THE WIKI ROOT.
 def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, wiki):
     """Rule 1 + Rule 2, through the REAL `page create`. Before the fix the raw
     title went into `capture.json`, harvest said ok, and the process ticket was

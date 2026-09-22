@@ -903,6 +903,7 @@ print(json.dumps({{"ok": True, "kind": "document", "bytes": 614, "title": args.n
 '''
 
 
+# ---- the real argv chain: harvest_share -> capture_job -> frameio_doc_note ---------------
 def test_the_real_argv_chain_carries_a_file_named_like_an_option(tmp_path):
     """Every driver test above replaces `run`, so the argv the three scripts
     hand each other was never parsed by the script it was meant for. A file

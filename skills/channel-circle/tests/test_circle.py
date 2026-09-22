@@ -454,6 +454,7 @@ def test_a_qualifier_never_pushes_a_title_back_over_the_byte_cap():
     assert mod.fitted_title("Intro", ["M2"], a) == mod.unique_title("Intro", ["M2"], b) == "Intro (M2)" and a == b
 
 
+# --- S11: a venue url is data, never shell --------------------------------------
 def test_a_hostile_href_never_reaches_a_plan(wiki_root):
     root, rel = wiki_root
     meta = root_meta()

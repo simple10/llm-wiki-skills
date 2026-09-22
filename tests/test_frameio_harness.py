@@ -312,7 +312,6 @@ def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki, monkeyp
         assert meta["title"] == name and record["title"] == first.stem
 
 
-# ---- the real argv chain: harvest_share -> capture_job -> frameio_doc_note ---------------
 @pytest.mark.parametrize("bundle, under_dest", [(True, True), (False, False)])
 def test_bundle_media_decides_where_the_stub_points(ops, env, wiki, monkeypatch, capsys, tmp_path, bundle, under_dest):
     """`process.bundle_media` is on the ticket and the host no longer acts on

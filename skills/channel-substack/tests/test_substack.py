@@ -315,6 +315,12 @@ def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_pat
 
 
 # --- the scripts from the wiki root, on relative paths ------------------------
+#
+# `llm-wiki-ops run` starts a script with the wiki root as its cwd
+# (`commands/run/run.py::_exec`), NOT in the capture directory the worker
+# stands in. Every case above this line passes an absolute `--capture-dir`,
+# which is how a `.` default got through review: `write_report.py` wrote a
+# fabricated `failed` report with a null ticket AT THE WIKI ROOT.
 
 
 POST = f"{HOST}/p/the-newest-one"
