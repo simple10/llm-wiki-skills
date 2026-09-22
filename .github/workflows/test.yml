@@ -19,7 +19,7 @@ concurrency:
 # must be green against; a branch may point it at a plugins branch to prove
 # itself against a CLI that has not landed, and sets it back before it lands.
 env:
-  PLUGINS_REF: spec/2279-skill-requirements-enable
+  PLUGINS_REF: main
 
 jobs:
   harness:
