@@ -40,7 +40,7 @@ _WORD = re.compile(r"^[a-z][a-z-]*$")
 _COMMENT = re.compile(r"(^|\s)#\s.*$")  # `# a comment`, never the `#400` inside an argument
 _CHAINED = re.compile(r"\s(?:&&|\|\||;|\|)\s")
 _DOTTED_KEY = re.compile(r"^([a-z_]+)\.([A-Za-z_<>-]+)=")
-_BY_PATH = re.compile(r"\S*/bin/llm-wiki-ops\b")  # the CLI, named by a path instead of on PATH
+_BY_PATH = re.compile(r"\S*/bin/llm-wiki-(?:ops|cli)\b")  # a CLI, named by a path instead of on PATH
 _PLUGIN_ADDRESS = re.compile(r"\brun\s+((?:scripts|skills/[\w-]+/scripts)/[\w/.-]+\.py)")
 # The other half of `run`'s namespace: a UNIT's own script, served out of this
 # wiki's enabled copy. A doc naming one that is not in the package is the same
@@ -71,6 +71,12 @@ def _commands(text: str):
         machine = "llm-wiki-cli" in tokens
         if machine:
             tokens = tokens[tokens.index("llm-wiki-cli") + 1 :]
+            if tokens[:1] == ["wiki"]:
+                # `wiki [--read-only] <key|--here> <ops argv...>`: the machine
+                # CLI's one scope that is not a command of its own — what
+                # follows the key is an ops argv, checked as one.
+                machine = False
+                tokens = tokens[3 if tokens[1:2] == ["--read-only"] else 2 :]
         elif "llm-wiki-ops" in tokens:
             tokens = tokens[tokens.index("llm-wiki-ops") + 1 :]
         elif not (len(tokens) > 1 and _WORD.match(tokens[0]) and _WORD.match(tokens[1])):
@@ -123,13 +129,15 @@ def _wrong(cli, job_record, text: str, unit: str | None) -> list:
     groups = _subcommands(cli())
     machine_groups = _subcommands(cli(machine=True))
     inputs = set((unit_manifest(unit).get("watch") or {}).get("inputs") or {}) if unit else set()
-    wrong = [f"`{hit}` — the CLI run by path; it is the bare `llm-wiki-ops`, on PATH" for hit in _BY_PATH.findall(text)]
+    wrong = [f"`{hit}` — the CLI run by path; it is the bare name, on PATH" for hit in _BY_PATH.findall(text)]
     for machine, group, second, flags, keys, span in _commands(text):
         if group in RETIRED:
             wrong.append(f"`{span}` — the `{group}` group is retired")
             continue
         if machine:
-            # The prefix is explicit, so a group the machine CLI lacks is stale, not prose.
+            # The prefix is explicit, so a group the machine CLI lacks is stale, not
+            # prose. A bare `machine doctor` is left alone: `machine` is no ops group,
+            # and an author writing the machine CLI writes its name.
             if group not in machine_groups:
                 wrong.append(f"`{span}` — `llm-wiki-cli` has no `{group}` (it has: {', '.join(sorted(machine_groups))})")
                 continue
@@ -184,6 +192,8 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
         ("`llm-wiki-cli machine sweep`", "has no `sweep`"),  # the other console script's verbs are checked too
         ("`llm-wiki-cli skills ls`", "`llm-wiki-cli` has no `skills`"),  # a wiki verb under the machine prefix
         ("`llm-wiki-cli init <dir> --preset x`", "takes no `--preset`"),
+        ("`llm-wiki-cli wiki <key> skills list`", "has no `list`"),  # the wiki scope's argv is an ops argv
+        ("`<ops dir>/bin/llm-wiki-cli machine doctor`", "run by path"),
     ],
 )
 def test_the_check_itself_catches_each_stale_shape(cli, job_record, text, caught):
@@ -199,6 +209,7 @@ def test_the_check_passes_the_shapes_that_are_right(cli, job_record):
         "`llm-wiki-ops --json skills ls channel-gmail` then a `git pull`, and `yt-dlp --dump-json <url>`\n"
         '```\nllm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py search "ep #400" --type episode\n```\n'
         "`llm-wiki-cli init <dir> key=<key>` once, then `llm-wiki-cli machine doctor`\n"
+        "`llm-wiki-cli wiki <key> skills ls` and `llm-wiki-cli wiki --read-only --here --json pipeline show <slug>`\n"
     )
     assert _wrong(cli, job_record, fine, "channel-gmail") == []
 

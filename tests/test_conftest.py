@@ -16,5 +16,7 @@ def test_the_machine_cli_is_found_beside_a_path_spelled_ops():
 
 
 def test_the_harness_runs_nothing_from_the_checkout():
-    """A checkout inside a wiki would bind every call to that wiki."""
+    """A checkout inside a wiki would bind every call to that wiki; what the
+    neutral directory needs is that no wiki owns it."""
     assert NEUTRAL_CWD.is_dir() and not NEUTRAL_CWD.is_relative_to(ROOT) and not ROOT.is_relative_to(NEUTRAL_CWD)
+    assert not any((p / ".llm-wiki.toml").exists() for p in (NEUTRAL_CWD, *NEUTRAL_CWD.parents))

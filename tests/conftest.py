@@ -90,7 +90,9 @@ def env(tmp_path_factory, ops) -> dict:
     mp.symlink_to(ROOT, target_is_directory=True)
     e = dict(os.environ)
     # A suite started from inside a wiki session must not act on THAT wiki:
-    # these are what bind one ambiently, ahead of the `cwd=` a `run` case uses.
+    # `LLM_WIKI_ROOT` binds one ahead of the `cwd=` a `run` case uses, and
+    # `CLAUDE_PROJECT_DIR` — the harness's project dir, never a wiki root, and
+    # read by no CLI — goes too, so nothing downstream mistakes it for one.
     for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR"):
         e.pop(ambient, None)
     e.update(
