@@ -44,6 +44,12 @@ those view URLs in `harvest.exclude_urls` (`harvest_share.py <capture_dir>
 
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
 below are those steps.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-frameio
+```
 
 ### harvest
 

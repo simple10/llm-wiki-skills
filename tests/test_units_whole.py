@@ -69,6 +69,20 @@ def test_a_channel_unit_declares_both_stages_it_documents_and_is_invoked_by_tick
 
 
 @pytest.mark.parametrize("name", CHANNELS)
+def test_either_step_of_a_unit_opens_with_the_policy_read(name):
+    """A wiki steers a unit through its overlays, never by editing the unit:
+    `reference skill-authoring` has either step open with `policy get <stage>
+    <unit>` — the stage's overlay, then the unit's own, in one call. That
+    two-name form is ops 1.96's (`policy get` took one name before), so a unit
+    that spells it must not claim to run on an older CLI."""
+    skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+    stages = skill.split("\n## Stages", 1)[1].split("\n### harvest", 1)[0]
+    assert f"\nllm-wiki-ops policy get <stage> {name}\n" in stages, f"{name}: the Stages intro does not open with the policy read"
+    floor = unit_manifest(name)["requires"]["ops"]
+    assert tuple(int(b) for b in floor.removeprefix(">=").split(".")) >= (1, 96, 0), f"{name}: requires.ops {floor} predates the two-name `policy get`"
+
+
+@pytest.mark.parametrize("name", CHANNELS)
 def test_the_step_a_unit_is_in_is_an_argument_not_a_file(name):
     """One discriminator: the `stage=` the host composes into the prompt. A
     process ticket's capture dir IS the download ticket's for a single-item

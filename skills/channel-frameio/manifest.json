@@ -34,7 +34,7 @@
   "usage": "/channel-frameio ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "frameio",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "watch": {
     "defaults": {
       "every": "once",

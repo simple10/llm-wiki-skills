@@ -15,7 +15,7 @@
       "substack.com",
       "substackcdn.com"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -24,7 +24,7 @@
   "usage": "/channel-substack ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "substack",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "watch": {
     "defaults": {
       "every": "1d",

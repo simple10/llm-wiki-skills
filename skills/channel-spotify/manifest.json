@@ -20,7 +20,7 @@
       "*.spotifycdn.com",
       "itunes.apple.com"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -29,7 +29,7 @@
   "usage": "/channel-spotify ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "spotify",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "watch": {
     "defaults": {
       "every": "once",

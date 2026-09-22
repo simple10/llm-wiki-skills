@@ -17,6 +17,12 @@ route: `llm-wiki-ops reference channel-ledger`.
 below are those steps. Both start in the ticket's `capture_dir` —
 `_raw/<slug>/<YYYY-MM-DD>`, the job's DAY directory — and hand the script that
 value verbatim: `llm-wiki-ops run` starts a script at the WIKI ROOT.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-notion-tasks
+```
 
 ### harvest
 

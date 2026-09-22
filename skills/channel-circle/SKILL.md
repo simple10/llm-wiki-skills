@@ -24,6 +24,12 @@ Communities run on `*.circle.so` or a **custom domain** (e.g.
 
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
 below are those steps.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-circle
+```
 
 ### harvest
 

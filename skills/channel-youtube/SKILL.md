@@ -26,6 +26,12 @@ it is a directive.
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
 below are those steps. The worker loop, the jail and the report every worker
 leaves: `llm-wiki-ops reference agent-loop`.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-youtube
+```
 
 ### harvest
 
