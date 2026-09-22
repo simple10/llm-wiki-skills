@@ -3,7 +3,7 @@
   "name": "llm-wiki-skills",
   "repository": "simple10/llm-wiki-skills",
   "version": "0.1.0",
-  "description": "Skill units and venue-tactics playbooks for llm-wiki wikis: the channel units the ops CLI installs, and the playbooks its research lanes read.",
+  "description": "Skills for llm-wiki wikis: the channel skills the ops CLI installs.",
   "license": "MIT",
   "min_ops_version": "1.96.0",
   "platforms": [
@@ -53,31 +53,6 @@
       "type": "skill",
       "name": "channel-youtube",
       "path": "skills/channel-youtube"
-    },
-    {
-      "type": "tactic",
-      "name": "_TEMPLATE",
-      "path": "tactics/_TEMPLATE.md"
-    },
-    {
-      "type": "tactic",
-      "name": "skool",
-      "path": "tactics/skool.md"
-    },
-    {
-      "type": "tactic",
-      "name": "web-search",
-      "path": "tactics/web-search.md"
-    },
-    {
-      "type": "tactic",
-      "name": "x",
-      "path": "tactics/x.md"
-    },
-    {
-      "type": "tactic",
-      "name": "youtube",
-      "path": "tactics/youtube.md"
     }
   ]
 }

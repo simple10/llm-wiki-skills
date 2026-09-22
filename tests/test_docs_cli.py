@@ -18,16 +18,16 @@ import pytest
 
 from conftest import ROOT, rooted, run, unit_manifest
 
-DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), *ROOT.glob("tactics/*.md"), ROOT / "README.md"])
+DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), ROOT / "README.md"])
 
 # Groups the docs still name that the CLI at hand does not have. Each is
 # ASSERTED absent below, so the day one is ported this file says to drop it
 # from here — and its verbs start being checked like any other.
-UNPORTED = {"tactics": "unported on the plugins side"}
+UNPORTED: dict = {}
 
 # Groups the rebuild retired outright: a span that opens with one is stale
 # wherever it appears, prefixed by `llm-wiki-ops` or not.
-RETIRED = {"watch"}
+RETIRED = {"watch", "tactics"}
 
 # A bare `git pull` is git's, not this CLI's `git` group: a name both own is
 # only checked where the span says `llm-wiki-ops` out loud.
@@ -166,7 +166,7 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
         ("`llm-wiki-ops skills enable x --conf`", "takes no `--conf`"),
         ("`llm-wiki-ops pipeline add u slug=s harvest.maxage=3m`", "no `harvest.maxage`"),
         ("`llm-wiki-ops pipeline add u slug=s option.mailbox=m`", "no `option.mailbox`"),
-        ("`<ops dir>/bin/llm-wiki-ops tactics install x`", "run by path"),  # no wiki carries a bin/
+        ("`<ops dir>/bin/llm-wiki-ops skills ls`", "run by path"),  # no wiki carries a bin/
         ("```\ncd w && llm-wiki-ops skills find x\n```", "has no `find`"),
         ('```\nllm-wiki-ops skills search "ep #400" --bogus\n```', "takes no `--bogus`"),
     ],
