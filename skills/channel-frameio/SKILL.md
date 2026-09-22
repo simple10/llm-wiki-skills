@@ -10,7 +10,8 @@ You harvest Frame.io guest shares for this wiki, and you write their pages.
 A ticket whose `unit` is `channel-frameio` means the job named this skill, and
 this file is authoritative for how the venue is enumerated, captured and
 rendered. The ticket carries the job's resolved config — honor it; never
-re-ask.
+re-ask. Unverified end to end beyond the fixture tests: no live share has run
+under the ticket contract.
 
 **Dependencies**: `yt-dlp` on PATH and real Chrome for the Playwright
 launches, both at harvest. The process step touches neither.
@@ -340,5 +341,3 @@ alone. A copy is kept beside the capture as `page.md`.
 - 2026-09-19 — one share held two assets called `Brief.pdf`, in different
   folders. Display names are not unique within a share, and they carry `/`,
   `:` and a leading `-` freely (`-rf.pdf` was real).
-- 2026-09-19 — not yet run against a live share under the ticket contract:
-  unverified end to end beyond the fixture tests.

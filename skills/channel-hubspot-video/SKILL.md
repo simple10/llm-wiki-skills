@@ -127,9 +127,9 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capt
 
 `<host>/sitemap.xml` is typically one flat `urlset` covering the whole site —
 the enumeration route worth using (the sidebar is a cross-check, see the
-quirks log); a sitemap INDEX yields `sitemaps[]` to fetch and plan again, one `--urls` per
-file. Save it as served into the capture directory and hand the file to
-`plan` — the one step needing the network. `?hsLang=` makes one page two URLs,
+quirks log); a sitemap INDEX yields `sitemaps[]` to fetch and plan again, one
+`--urls` per file. Save it as served into the capture directory and hand the
+file to `plan` — the one step needing the network. `?hsLang=` makes one page two URLs,
 so `plan` strips it (and the site's own `strip_params`) before filtering or
 naming a directory, and `known[]` matches either spelling. URL trees one job
 must never take go in that job's `harvest.exclude_urls`; ones true of the SITE
@@ -195,8 +195,8 @@ of which starts by itself.
 
 ## Quirks log
 
-- 2026-07-31 — Sites in this family have shipped misspelled sidebar links
-  that 301 to the sitemap spelling. Following them works, but enumerating from
+- 2026-07-31 — Sidebars are partial, and sites in this family have shipped
+  misspelled sidebar links that 301 to the sitemap spelling. Following them works, but enumerating from
   the sitemap keeps capture directories and note names correctly spelled.
 - 2026-09-19 — HubSpot reuses one `<title>` across a whole course ("Start
   Here" for all eleven Offers lessons) and the only `h1`s in that corpus are

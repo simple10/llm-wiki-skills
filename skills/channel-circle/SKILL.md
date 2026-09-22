@@ -11,7 +11,8 @@ lessons into pages. You are invoked `/channel-circle ticket=<id>
 stage=harvest|process`, in every mode, and the ticket carries the job's
 resolved config — `harvest.*`, `min_date`, `known[]` — so honor it and never
 re-ask. What a worker is handed, what it may write, and the report it leaves:
-`llm-wiki-ops reference agent-loop`.
+`llm-wiki-ops reference agent-loop`. Unverified under a spawned slice: no live
+community has run there.
 
 Circle.so is a hosted community/course platform (React SPA, Rails backend).
 Communities run on `*.circle.so` or a **custom domain** (e.g.
@@ -306,6 +307,4 @@ children. Use it to gate a harvest behind an outage.
 ## Quirks log
 
 - 2026-09-19 — a Circle sidebar href can carry characters no command line
-  should see; `plan` drops those as `unsafe_url`. One really refused is a
-  venue finding worth a line here.
-- 2026-09-19 — not yet run against a live community under a spawned slice.
+  should see; `plan` drops those as `unsafe_url`.

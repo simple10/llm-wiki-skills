@@ -178,7 +178,8 @@ gets no `published` key at all.
   a confined harvest". A ticket naming a `credential` is honored.
 - **Rate limits.** A 429 waits the venue's `Retry-After` (+1 s; sixty seconds
   when it names none, capped at five minutes), four tries.
-- **Out of scope**: private playlists and the user library (user OAuth).
+- **Out of scope**: private playlists and the user library (they need user
+  OAuth, not implemented here).
 
 ## Media
 
