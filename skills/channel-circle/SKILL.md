@@ -13,9 +13,6 @@ resolved config — `harvest.*`, `min_date`, `known[]` — so honor it and never
 re-ask. What a worker is handed, what it may write, and the report it leaves:
 `llm-wiki-ops reference agent-loop`.
 
-This copy is wiki-owned: improve it as you learn the venue. Keep claims about
-the pipeline's own scripts out of here; those go to the human via the report.
-
 Circle.so is a hosted community/course platform (React SPA, Rails backend).
 Communities run on `*.circle.so` or a **custom domain** (e.g.
 `community.example.com`), so fingerprint on assets/cookies, not the hostname.
@@ -151,12 +148,10 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <captu
 
    Every venue value on those lines — `<title>`, `<item>` — is copied VERBATIM
    from `capture.json` and SINGLE-QUOTED, never retyped or cleaned; one still
-   carrying a single quote is refused, not run (`safe_title` maps `'` and `"` to `’`, so a title never does). `create` is the
-   first pull; it exits 2 with `<path> already exists — the filename is the
-   title` on a second, and then `edit` writes that same page. Report LAST.
-
-Chaining to another unit? Invoke it **by name through the Skill tool**, never
-by reading its SKILL.md.
+   carrying a single quote is refused, not run (`safe_title` maps `'` and `"`
+   to `’`, so a title never does). `create` is the first pull; it exits 2 with
+   `<path> already exists — the filename is the title` on a second, and then
+   `edit` writes that same page. Report LAST.
 
 ## Auth (one-time, per domain)
 
@@ -187,7 +182,6 @@ by reading its SKILL.md.
 - Auth expiry mid-walk is permanent until a person logs in again: every
   remaining lesson goes to `missing[]` as `auth` (`--auth-expired`), and
   nothing more is fetched from the domain.
-- Login sets cookies on `.circle.so` **and** the community's own domain.
 
 ## Venue knowledge
 
@@ -286,8 +280,7 @@ by reading its SKILL.md.
   none needed a generated transcript. A caption file left beside the capture
   never reaches the page: close it into the body (process, step 2).
 - Headless capture (persistent `channel="chrome"` profile, no `--headed`)
-  renders the SPA and fires the HLS XHR fine **when Circle's backend is
-  healthy** — headed is not required for the render itself.
+  renders the SPA and fires the HLS XHR when Circle's backend is healthy.
 
 ## Outage / health signal
 
@@ -306,9 +299,9 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/outage_probe.py . --ticket-di
 ```
 
 It probes the `target` of `<capture_dir>/ticket.json` (a url on the command
-line is for a person's hand run). Always exits 0 and prints a JSON verdict; `fixed` means auth is OK, no 5xx
-was seen, and the content wrapper has real children. Use it to gate a
-harvest behind an outage.
+line is for a person's hand run). Always exits 0 and prints a JSON verdict;
+`fixed` means auth is OK, no 5xx was seen, and the content wrapper has real
+children. Use it to gate a harvest behind an outage.
 
 ## Quirks log
 

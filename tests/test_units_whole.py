@@ -84,6 +84,40 @@ def test_either_step_of_a_unit_opens_with_the_policy_read(name):
     assert version(floor) >= version(MANIFEST["min_ops_version"]), f"{name}: requires.ops {floor} is under the package's min_ops_version"
 
 
+# A skill is a command sequence: what to run, in what order, what the output
+# means, what to do when it is wrong. The reasoning has one home, the plugin's
+# references, which a unit names and does not restate. Every unit tripled in
+# the port (#12); this is 1.5x each unit's length at `99aac80`, the `main`
+# before it, and a unit that grows past it is restating something.
+BUDGET = {
+    "channel-circle": 312,
+    "channel-frameio": 345,
+    "channel-gmail": 183,
+    "channel-hubspot-video": 204,
+    "channel-notion-tasks": 139,
+    "channel-spotify": 246,
+    "channel-substack": 288,
+    "channel-youtube": 198,
+}
+
+
+@pytest.mark.parametrize("name", CHANNELS)
+def test_a_unit_stays_under_its_budget(name):
+    lines = len((ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8").splitlines())
+    assert lines <= BUDGET[name], f"{name}: {lines} lines, budget {BUDGET[name]} — the reasoning belongs in a reference"
+
+
+@pytest.mark.parametrize("name", CHANNELS)
+def test_a_quirks_log_is_dated_one_liners(name):
+    """One dated line per venue fact, in one shape across the units, never a
+    narrative of the port: `- YYYY-MM-DD — <the fact>`."""
+    skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+    log = skill.split("# Quirks log\n", 1)[1] if "# Quirks log\n" in skill else ""
+    entries = [line for line in log.splitlines() if line.startswith("- ")]
+    undated = [line for line in entries if not re.match(r"^- 20\d\d-\d\d-\d\d — \S", line)]
+    assert not undated, f"{name}: {undated}"
+
+
 @pytest.mark.parametrize("name", CHANNELS)
 def test_the_step_a_unit_is_in_is_an_argument_not_a_file(name):
     """One discriminator: the `stage=` the host composes into the prompt. A

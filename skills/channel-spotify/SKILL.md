@@ -12,10 +12,6 @@ the venue is resolved and captured. The ticket already carries the job's
 resolved config (`harvest.assets`, `min_date`, `known[]`) — honor it; never
 re-ask the operator.
 
-This unit is **platform-general**, and once installed the copy is
-**wiki-owned**: record your wiki's watched entities and venue observations in
-it. Chaining to another unit means invoking it through the Skill tool.
-
 ## The boundary this unit is built around
 
 Spotify catalog audio (music tracks, Spotify-exclusive shows, audiobook
@@ -73,7 +69,8 @@ llm-wiki-ops run skills/harvest/scripts/assets.py download <capture_dir>/assets.
     --dest _raw/<slug>/assets --referer '<item>' <assets_args…>
 ```
 
-`<item>` is `capture.json`'s, VERBATIM and SINGLE-QUOTED, never retyped. `<assets_args…>` is what the capture summary printed for the job's
+`<item>` is `capture.json`'s, VERBATIM and SINGLE-QUOTED, never retyped.
+`<assets_args…>` is what the capture summary printed for the job's
 `harvest.assets`: nothing for `download`, `--skip-types image` for
 `download-audio`, `--mode reference` for `reference`. DRM items are in no
 `assets.json` under any policy. Downloaded episodes are transcribed by nothing
@@ -162,8 +159,7 @@ date) are dropped. Keyless captures have no dates.
 scripts. Do not translate it yourself and do not fall back to a bare year:
 `release_date` honors its `release_date_precision`, so an album can return
 `"1979"`, which names no publication day — and an entity that declared no day
-gets no `published` key at all. The item table keeps its own `release_date`
-column as is; that is display.
+gets no `published` key at all.
 
 ## Access / auth
 
@@ -175,16 +171,14 @@ column as is; that is display.
   credentials at developer.spotify.com → create an app; no user login.
 - **Keyless degradation**: with no credentials, `meta`/`capture` fall back to
   the public embed endpoint — entity name and a possibly **truncated** item
-  list, `"keyless": true`, and a warning callout on the page. Good enough to
-  probe; re-capture with credentials for the real thing.
+  list, `"keyless": true`, and a warning callout on the page.
 - **A confined harvest cannot read the store as shipped**: the capture goes
   keyless and reports `partial` with a `missing[]` entry `why: auth`. The two
   ways to give it the API are the operator's — `references/enable.md`, "Credentials under
   a confined harvest". A ticket naming a `credential` is honored.
 - **Rate limits.** A 429 waits the venue's `Retry-After` (+1 s; sixty seconds
   when it names none, capped at five minutes), four tries.
-- **Out of scope**: private playlists and the user library (would need user
-  OAuth, which nothing here implements). Search needs credentials.
+- **Out of scope**: private playlists and the user library (user OAuth).
 
 ## Media
 
@@ -232,21 +226,21 @@ wiki-relative). `-h` after the script path for the rest.
 
 ## Quirks log
 
-- **2026-08-01** — A playlist labeled "audiobook" may actually be podcast
+- 2026-08-01 — A playlist labeled "audiobook" may actually be podcast
   **episodes**: the $100M Money Models playlist (`4rprjH5cIR72vskqa6RhpC`)
   is 9 episodes of the openly-distributed "The Game with Alex Hormozi", so
   its audio was fully downloadable via the open feed. Check item URIs
   (`spotify:episode:` vs `spotify:track:`) before assuming DRM.
-- **2026-08-01** — Feed episode titles may embed a subtitle after a pipe
+- 2026-08-01 — Feed episode titles may embed a subtitle after a pipe
   ("Part 2: … | $100M Money Models Audiobook"); escape `|` when rendering
   markdown tables (the capture script does).
-- **2026-08-01** — The embed endpoint's `trackList` showed all 9 playlist
+- 2026-08-01 — The embed endpoint's `trackList` showed all 9 playlist
   items, but treat keyless lists as possibly truncated on larger entities
   (the embed player paginates around ~100).
-- **2026-09-19** — Spotify answers **404 for "not offered in this market"**
+- 2026-09-19 — Spotify answers **404 for "not offered in this market"**
   as well as for "removed", indistinguishably; the capture's reason says both.
-- **2026-09-19** — A 429 on a later page of the item list can outlive the
+- 2026-09-19 — A 429 on a later page of the item list can outlive the
   backoff. The list ends there and the capture is `partial`, never a quiet
   `ok`: the reason says `TRUNCATED at N of M`, and re-running completes it.
-- **2026-09-19** — An entity can be called "Index", which is the host's one
+- 2026-09-19 — An entity can be called "Index", which is the host's one
   reserved page name; this unit titles that page `Index (Spotify playlist)`.

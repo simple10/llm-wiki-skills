@@ -126,9 +126,8 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capt
 ## Discovery
 
 `<host>/sitemap.xml` is typically one flat `urlset` covering the whole site —
-the enumeration route worth using. Sidebars are frequently partial or carry
-stale spellings, so prefer the sitemap and let the sidebar be a cross-check; a
-sitemap INDEX yields `sitemaps[]` to fetch and plan again, one `--urls` per
+the enumeration route worth using (the sidebar is a cross-check, see the
+quirks log); a sitemap INDEX yields `sitemaps[]` to fetch and plan again, one `--urls` per
 file. Save it as served into the capture directory and hand the file to
 `plan` — the one step needing the network. `?hsLang=` makes one page two URLs,
 so `plan` strips it (and the site's own `strip_params`) before filtering or
@@ -143,8 +142,7 @@ go in `references/sites.json`.
    returns images only and the capture looks complete while missing its entire
    content. **Rendering is mandatory**, not an optimization.
 2. **HubSpot Video is Mux underneath.** After render the network log holds
-   `image.mux.com/<PLAYBACK_ID>/storyboard.vtt` — it fires before play is
-   clicked and is the most reliable place to read the id.
+   `image.mux.com/<PLAYBACK_ID>/storyboard.vtt`, fired before play is clicked.
 3. **The manifests the player fetches are signed and expiring.**
    `manifest-*.edgemv.mux.com/…/rendition.m3u8` carry `expires=` and are
    per-rendition — they die in hours. Rewrite to the stable master
@@ -186,25 +184,21 @@ rules to a manifest from the plugin's `assets.py detect`. Its `render` drives
 Chromium through Playwright inside the slice, which cannot install the browser
 build: that has to be on the harvesting machine first (`references/enable.md` step 1), and
 a render dying on a missing executable is `report --failed --reason
-browser_missing`, never a retry loop. Do not edit `to_markdown.py` here: it is
-byte-identical to every other unit's copy.
+browser_missing`, never a retry loop.
 
 ## Budgeting
 
-Video-first pages are much longer than they look: one measured corpus averaged
-~28 minutes per page across 75 videos — 31.7 GB and ~35 hours of audio at
-yt-dlp's default format pick, against roughly 2 GB for `download-audio`.
-Estimate before committing to a section. One ticket is one worker walking it
-serially, two to five seconds between requests per `llm-wiki-ops reference
-agent-loop`; at six pages a run that corpus is thirteen runs, none of which
-starts by itself.
+Estimate before committing to a section: one measured corpus averaged ~28
+minutes per page across 75 videos — 31.7 GB (about 2 GB as `download-audio`)
+and ~35 hours of audio — and at six pages a run that is thirteen runs, none
+of which starts by itself.
 
 ## Quirks log
 
-- **2026-07-31** — Sites in this family have shipped misspelled sidebar links
+- 2026-07-31 — Sites in this family have shipped misspelled sidebar links
   that 301 to the sitemap spelling. Following them works, but enumerating from
   the sitemap keeps capture directories and note names correctly spelled.
-- **2026-09-19** — HubSpot reuses one `<title>` across a whole course ("Start
+- 2026-09-19 — HubSpot reuses one `<title>` across a whole course ("Start
   Here" for all eleven Offers lessons) and the only `h1`s in that corpus are
   template chrome: the lesson's title is the first `h2` in the content root
   (all 77 pages).
