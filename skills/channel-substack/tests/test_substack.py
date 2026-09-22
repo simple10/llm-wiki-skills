@@ -314,49 +314,7 @@ def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_pat
     assert [c["title"] for c in mod.build({**plan, "leaves": leaves[1:]}, [], {}, tmp_path)["captured"]][:2] == ["Open Thread", want[1]]
 
 
-# ---- end to end, through the real extractor ------------------------------
-
-
-def _script(name, *argv, cwd=None, env=None):
-    """A unit script from THIS working tree (the session wiki installs from
-    git HEAD), under `uv run` so its PEP 723 dependencies resolve. `cwd` is
-    the wiki root when a case drives the script the documented way."""
-    return subprocess.run(["uv", "run", "-q", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd, env=env)
-
-
-def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
-    """The process step exactly as SKILL.md prescribes it, against the REAL
-    CLI: convert the captured `page.html`, `page create` with that markdown on
-    stdin, then `page edit … extracted=true`. Returns the page."""
-    record = json.loads((capture_dir / "capture.json").read_text(encoding="utf-8"))
-    said = json.loads((capture_dir / "leaf.json").read_text(encoding="utf-8"))
-    if body is None:
-        converted = _script(
-            "to_markdown.py", str(capture_dir / record["body"]), "--out", "-",
-            "--selector", ".available-content", "--base-url", record["item"], cwd=wiki,
-        )
-        assert converted.returncode == 0, converted.stderr
-        body = converted.stdout
-    page = f"{dest}/{record['title'].strip()}.md"
-    keys = [f"resource={record['item']}", "type=article", *keys]
-    keys += [f"published={said['published']}"] if said.get("published") else []
-    keys += [f"audience={said['audience']}"] if said.get("audience") else []
-    # The documented lines, as a worker TYPES them: every venue value single-quoted,
-    # so every content case is a quoting case too.
-    quoted = [f"'{k}'" for k in keys]
-
-    def sh(*words, stdin=body):
-        return subprocess.run(["/bin/sh", "-c", " ".join(words)], input=stdin, capture_output=True, text=True, cwd=wiki, env=env)
-
-    created = sh(shlex.join([*ops, "page", "create"]), f"'title={record['title']}'", f"'dest={dest}'", *quoted, "--stdin")
-    if created.returncode != 0:
-        # The one refusal SKILL.md names: that title is already filed, so edit its page.
-        assert created.returncode == 2 and "already exists" in created.stderr, created.stdout + created.stderr
-        created = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", *quoted, "--stdin")
-        assert created.returncode == 0, created.stdout + created.stderr
-    done = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", "extracted=true", stdin=None)
-    assert done.returncode == 0, done.stdout + done.stderr
-    return wiki / page
+# --- the scripts from the wiki root, on relative paths ------------------------
 
 
 POST = f"{HOST}/p/the-newest-one"
@@ -498,11 +456,6 @@ def test_safe_title_is_what_the_hosts_filename_rule_will_hold():
 
 HOSTILE_TITLE = '.Lesson 3: What is "A/B" testing?\n\n# Forged heading\n\n---\n'
 HOSTILE_AUTHOR = "Ada Example\n\n## Forged by the author\n\n```"
-
-
-def _hostile_page():
-    html = (FIX / "post-the-newest-one.html").read_text(encoding="utf-8")
-    return html.replace('name="author" content="Ada Example"', 'name="author" content="Ada Example&#10;&#10;## Forged by the author&#10;&#10;```"')
 
 
 def test_no_qualifier_this_unit_adds_can_push_a_capped_title_past_a_filename():

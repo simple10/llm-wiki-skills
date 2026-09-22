@@ -656,27 +656,3 @@ def test_the_lines_are_found_inside_the_capture_dir_by_their_bare_name(tmp_path)
         assert run("ledger", directory, "--dest", "research/channels/mail", *flags, env=env).returncode == 0
     assert all("the wiki's own line" in call["body"] for call in calls(log))
     assert (directory / "lines.json").exists()  # read, never consumed: the page is regenerated whole
-
-
-# ------------------------------------------------------------------ end to end
-
-
-def _bullets(text: str) -> list:
-    return [line for line in text.splitlines() if line.startswith("- ")]
-
-
-def _body(text: str) -> str:
-    assert text.startswith("---\n")
-    return text.split("\n---\n", 1)[1]
-
-
-@pytest.fixture(scope="session")
-def front_door(ops, env, tmp_path_factory) -> dict:
-    """The session's real CLI under the bare name the front door calls."""
-    bin_dir = tmp_path_factory.mktemp("front-door")
-    shim = bin_dir / "llm-wiki-ops"
-    shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in ops) + ' "$@"\n', encoding="utf-8")
-    shim.chmod(0o755)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.environ['PATH'])}", "LLM_WIKI_OPS": str(shim)}
-
-

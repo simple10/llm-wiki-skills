@@ -436,13 +436,7 @@ def test_a_qualifier_never_carries_a_settled_title_past_the_filename_cap(tmp_pat
         assert titles[0] == base
 
 
-# ------------------------------------------------------------ end to end, harvest then process
-
-
-def _fresh(wiki: Path, slug: str) -> None:
-    """The session wiki is shared, and a finished capture on disk is now a
-    `landed` leaf: every end-to-end case starts from an empty `_raw/<slug>/`."""
-    shutil.rmtree(wiki / "_raw" / slug, ignore_errors=True)
+# --- the video: off the asset manifest, and what the transcriber refuses ------
 
 
 def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):

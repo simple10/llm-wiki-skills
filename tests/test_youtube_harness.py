@@ -7,14 +7,28 @@ the unit — so a case here reads exactly as it did beside them.
 from __future__ import annotations
 
 import json
+import os
 import pytest
 import re
 import shlex
 
-from conftest import declared_job, extracted, ticket_in, unit_tests
+from pathlib import Path
+
+from harness import declared_job, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-youtube", "test_youtube"))
+
+
+def _formatter():
+    """The plugin's real formatter, or a skip with the true reason."""
+    plugin = os.environ.get("LLM_WIKI_OPS_PLUGIN")
+    if not plugin:
+        pytest.skip("set LLM_WIKI_OPS_PLUGIN to the ops plugin's root — format_transcript.py is host code, not this package's")
+    rel = re.search(r'^FORMATTER = "([^"]+)"$', BUILDER.read_text(encoding="utf-8"), re.M).group(1)
+    path = Path(plugin) / rel
+    assert path.is_file(), f"{rel} is not under LLM_WIKI_OPS_PLUGIN={plugin} — did the plugin move it?"
+    return path
 
 
 def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
@@ -69,12 +83,9 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
     assert "[!summary]" not in body
 
 
-# ================================================================== review fixes
 # Rule 1 — the page's FILE is named from `capture.json`'s title, and the host
-# refuses a title its filename rule cannot hold.
-
-# `llm_wiki_ops/commands/page/note.py`: ILLEGAL, and what `filename_for` refuses.
-
+# refuses a title its filename rule cannot hold (`page/note.py`: ILLEGAL, and
+# what `filename_for` refuses).
 @pytest.mark.parametrize("leaf, title, safe", [
     ("hostile--5e2e0002", 'Lesson 3: Pricing? A/B "testing"', "Lesson 3 - Pricing A-B ’testing’"),
     ("hostile--5e2e0003", ".hidden: what is <X> | Y?\n---\n# Forged", "hidden - what is (X) - Y --- # Forged"),

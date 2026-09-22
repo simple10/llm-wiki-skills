@@ -320,15 +320,7 @@ def test_a_missing_asset_host_makes_a_full_capture_partial(slice_dir):
     assert run_plan("report", slice_dir, "--missing", "h", "https://h/x", "paywalled").returncode == 2
 
 
-# --- END TO END: the real job, the real `page create` ---------------------------
-
-
-def to_markdown(directory: Path) -> str:
-    """SKILL.md's process step 1, over one capture's bytes."""
-    done = subprocess.run(["uv", "run", "--script", str(TO_MARKDOWN), str(directory / "page.html"),
-                           "--out", str(directory / "page.md")], capture_output=True, text=True, check=False)
-    assert done.returncode == 0, done.stderr
-    return (directory / "page.md").read_text(encoding="utf-8")
+# --- capture_lesson: the url off the ticket when none is given ----------------
 
 
 def test_capture_lesson_takes_its_url_off_the_ticket_when_none_is_given(tmp_path):

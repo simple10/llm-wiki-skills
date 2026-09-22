@@ -451,27 +451,3 @@ def test_the_ledger_clears_a_stale_report_and_refuses_a_dest_it_cannot_write(tmp
     for bad in ("/etc", "../outside"):
         assert run("ledger", directory, "--dest", bad, env=door((0, {}))).returncode == 1
     assert not (tmp_path / "seen.json").exists()
-
-
-# ------------------------------------------------------------------ end to end, against the real CLI
-
-
-def _bullets(text: str) -> list:
-    return [line for line in text.splitlines() if line.startswith("- ")]
-
-
-@pytest.fixture
-def real_door(tmp_path, ops, env, wiki):
-    """The front door this unit writes a page through, bound to the harness
-    wiki — the real CLI, rooted the way a caller outside the wiki roots one."""
-    bin_dir = tmp_path / "real-door"
-    bin_dir.mkdir()
-    stub = bin_dir / "llm-wiki-ops"
-    stub.write_text(
-        f'#!/bin/sh\nexport LLM_WIKI_ROOT={shlex.quote(str(Path(wiki).resolve()))}\n'
-        f'exec {shlex.join(ops)} "$@"\n'
-    )
-    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
-
-

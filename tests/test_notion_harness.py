@@ -7,17 +7,42 @@ the unit — so a case here reads exactly as it did beside them.
 from __future__ import annotations
 
 import json
+import os
 import pytest
+import shlex
+import stat
 
-from conftest import declared_job, ticket_in, unit_tests
+from pathlib import Path
+
+from harness import declared_job, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-notion-tasks", "test_notion"))
 
 
+def _bullets(text: str) -> list:
+    return [line for line in text.splitlines() if line.startswith("- ")]
+
+
+@pytest.fixture
+def real_door(tmp_path, ops, env, wiki):
+    """The front door this unit writes a page through, bound to the harness
+    wiki — the real CLI, rooted the way a caller outside the wiki roots one."""
+    bin_dir = tmp_path / "real-door"
+    bin_dir.mkdir()
+    stub = bin_dir / "llm-wiki-ops"
+    stub.write_text(
+        f'#!/bin/sh\nexport LLM_WIKI_ROOT={shlex.quote(str(Path(wiki).resolve()))}\n'
+        f'exec {shlex.join(ops)} "$@"\n'
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
+
+
 @pytest.fixture
 def job(ops, env, wiki):
     return declared_job(ops, env, wiki, UNIT, TARGET, "options.workspace=harness")
+
 
 def test_the_two_steps_make_the_days_ledger_out_of_what_the_pull_left(ops, env, wiki, job, real_door):
     cap = ticket_in(wiki, job, DAY, unit=UNIT, item=TARGET, dest=job.dest)
@@ -58,6 +83,7 @@ def test_the_two_steps_make_the_days_ledger_out_of_what_the_pull_left(ops, env, 
     assert body.count("```") == 0 and "[[" not in body and "\n#" not in body
 
     assert "Reordered backlog" not in ledger.read_text(encoding="utf-8")  # the junked task: counted, never rendered
+
 
 def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, wiki, job, real_door):
     day = "2026-09-17"

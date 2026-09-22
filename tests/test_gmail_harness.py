@@ -7,17 +7,38 @@ the unit — so a case here reads exactly as it did beside them.
 from __future__ import annotations
 
 import json
+import os
 import pytest
-
-from conftest import declared_job, extracted, ticket_in, unit_tests
+import shlex
+from harness import declared_job, extracted, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-gmail", "test_gmail"))
 
 
+def _bullets(text: str) -> list:
+    return [line for line in text.splitlines() if line.startswith("- ")]
+
+
+def _body(text: str) -> str:
+    assert text.startswith("---\n")
+    return text.split("\n---\n", 1)[1]
+
+
+@pytest.fixture(scope="session")
+def front_door(ops, env, tmp_path_factory) -> dict:
+    """The session's real CLI under the bare name the front door calls."""
+    bin_dir = tmp_path_factory.mktemp("front-door")
+    shim = bin_dir / "llm-wiki-ops"
+    shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in ops) + ' "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.environ['PATH'])}", "LLM_WIKI_OPS": str(shim)}
+
+
 @pytest.fixture
 def job(ops, env, wiki):
     return declared_job(ops, env, wiki, UNIT, TARGET, "options.mailbox=a@example.invalid")
+
 
 def test_one_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, job, front_door):
     cap = ticket_in(wiki, job, DAY, unit=UNIT, item=TARGET, dest=job.dest)
@@ -63,6 +84,7 @@ def test_one_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, j
     # The junked message's content is on no page — only its count.
     assert "Weekly digest" not in text
 
+
 def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, wiki, job, front_door):
     cap = ticket_in(wiki, job, "2026-09-17", unit=UNIT, item=TARGET, dest=job.dest)
     (wiki / "_raw" / job.slug / ".cursor.json").unlink(missing_ok=True)
@@ -86,6 +108,7 @@ def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, w
     (cap / "items" / f"{T0 + 1000}--m1.json").unlink()
     assert ledger(cap, [line_for(2, "rewritten"), line_for(3)], "--dest", job.dest, env=front_door, cwd=wiki).returncode == 0
     assert _bullets(_body(ledger_path.read_text(encoding="utf-8"))) == _bullets(second)[1:]
+
 
 def test_the_items_are_still_a_ledger_the_hosts_own_extractor_can_make(ops, env, wiki, job):
     """`pipeline extract` over the same day: the sender's line, neutralized,

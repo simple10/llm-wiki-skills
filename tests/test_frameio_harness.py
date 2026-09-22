@@ -8,14 +8,75 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pytest
 import re
 import shutil
+import stat
+import sys
+import tempfile
 
-from conftest import declared_job, ticket_in, unit_tests
+from pathlib import Path
+
+from harness import declared_job, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-frameio", "test_frameio"))
+
+
+def _queued_media(wiki, dest):
+    """`(page, media)` for every stub under `dest` the transcribe stage would
+    take, by ITS rule: `extracted: queued` and a non-empty `media`
+    (`pipeline/media.py::queued_under`). Read here rather than imported — a
+    unit reaches the machinery by verb, and so does its test."""
+    found = []
+    for path in sorted((wiki / dest).rglob("*.md")):
+        front = path.read_text(encoding="utf-8").split("\n---\n", 1)[0]
+        keys = dict(
+            line.split(": ", 1) for line in front.splitlines() if ": " in line and not line.startswith(" ")
+        )
+        if keys.get("extracted") == "queued" and keys.get("media"):
+            found.append((str(path.relative_to(wiki)), keys["media"]))
+    return found
+
+
+def _front_door(tmp, ops, env):
+    """A `PATH` whose bare `llm-wiki-ops` is the harness's REAL CLI.
+
+    In production that name is the console script on PATH, bound to the wiki
+    by the cwd; a suite may reach neither the machine's wikis nor its packages
+    home, so this execs the CLI under test with the harness's own environment
+    instead. What is being tested is the page `page create` writes, not how
+    the name resolves — `tests/test_scripts_frameio_doc_note.py` pins the
+    argv, the cwd and the variable the unit drops.
+    """
+    bin_dir = Path(tempfile.mkdtemp(prefix="front-door-", dir=tmp))
+    stub = bin_dir / "llm-wiki-ops"
+    # `execve` takes a PATH, never a name: `LLM_WIKI_OPS` is a command LINE, and
+    # its first word is `uv` wherever the CLI is run out of a checkout. Resolved
+    # here, where PATH is still this process's.
+    runner = shutil.which(ops[0]) or ops[0]
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"os.execve({runner!r}, [{runner!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
+
+
+def _harvested(monkeypatch, capsys, wiki, leaf, slug, *argv, title="Real Title - Fixture Share"):
+    """One planned leaf, harvested for real — `capture_job.py` with only the
+    browser stubbed — and the flat record it leaves."""
+    code, _calls, _io = _capture_leaf(
+        monkeypatch, capsys, wiki, wiki / leaf["dir"], leaf["item"], "document",
+        "--slug", slug, *( [f"--name={leaf['name']}"] if leaf.get("name") else [] ),
+        *[f"--path={bit}" for bit in leaf.get("path") or []],
+        f"--crumb-skip={len(leaf.get('path') or []) - len(leaf.get('crumb') or [])}",
+        *argv, title=title,
+    )
+    assert code == 0
+    return json.loads((wiki / leaf["dir"] / "capture.json").read_text())
 
 
 def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki, monkeypatch, capsys, tmp_path):
@@ -79,6 +140,7 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki, mon
     assert json.loads(out)["written"] == [str(page.relative_to(wiki))]
     assert page.read_text(encoding="utf-8").count("# Q3 Roadmap.pdf") == 1
 
+
 def test_an_explicit_reference_on_the_job_reaches_the_plan(ops, env, wiki, monkeypatch, capsys, tmp_path):
     """The operator's `harvest.assets=reference` rides the job record into the
     ticket, and the driver's `--plan-only` leaves the media leaf out of
@@ -97,6 +159,7 @@ def test_an_explicit_reference_on_the_job_reaches_the_plan(ops, env, wiki, monke
     plan = json.loads((cap / "plan.json").read_text())
     assert [leaf["item"] for leaf in plan["leaves"]] == [deck["view_url"]]
     assert plan["unplanned"] == [{"item": video["view_url"], "name": "Keynote.mov", "why": "reference"}]
+
 
 def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki, monkeypatch, capsys, tmp_path):
     """A page is filed under its title and the second write wins: before the
@@ -142,6 +205,7 @@ def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki, monkeypatch,
     assert leaves[0]["view_url"] in first and "*Client A*" in first  # still the FIRST asset's page
     assert leaves[1]["view_url"] in second and "*Client B*" in second
 
+
 def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki, monkeypatch, capsys, tmp_path):
     """The unit's own process step mints the transcribe stage's stub — and the
     REAL walker finds it. `page create` takes `extracted=` and `media=` as
@@ -167,6 +231,7 @@ def test_a_share_video_becomes_a_page_waiting_for_its_transcript(ops, env, wiki,
 
     # The stub is an ITEM to the transcribe stage's own walker, not just a page.
     assert _queued_media(wiki, job.dest) == [(str(page.relative_to(wiki)), f"{rel}/video.mp4")]
+
 
 def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_it(ops, env, wiki, tmp_path):
     """Under the test interpreter there is no pypdf, the callout reads
@@ -203,7 +268,6 @@ def test_a_pdfs_text_reaches_the_page_when_the_renderer_runs_as_production_runs_
 
 
 # ---- Rule 1: the title names a FILE ----------------------------------------------------
-
 def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki, monkeypatch, capsys, tmp_path):
     """Harvest said ok and the page never landed: `page create` names the FILE
     from the title and refuses `: ? / "`, a leading dot — and the filesystem
@@ -249,7 +313,6 @@ def test_titles_no_filename_can_hold_still_land_as_pages(ops, env, wiki, monkeyp
 
 
 # ---- the real argv chain: harvest_share -> capture_job -> frameio_doc_note ---------------
-
 @pytest.mark.parametrize("bundle, under_dest", [(True, True), (False, False)])
 def test_bundle_media_decides_where_the_stub_points(ops, env, wiki, monkeypatch, capsys, tmp_path, bundle, under_dest):
     """`process.bundle_media` is on the ticket and the host no longer acts on

@@ -15,10 +15,57 @@ import subprocess
 
 from pathlib import Path
 
-from conftest import declared_job, rooted, ticket_in, unit_tests
+from harness import declared_job, rooted, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-substack", "test_substack"))
+
+
+def _script(name, *argv, cwd=None, env=None):
+    """A unit script from THIS working tree (the session wiki installs from
+    git HEAD), under `uv run` so its PEP 723 dependencies resolve. `cwd` is
+    the wiki root when a case drives the script the documented way."""
+    return subprocess.run(["uv", "run", "-q", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd, env=env)
+
+
+def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
+    """The process step exactly as SKILL.md prescribes it, against the REAL
+    CLI: convert the captured `page.html`, `page create` with that markdown on
+    stdin, then `page edit … extracted=true`. Returns the page."""
+    record = json.loads((capture_dir / "capture.json").read_text(encoding="utf-8"))
+    said = json.loads((capture_dir / "leaf.json").read_text(encoding="utf-8"))
+    if body is None:
+        converted = _script(
+            "to_markdown.py", str(capture_dir / record["body"]), "--out", "-",
+            "--selector", ".available-content", "--base-url", record["item"], cwd=wiki,
+        )
+        assert converted.returncode == 0, converted.stderr
+        body = converted.stdout
+    page = f"{dest}/{record['title'].strip()}.md"
+    keys = [f"resource={record['item']}", "type=article", *keys]
+    keys += [f"published={said['published']}"] if said.get("published") else []
+    keys += [f"audience={said['audience']}"] if said.get("audience") else []
+    # The documented lines, as a worker TYPES them: every venue value single-quoted,
+    # so every content case is a quoting case too.
+    quoted = [f"'{k}'" for k in keys]
+
+    def sh(*words, stdin=body):
+        return subprocess.run(["/bin/sh", "-c", " ".join(words)], input=stdin, capture_output=True, text=True, cwd=wiki, env=env)
+
+    created = sh(shlex.join([*ops, "page", "create"]), f"'title={record['title']}'", f"'dest={dest}'", *quoted, "--stdin")
+    if created.returncode != 0:
+        # The one refusal SKILL.md names: that title is already filed, so edit its page.
+        assert created.returncode == 2 and "already exists" in created.stderr, created.stdout + created.stderr
+        created = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", *quoted, "--stdin")
+        assert created.returncode == 0, created.stdout + created.stderr
+    done = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", "extracted=true", stdin=None)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return wiki / page
+
+
+def _hostile_page():
+    html = (FIX / "post-the-newest-one.html").read_text(encoding="utf-8")
+    return html.replace('name="author" content="Ada Example"', 'name="author" content="Ada Example&#10;&#10;## Forged by the author&#10;&#10;```"')
 
 
 def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monkeypatch, capsys):
@@ -92,6 +139,7 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     assert [(leaf["item"].rsplit("/", 1)[-1], leaf["on_disk"]) for leaf in again["leaves"]] == [
         ("the-newest-one", True), ("members-only", False), ("a-podcast-episode", True)]
 
+
 def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
     """A page is filed under its title, and the second write of a name takes the
     first's file: before the report settled titles, a newsletter's second "Open
@@ -132,14 +180,13 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
     assert f"resource: {host}/p/open-thread\n" in older and "tide tables" in older
 
 
-# ---- the documented way: cwd is the WIKI ROOT, the capture dir wiki-relative ----
+# --- Rule 1: the title is a legal filename ------------------------------------
 #
 # `llm-wiki-ops run` starts a script with the wiki root as its cwd
 # (`commands/run/run.py::_exec`), NOT in the capture directory the worker
 # stands in. Every case above this line passes an absolute `--capture-dir`,
 # which is how a `.` default got through review: `write_report.py` wrote a
 # fabricated `failed` report with a null ticket AT THE WIKI ROOT.
-
 def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, wiki):
     """Rule 1 + Rule 2, through the REAL `page create`. Before the fix the raw
     title went into `capture.json`, harvest said ok, and the process ticket was
@@ -190,6 +237,7 @@ def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, 
     # the archive gave the second leaf no date, so its page declares none rather than a guess
     assert not any(line.startswith("published:") for line in pages[1].read_text(encoding="utf-8").splitlines())
 
+
 def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki):
     """The host's `filename_for` checks no LENGTH: 100 CJK characters are 300
     bytes and the write died `OSError: File name too long`. The cap is held in
@@ -219,6 +267,7 @@ def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki
     pages = [_paged(ops, env, wiki, wiki / c["dir"], job.dest) for c in report["captured"]]
     assert [page.name for page in pages] == [f"{first}.md", f"{second}.md"] and all(page.is_file() for page in pages)
     assert max(len(page.name.encode()) for page in pages) <= 255  # what the write dies on
+
 
 def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):
     """The process step is a shell line a worker TYPES, single-quoting the title

@@ -11,15 +11,19 @@ import shlex
 import shutil
 import subprocess
 
-from conftest import ROOT, declared_job, rooted, run, ticket_in, unit_tests
+from pathlib import Path
+
+from harness import declared_job, rooted, run, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-hubspot-video", "test_hubspot"))
 
 
-def test_the_converter_is_the_circle_units_copy_unchanged():
-    """Units install one at a time, so each carries its own converter; the copies must not drift."""
-    assert (SCRIPTS / "to_markdown.py").read_bytes() == (ROOT / "skills" / "channel-circle" / "scripts" / "to_markdown.py").read_bytes()
+def _fresh(wiki: Path, slug: str) -> None:
+    """The session wiki is shared, and a finished capture on disk is now a
+    `landed` leaf: every end-to-end case starts from an empty `_raw/<slug>/`."""
+    shutil.rmtree(wiki / "_raw" / slug, ignore_errors=True)
+
 
 def _captured_lesson(ops, env, wiki, *extra, lesson=LESSON, section=SECTION, slug=None, meta_over=None):
     """One lesson harvested into a real wiki: the ticket a spawner would have
@@ -44,6 +48,7 @@ def _captured_lesson(ops, env, wiki, *extra, lesson=LESSON, section=SECTION, slu
     assert done.returncode == 0, done.stderr
     return job, cap, lesson_dir
 
+
 def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki):
     """`every` is not an identity key, so a `once` job can be given a period while a section fills, and back."""
     job = declared_job(ops, env, wiki, UNIT, "https://www.example-hubspot.invalid/continue", slug="port-channel-hubspot-continue")
@@ -54,6 +59,7 @@ def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki
         assert run(ops, rooted(env, wiki), "--json", "pipeline", "show", job.slug).data["job"]["every"] == cadence
     refused = run(ops, rooted(env, wiki), "--json", "pipeline", "queue", "retry", "0123456789ab")
     assert refused.returncode != 0 and "no finished item" in refused.stdout + refused.stderr  # the verb exists; this ticket never ran
+
 
 def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):
     """The process step is a shell line a worker TYPES, single-quoting the title

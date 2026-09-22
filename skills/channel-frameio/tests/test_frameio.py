@@ -772,53 +772,12 @@ def test_a_capture_that_does_not_add_up_leaves_no_capture_json(monkeypatch, caps
     assert json.loads(capsys.readouterr().out)["ok"] is False and not (leaf_dir / "capture.json").exists()
 
 
-# ------------------------------------------------ end to end, the real CLI
+# --- the scripts as `run` starts them, over the fixtures ----------------------
 
 
 def _run_script(name, *argv, cwd, env=None):
     done = subprocess.run([sys.executable, str(SCRIPTS / name), *argv], cwd=cwd, env=env, capture_output=True, text=True)
     return done.returncode, done.stdout, done.stderr
-
-
-def _queued_media(wiki, dest):
-    """`(page, media)` for every stub under `dest` the transcribe stage would
-    take, by ITS rule: `extracted: queued` and a non-empty `media`
-    (`pipeline/media.py::queued_under`). Read here rather than imported — a
-    unit reaches the machinery by verb, and so does its test."""
-    found = []
-    for path in sorted((wiki / dest).rglob("*.md")):
-        front = path.read_text(encoding="utf-8").split("\n---\n", 1)[0]
-        keys = dict(
-            line.split(": ", 1) for line in front.splitlines() if ": " in line and not line.startswith(" ")
-        )
-        if keys.get("extracted") == "queued" and keys.get("media"):
-            found.append((str(path.relative_to(wiki)), keys["media"]))
-    return found
-
-
-def _front_door(tmp, ops, env):
-    """A `PATH` whose bare `llm-wiki-ops` is the harness's REAL CLI.
-
-    In production that name is the console script on PATH, bound to the wiki
-    by the cwd; a suite may reach neither the machine's wikis nor its packages
-    home, so this execs the CLI under test with the harness's own environment
-    instead. What is being tested is the page `page create` writes, not how
-    the name resolves — `tests/test_scripts_frameio_doc_note.py` pins the
-    argv, the cwd and the variable the unit drops.
-    """
-    bin_dir = Path(tempfile.mkdtemp(prefix="front-door-", dir=tmp))
-    stub = bin_dir / "llm-wiki-ops"
-    # `execve` takes a PATH, never a name: `LLM_WIKI_OPS` is a command LINE, and
-    # its first word is `uv` wherever the CLI is run out of a checkout. Resolved
-    # here, where PATH is still this process's.
-    runner = shutil.which(ops[0]) or ops[0]
-    stub.write_text(
-        f"#!{sys.executable}\n"
-        "import os, sys\n"
-        f"os.execve({runner!r}, [{runner!r}, *{list(ops[1:])!r}, *sys.argv[1:]], {dict(env)!r})\n"
-    )
-    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}", "LLM_WIKI_OPS": str(stub)}
 
 
 def _stub_front_door(tmp):
@@ -843,20 +802,6 @@ def _process(wiki, capture_rel, dest, *extra, env, runner=None):
     if runner is not None:
         return runner(*argv, cwd=wiki, env=env)
     return _run_script("frameio_doc_note.py", *argv, cwd=wiki, env=env)
-
-
-def _harvested(monkeypatch, capsys, wiki, leaf, slug, *argv, title="Real Title - Fixture Share"):
-    """One planned leaf, harvested for real — `capture_job.py` with only the
-    browser stubbed — and the flat record it leaves."""
-    code, _calls, _io = _capture_leaf(
-        monkeypatch, capsys, wiki, wiki / leaf["dir"], leaf["item"], "document",
-        "--slug", slug, *( [f"--name={leaf['name']}"] if leaf.get("name") else [] ),
-        *[f"--path={bit}" for bit in leaf.get("path") or []],
-        f"--crumb-skip={len(leaf.get('path') or []) - len(leaf.get('crumb') or [])}",
-        *argv, title=title,
-    )
-    assert code == 0
-    return json.loads((wiki / leaf["dir"] / "capture.json").read_text())
 
 
 OFFLINE = {**os.environ, "UV_OFFLINE": "1"}  # a test never reaches the network, and neither does a resolver it starts

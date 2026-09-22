@@ -11,7 +11,7 @@ import re
 
 import pytest
 
-from conftest import ROOT
+from harness import ROOT
 
 BRITISH = (
     "behaviour", "colour", "licence", "recognise", "recognised", "recognises",

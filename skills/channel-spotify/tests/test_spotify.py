@@ -611,20 +611,7 @@ def test_a_process_report_with_no_page_written_is_still_refused_as_ok(tmp_path):
     assert r.returncode == 2 and "nothing captured" in r.stderr and not (cap / "report.json").exists()
 
 
-# --------------------------------------------- END TO END, the real `page create`
-
-
-def front_door(tmp_path: Path, monkeypatch, ops: list) -> None:
-    """The REAL CLI, first on PATH under the bare name the script calls it by —
-    and none of this session's own wiki bindings."""
-    bin_dir = tmp_path / "front-door"
-    bin_dir.mkdir(exist_ok=True)
-    shim = bin_dir / "llm-wiki-ops"
-    shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(x) for x in ops) + ' "$@"\n')
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}")
-    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS"):
-        monkeypatch.delenv(ambient, raising=False)
+# --- respawns, the wiki root, and a hand run ----------------------------------
 
 
 def test_a_respawn_does_not_report_the_last_attempts_capture(tmp_path):

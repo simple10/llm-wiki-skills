@@ -16,10 +16,18 @@ import sys
 
 from pathlib import Path
 
-from conftest import declared_job, rooted, ticket_in, unit_tests
+from harness import declared_job, rooted, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-circle", "test_circle"))
+
+
+def to_markdown(directory: Path) -> str:
+    """SKILL.md's process step 1, over one capture's bytes."""
+    done = subprocess.run(["uv", "run", "--script", str(TO_MARKDOWN), str(directory / "page.html"),
+                           "--out", str(directory / "page.md")], capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    return (directory / "page.md").read_text(encoding="utf-8")
 
 
 def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "create") -> subprocess.CompletedProcess:
@@ -31,6 +39,7 @@ def paged(ops, env, wiki, capture_dir: Path, dest: str, body: str, verb: str = "
     line = " ".join([shlex.join([*ops, "--json", "page", verb]), *where, f"'resource={record['item']}'", "type=lesson", "extracted=true", "--stdin"])
     return subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), input=body, capture_output=True, text=True, check=False)
 
+
 def written(ops, env, wiki, capture_dir: Path, dest: str, body: str) -> Path:
     """`create`, and on the host's `already exists` refusal, `edit` — the page."""
     done = paged(ops, env, wiki, capture_dir, dest, body)
@@ -38,6 +47,7 @@ def written(ops, env, wiki, capture_dir: Path, dest: str, body: str) -> Path:
         done = paged(ops, env, wiki, capture_dir, dest, body, verb="edit")
     assert done.returncode == 0, done.stdout + done.stderr
     return wiki / json.loads(done.stdout)["path"]
+
 
 def test_one_ticket_walks_the_section_and_every_lesson_becomes_a_page(ops, env, wiki):
     job = declared_job(ops, env, wiki, UNIT, TARGET)
@@ -108,6 +118,7 @@ def test_one_ticket_walks_the_section_and_every_lesson_becomes_a_page(ops, env, 
     assert written(ops, env, wiki, directory, job.dest, to_markdown(directory)).name == "Getting the Frame Right.md"
     assert sorted(page.name for page in (wiki / job.dest).glob("*.md")) == [
         "Getting the Frame Right.md", "Reading the Room.md"]
+
 
 def test_two_lessons_with_one_title_land_as_two_pages(ops, env, wiki):
     """The page is filed under its title and overwrites what is there: before
@@ -180,9 +191,6 @@ def test_refused_titles_and_a_long_cjk_title_all_land_through_the_real_page_verb
         assert page.is_file() and page.is_relative_to(wiki / job.dest) and page.name == f"{record['title']}.md"
     assert [c["title"] for c in report["captured"]][:2] == [
         "Lesson 3 - Pricing A-B ’tests’ (now)", "hidden - a leading dot-pipe-slash"]
-
-
-# --- S11: a venue url is data, never shell --------------------------------------
 
 
 def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):

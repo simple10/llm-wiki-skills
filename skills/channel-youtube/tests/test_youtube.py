@@ -176,17 +176,6 @@ def test_a_failed_report_carries_its_reason_and_its_missing_hosts(reporter, tmp_
 # ------------------------------------------------------------------ the scripts, as a worker runs them
 
 
-def _formatter():
-    """The plugin's real formatter, or a skip with the true reason."""
-    plugin = os.environ.get("LLM_WIKI_OPS_PLUGIN")
-    if not plugin:
-        pytest.skip("set LLM_WIKI_OPS_PLUGIN to the ops plugin's root — format_transcript.py is host code, not this package's")
-    rel = re.search(r'^FORMATTER = "([^"]+)"$', BUILDER.read_text(encoding="utf-8"), re.M).group(1)
-    path = Path(plugin) / rel
-    assert path.is_file(), f"{rel} is not under LLM_WIKI_OPS_PLUGIN={plugin} — did the plugin move it?"
-    return path
-
-
 def _fill(cap):
     """What the two yt-dlp commands in SKILL.md leave — from fixtures, no network."""
     shutil.copy(FIXTURES / "metadata.json", cap / "metadata.json")
@@ -359,7 +348,7 @@ def test_the_report_names_the_tickets_own_capture_dir_and_a_hand_run_needs_a_tic
     assert json.loads((cap / "report.json").read_text())["ticket"] == "feedfacecafe"
 
 
-# ------------------------------------------------------------------ end to end, through the real page verbs
+# --- titles, hostile venue text, and the scripts as `run` starts them ---------
 
 
 ILLEGAL = '/\\:*?"<>|'
@@ -664,7 +653,7 @@ def test_a_written_report_exits_zero_whatever_it_says_and_a_refusal_does_not(tmp
     assert cp.returncode != 0 and "must say why" in cp.stderr and not (cap / "report.json").exists()
 
 
-# Rule 1, end to end — the page LANDS.
+# Rule 1 — the report reads the pages off a file; the ticket's `embeds` reaches the page.
 
 
 def test_the_report_reads_the_pages_off_a_file_not_off_a_command_line(tmp_path):

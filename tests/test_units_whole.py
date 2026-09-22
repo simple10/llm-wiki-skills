@@ -6,10 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 
 import pytest
 
-from conftest import MANIFEST, ROOT, SKILLS, unit_manifest
+from harness import MANIFEST, ROOT, SKILLS, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel"]
 # A unit's own tests ship too, but a test asserting a gone name is ABSENT is
@@ -146,28 +147,66 @@ def test_a_unit_is_reachable_by_the_invocation_its_spawner_types(name):
         assert refused not in front, f"{name}: {refused} makes the unit unreachable by `/{name} ticket=<id>`"
 
 
+def _from_file(node) -> bool:
+    """Whether an attribute chain — `Path(__file__).resolve().parents[2]`,
+    `Path(__file__).parent.parent` — is rooted at `__file__`: the one climb
+    that says where a test thinks it lives. A capture dir's `parents[2]` is
+    not that."""
+    import ast
+
+    while True:
+        if isinstance(node, ast.Subscript) or isinstance(node, ast.Attribute):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.args[0] if isinstance(node.func, ast.Name) and node.func.id == "Path" and node.args else node.func
+        elif isinstance(node, ast.Name):
+            return node.id == "__file__"
+        else:
+            return False
+
+
 @pytest.mark.parametrize("name", SKILLS)
-def test_a_units_tests_ship_with_it_and_stand_alone(name):
+def test_a_units_tests_ship_with_it_and_stand_alone(name, tmp_path):
     """Two trees of tests. `skills/<unit>/tests/` is the unit's own — its
     scripts against its fixtures — and it is installed into a wiki with the
     unit, where an agent runs it from the enabled copy. So it may reach
-    nothing of this repo: not the harness (`conftest`), not the checkout
-    (`ROOT`, a `skills/channel-…` path, `tests/fixtures`), and it finds the
-    unit by its own place in the tree — `Path(__file__)` climbs one level,
-    never more. The harness tier for the unit is `tests/test_<venue>_harness.py`."""
+    nothing of this repo: not the harness (`conftest`, `harness`), not the
+    checkout (`ROOT`, another unit, `tests/fixtures`), and it finds the unit
+    by its own place in the tree — `Path(__file__)` climbs one level, never
+    more. Read for those reaches, then the real thing: the unit copied out
+    on its own, and its tests collected there. The harness tier for the unit
+    is `tests/test_<venue>_harness.py`."""
     import ast
+    import shutil
+    import subprocess
 
     shipped = sorted((ROOT / "skills" / name / "tests").glob("test_*.py"))
     assert shipped, f"{name} ships no tests"
     for path in shipped:
-        text = path.read_text(encoding="utf-8")
         where = path.relative_to(ROOT)
-        tree = ast.parse(text)
-        assert not any(isinstance(n, ast.ImportFrom) and n.module == "conftest" for n in ast.walk(tree)), f"{where} imports the harness"
-        assert not any(isinstance(n, ast.Name) and n.id == "ROOT" for n in ast.walk(tree)), f"{where} names the checkout"
-        strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-        assert not [v for v in strings if "skills/channel-" in v or "tests/fixtures" in v], f"{where} names the checkout's tree"
-        assert not re.search(r"__file__\)(?:\.resolve\(\))?\.parents\[[2-9]\]", text), f"{where} climbs above the unit"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.module not in {"conftest", "harness"}, f"{where} imports the harness"
+            if isinstance(node, ast.Import):
+                assert not {a.name for a in node.names} & {"conftest", "harness"}, f"{where} imports the harness"
+            if isinstance(node, ast.Name):
+                assert node.id != "ROOT", f"{where} names the checkout"
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                others = set(re.findall(r"channel-[a-z-]+", node.value)) - {name}
+                assert not others and "tests/fixtures" not in node.value, f"{where} reaches {others or 'tests/fixtures'}"
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "parents" and _from_file(node):
+                k = node.slice.value if isinstance(node.slice, ast.Constant) else None
+                assert k is not None and k <= 1, f"{where} climbs above the unit: parents[{k}]"
+            if isinstance(node, ast.Attribute) and node.attr == "parent" and isinstance(node.value, ast.Attribute) and node.value.attr == "parent" and _from_file(node):
+                raise AssertionError(f"{where} climbs above the unit: .parent.parent")
+    alone = tmp_path / name
+    shutil.copytree(ROOT / "skills" / name, alone, ignore=shutil.ignore_patterns("__pycache__"))
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "--import-mode=importlib", "--rootdir", str(alone), str(alone / "tests")],
+        capture_output=True, text=True, cwd=tmp_path, check=False,
+    )
+    assert done.returncode == 0 and re.search(r"^\d+ tests? collected", done.stdout, re.M), f"{name}'s tests do not collect on their own:\n{done.stdout}{done.stderr}"
 
 
 @pytest.mark.parametrize("name", CHANNELS)
