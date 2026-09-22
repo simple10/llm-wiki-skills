@@ -136,7 +136,7 @@ def test_the_body_never_opens_with_a_frontmatter_fence_and_has_no_summary_placeh
     assert "[!summary]" not in full and "TODO-SUMMARY" not in full
     assert full.index("![thumbnail]") < full.index("<iframe") < full.index("- **Channel**") < full.index("## Description") < full.index("## Transcript")
     # the description's own conversions survived the port
-    assert "<https://example.com/programme>" in full and "- `1:30` How to progress" in full and "#strength" not in full
+    assert "<https://example.com/plan>" in full and "- `1:30` How to progress" in full and "#strength" not in full
 
 
 def test_a_report_derives_captured_from_the_capture_and_never_claims_it(reporter, tmp_path):
@@ -784,7 +784,7 @@ def test_process_embeds_false_takes_the_iframe_out(builder, embeds, iframe):
     assert "![thumbnail]" in body, "only the embed goes; the thumbnail is a plain image"
 
 
-@pytest.mark.parametrize("process, iframe", [({"embeds": False}, False), ({"embeds": True}, True), ({}, True), (None, True)])
+@pytest.mark.parametrize("process, iframe", [({"embeds": False}, False), ({"embeds": True}, True), ({}, True), (None, True), ("nope", True)])
 def test_the_tickets_embeds_key_reaches_the_page_the_script_writes(tmp_path, process, iframe):
     """The shipped path: `ticket.json`'s `process.embeds`, read by the script
     itself (`embeds_of`), not a `build_body(embeds=)` a test hands over — a
@@ -792,7 +792,6 @@ def test_the_tickets_embeds_key_reaches_the_page_the_script_writes(tmp_path, pro
     own default."""
     cap = _ticketed(tmp_path)
     ticket = json.loads((cap / "ticket.json").read_text())
-    ticket.pop("process", None)
     if process is not None:
         ticket["process"] = process
     (cap / "ticket.json").write_text(json.dumps(ticket))

@@ -19,14 +19,18 @@ BRITISH = (
     "honours", "honoured", "initialise", "normalise", "serialise", "optimise",
     "customise", "synchronise", "summarise", "catalogue", "centre", "cancelled",
     "modelling", "labelled", "travelling", "whilst", "amongst", "defence",
-    "practise", "authorise", "apologise", "fulfil", "grey",
+    "programme", "practise", "authorise", "apologise", "fulfil", "grey",
 )
 PATTERN = re.compile(r"(?<![\w-])(" + "|".join(BRITISH) + r")(?![\w-])", re.I)
-FILES = sorted(  # this file spells them all, on purpose; a fixture is venue text, not ours
-    p for tree in ("skills", "tests", "scripts", ".github") for p in (ROOT / tree).rglob("*")
-    if p.is_file() and p.suffix in {".md", ".py", ".json", ".yml", ".yaml"}
-    and "__pycache__" not in p.parts and "fixtures" not in p.parts and p.name != "test_american_spelling.py"
-) + [ROOT / "README.md", ROOT / "llm-wiki-package.json"]
+FILES = sorted(  # this file spells them all, on purpose
+    [
+        *(p for tree in ("skills", "tests", "scripts", ".github") for p in (ROOT / tree).rglob("*")
+          if p.is_file() and p.suffix in {".md", ".py", ".json", ".yml", ".yaml"}
+          and "__pycache__" not in p.parts and p.name != "test_american_spelling.py"),
+        ROOT / "README.md",
+        ROOT / "llm-wiki-package.json",
+    ]
+)
 
 
 def test_the_scan_finds_the_word_it_was_written_for():

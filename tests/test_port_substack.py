@@ -347,8 +347,8 @@ def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
     # so every content case is a quoting case too.
     quoted = [f"'{k}'" for k in keys]
 
-    def sh(*words):
-        return subprocess.run(["/bin/sh", "-c", " ".join(words)], input=body, capture_output=True, text=True, cwd=wiki, env=env)
+    def sh(*words, stdin=body):
+        return subprocess.run(["/bin/sh", "-c", " ".join(words)], input=stdin, capture_output=True, text=True, cwd=wiki, env=env)
 
     created = sh(shlex.join([*ops, "page", "create"]), f"'title={record['title']}'", f"'dest={dest}'", *quoted, "--stdin")
     if created.returncode != 0:
@@ -356,7 +356,7 @@ def _paged(ops, env, wiki, capture_dir, dest, *keys, body=None):
         assert created.returncode == 2 and "already exists" in created.stderr, created.stdout + created.stderr
         created = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", *quoted, "--stdin")
         assert created.returncode == 0, created.stdout + created.stderr
-    done = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", "extracted=true")
+    done = sh(shlex.join([*ops, "page", "edit"]), f"'{page}'", "extracted=true", stdin=None)
     assert done.returncode == 0, done.stdout + done.stderr
     return wiki / page
 
