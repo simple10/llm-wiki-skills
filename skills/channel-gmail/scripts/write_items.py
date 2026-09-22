@@ -677,8 +677,8 @@ def ledger_body(items, verdicts):
 def _ops(argv, body):
     """The front door, as an ARGUMENT LIST and never a shell line: every value
     here is venue text one step removed, and `;$(…)` in a subject is a command
-    on a shell line. The re-entry guard and the project binding of the call
-    that ran THIS script are not this call's."""
+    on a shell line. The project binding of the call that ran THIS script is
+    not this call's."""
     env = {key: value for key, value in os.environ.items() if key not in NOT_INHERITED}
     try:
         return subprocess.run([*(front_door() or [OPS]), *argv], input=body, capture_output=True, text=True, env=env, check=False)

@@ -59,7 +59,7 @@ from urllib.parse import urlsplit
 
 
 # The front door, by the bare name every SKILL.md already runs this script
-# under — never a path into the wiki, which stops carrying a shim.
+# under — never a path.
 OPS = "llm-wiki-ops"
 
 

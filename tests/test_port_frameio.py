@@ -803,12 +803,12 @@ def _queued_media(wiki, dest):
 def _front_door(tmp, ops, env):
     """A `PATH` whose bare `llm-wiki-ops` is the harness's REAL CLI.
 
-    In production that name is the machine-global dispatcher, which walks for a
-    wiki and execs its shim; a suite may reach neither the machine's wikis nor
-    its packages home, so this execs the CLI under test with the harness's own
-    environment instead. What is being tested is the page `page create` writes,
-    not how the name resolves — `tests/test_scripts_frameio_doc_note.py` pins
-    the argv, the cwd and the guard the unit drops.
+    In production that name is the console script on PATH, bound to the wiki
+    by the cwd; a suite may reach neither the machine's wikis nor its packages
+    home, so this execs the CLI under test with the harness's own environment
+    instead. What is being tested is the page `page create` writes, not how
+    the name resolves — `tests/test_scripts_frameio_doc_note.py` pins the
+    argv, the cwd and the variable the unit drops.
     """
     bin_dir = Path(tempfile.mkdtemp(prefix="front-door-", dir=tmp))
     stub = bin_dir / "llm-wiki-ops"

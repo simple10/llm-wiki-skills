@@ -66,7 +66,7 @@ def _capture(root: Path, ext="pdf", *, title="Deck One - Big Share", capture=Non
 
 def _front_door(root: Path, monkeypatch, body="print(json.dumps({'ok': True}))"):
     """A recording `llm-wiki-ops` first on PATH. Every call appends its argv,
-    cwd, stdin and the re-entry guard to `seen.jsonl`, then runs `body`."""
+    cwd, stdin and the binding it inherited to `seen.jsonl`, then runs `body`."""
     bin_dir = root.parent / "stub-bin"
     bin_dir.mkdir(exist_ok=True)
     seen = root.parent / "seen.jsonl"

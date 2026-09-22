@@ -385,7 +385,7 @@ def test_the_ledger_goes_through_the_front_door_as_an_argv_list_with_the_body_on
     assert call["argv"] == ["--json", "page", "create", f"title={DAY}", "dest=research/channels/tasks",
                             "type=ledger", "channel=tasks", f"date={DAY}", "items=1", "extracted=true", "status=", "--stdin"]
     assert call["stdin"].startswith("- checklist moved to Doing — notion:0000aaaa-0001")
-    assert call["inherited"] == []  # the re-entry guard would refuse this call, and the cwd is what picks the wiki
+    assert call["inherited"] == []  # the cwd is what picks the wiki, not a binding the front door reads ahead of it
     assert call["cwd"] == str(directory.parents[2])
     assert report(directory) == {
         "v": 1, "ticket": "0123456789ab", "outcome": "ok", "reason": None, "captured": [],

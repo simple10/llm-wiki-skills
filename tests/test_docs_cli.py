@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, rooted, run, unit_manifest
+from conftest import ROOT, _cli, rooted, run, unit_manifest
 
 DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), ROOT / "README.md"])
 
@@ -59,14 +59,19 @@ def _spans(text: str):
 
 
 def _commands(text: str):
-    """`(group, second token or None, flags, dotted keys, span)` for every
-    span that is an ops command: prefixed `llm-wiki-ops`, or opening with a
-    group by bare name. The second token is handed over WHATEVER it is: under
-    a group that has verbs it has to be one, and `skills <wiki> list` — the
-    retired shape — is caught by exactly that."""
+    """`(machine, group, second token or None, flags, dotted keys, span)` for
+    every span that is a CLI command: prefixed `llm-wiki-ops`, prefixed
+    `llm-wiki-cli` (`machine` is then True — the other console script, whose
+    groups are its own), or opening with an ops group by bare name. The
+    second token is handed over WHATEVER it is: under a group that has verbs
+    it has to be one, and `skills <wiki> list` — the retired shape — is caught
+    by exactly that."""
     for span in _spans(text):
         tokens = span.split()
-        if "llm-wiki-ops" in tokens:
+        machine = "llm-wiki-cli" in tokens
+        if machine:
+            tokens = tokens[tokens.index("llm-wiki-cli") + 1 :]
+        elif "llm-wiki-ops" in tokens:
             tokens = tokens[tokens.index("llm-wiki-ops") + 1 :]
         elif not (len(tokens) > 1 and _WORD.match(tokens[0]) and _WORD.match(tokens[1])):
             continue  # prose, a path, a manifest key, a script's own argv
@@ -77,22 +82,23 @@ def _commands(text: str):
             continue
         rest = " ".join(tokens[1:])
         keys = [m.groups() for m in map(_DOTTED_KEY.match, tokens[1:]) if m]
-        yield tokens[0], tokens[1] if len(tokens) > 1 else None, _FLAG.findall(rest), keys, span
+        yield machine, tokens[0], tokens[1] if len(tokens) > 1 else None, _FLAG.findall(rest), keys, span
 
 
 @pytest.fixture(scope="session")
 def cli(ops, env, wiki):
-    """`help_of(*path)` — the CLI's own `--help` for a command path, or None
-    where it has no such command. Asked once per path, inside the wiki: the
-    CLI is root-bound and refuses an argv with no wiki behind it, `--help`
-    among them."""
+    """`help_of(*path, machine=False)` — the CLI's own `--help` for a command
+    path, or None where it has no such command; `machine=True` asks the
+    machine CLI (`llm-wiki-cli`) instead. Asked once per path, inside the
+    wiki: the ops CLI is root-bound and refuses an argv with no wiki behind
+    it, `--help` among them."""
     seen: dict = {}
 
-    def help_of(*path: str):
-        if path not in seen:
-            r = run(ops, rooted(env, wiki), *path, "--help")
-            seen[path] = r.stdout if r.returncode == 0 else None
-        return seen[path]
+    def help_of(*path: str, machine: bool = False):
+        if (machine, path) not in seen:
+            r = run(_cli(ops) if machine else ops, rooted(env, wiki), *path, "--help")
+            seen[machine, path] = r.stdout if r.returncode == 0 else None
+        return seen[machine, path]
 
     return help_of
 
@@ -115,22 +121,28 @@ def _subcommands(help_text: str) -> set:
 def _wrong(cli, job_record, text: str, unit: str | None) -> list:
     """Every stale command in one doc's text, each as a line saying why."""
     groups = _subcommands(cli())
+    machine_groups = _subcommands(cli(machine=True))
     inputs = set((unit_manifest(unit).get("watch") or {}).get("inputs") or {}) if unit else set()
     wrong = [f"`{hit}` — the CLI run by path; it is the bare `llm-wiki-ops`, on PATH" for hit in _BY_PATH.findall(text)]
-    for group, second, flags, keys, span in _commands(text):
+    for machine, group, second, flags, keys, span in _commands(text):
         if group in RETIRED:
             wrong.append(f"`{span}` — the `{group}` group is retired")
             continue
-        if group in UNPORTED or group not in groups:
+        if machine:
+            # The prefix is explicit, so a group the machine CLI lacks is stale, not prose.
+            if group not in machine_groups:
+                wrong.append(f"`{span}` — `llm-wiki-cli` has no `{group}` (it has: {', '.join(sorted(machine_groups))})")
+                continue
+        elif group in UNPORTED or group not in groups:
             continue  # not an ops command at all (`yt-dlp …`, `uv run …`), or checked below
-        verbs = _subcommands(cli(group))
+        verbs = _subcommands(cli(group, machine=machine))
         if verbs and second is not None and second not in verbs:
             wrong.append(f"`{span}` — `{group}` has no `{second}` (it has: {', '.join(sorted(verbs))})")
             continue
         if group == "run":
             continue  # everything after the path is the child's own argv
         path = (group, second) if verbs and second else (group,)
-        usage = cli(*path)
+        usage = cli(*path, machine=machine)
         if usage is None:
             wrong.append(f"`{span}` — `{' '.join(path)} --help` failed, so nothing about it could be checked")
             continue
@@ -169,6 +181,9 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
         ("`<ops dir>/bin/llm-wiki-ops skills ls`", "run by path"),  # no wiki carries a bin/
         ("```\ncd w && llm-wiki-ops skills find x\n```", "has no `find`"),
         ('```\nllm-wiki-ops skills search "ep #400" --bogus\n```', "takes no `--bogus`"),
+        ("`llm-wiki-cli machine sweep`", "has no `sweep`"),  # the other console script's verbs are checked too
+        ("`llm-wiki-cli skills ls`", "`llm-wiki-cli` has no `skills`"),  # a wiki verb under the machine prefix
+        ("`llm-wiki-cli init <dir> --preset x`", "takes no `--preset`"),
     ],
 )
 def test_the_check_itself_catches_each_stale_shape(cli, job_record, text, caught):
@@ -183,6 +198,7 @@ def test_the_check_passes_the_shapes_that_are_right(cli, job_record):
         "`llm-wiki-ops pipeline add gmail slug=s skill=channel-gmail options.mailbox=a@b.c harvest.max_age=3m`\n"
         "`llm-wiki-ops --json skills ls channel-gmail` then a `git pull`, and `yt-dlp --dump-json <url>`\n"
         '```\nllm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py search "ep #400" --type episode\n```\n'
+        "`llm-wiki-cli init <dir> key=<key>` once, then `llm-wiki-cli machine doctor`\n"
     )
     assert _wrong(cli, job_record, fine, "channel-gmail") == []
 

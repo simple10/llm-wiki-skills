@@ -27,6 +27,9 @@ SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 PROFILE = "/home/u/.config/llm-wiki/credentials/realm/profiles/community.example"
 PROFILE_PROSE = f"domain: community.example\npath: {PROFILE}\nexists: no\n"
+# NOT the CLI's own refusal shape — outside a wiki it prints the prose on
+# stderr, nothing on stdout even under `--json`, and exits 2. The scripts'
+# no-wiki arm is read off the exit status, so this stub only has to refuse.
 NO_WIKI = {"error": "no wiki here — run `llm-wiki-cli wiki <key> ...` to reach one, or `llm-wiki-cli init <dir>` to make one"}
 ABSENT = {"error": "no credential 'spotify' on this machine"}
 STORED = {"client_id": "cid", "client_secret": "sec"}
@@ -96,8 +99,8 @@ def test_a_minted_profile_is_the_path_the_cli_named(circle, front_door, tmp_path
     got = seen()
     assert got["argv"] == ["--json", "credential", "profile-dir", "community.example"], got
     assert Path(got["cwd"]) == tmp_path.resolve(), got
-    # neither the re-entry guard (refused 127) nor the variable the front
-    # door binds to AHEAD of the cwd (another wiki's credential realm)
+    # not the variable the front door binds to AHEAD of the cwd (another
+    # wiki's credential realm)
     assert got["inherited"] == [], got
 
 

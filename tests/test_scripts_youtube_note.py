@@ -111,7 +111,7 @@ def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
 def _stub_front_door(tmp_path, body=None):
     """A recording `llm-wiki-ops` first on PATH.
 
-    It appends every call — argv, cwd, the re-entry guard, whatever arrived on
+    It appends every call — argv, cwd, the binding it inherited, whatever arrived on
     stdin — to `seen.jsonl`, then answers `page create`/`page edit` by writing
     the page and printing what the real verb prints. `body` is python run
     before that, for a case that wants `run` answered its own way.
