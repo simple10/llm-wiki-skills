@@ -503,14 +503,6 @@ def test_safe_title_is_a_title_the_hosts_filename_rule_holds():
     assert leaves.safe_title("Pricing the offer") == "Pricing the offer"  # a legal title is left alone
 
 
-def _with_h2(leaf: Path, title: str) -> None:
-    import html as html_mod
-
-    page = (leaf / "page.html").read_text(encoding="utf-8")
-    assert page.count("<h2>Pricing the offer</h2>") == 1
-    (leaf / "page.html").write_text(page.replace("<h2>Pricing the offer</h2>", f"<h2>{html_mod.escape(title)}</h2>"), encoding="utf-8")
-
-
 # ------------------------------------------------------------ Rule 2: venue text forges nothing
 
 
