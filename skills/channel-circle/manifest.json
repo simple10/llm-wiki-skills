@@ -24,13 +24,14 @@
   "usage": "/channel-circle ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "circle",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "watch": {
     "defaults": {
       "every": "once",
       "harvest": {
         "access": "licensed",
-        "scope": "section"
+        "scope": "section",
+        "assets": "download"
       }
     },
     "dest": "sources/courses/{slug}",

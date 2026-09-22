@@ -10,7 +10,11 @@
    <share-url> slug=<content-name>
    description="<what this is>" skill=channel-frameio
    dest=sources/scrapes/<content-name>` — the skill's manifest supplies
-   `every=once` and `harvest.scope=domain`. **Scope MUST stay `domain`**: a
+   `every=once`, `harvest.scope=domain` and `harvest.assets=download`.
+   `reference` keeps no video and yields no transcript (the venue's only
+   reference is a signed URL, dead within hours); `download` is many GB per
+   share. Pass `harvest.assets=reference` only to take a share's documents
+   and none of its media. **Scope MUST stay `domain`**: a
    share's leaves sit under the share host, not under the watched URL, so
    `page` and (for a FOLDER inside the share) `section` both exclude them.
    Name `dest` for the content now: moving it later means re-running this
