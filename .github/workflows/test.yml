@@ -49,7 +49,7 @@ jobs:
       # the secret the install tests SKIP (and say so); the script tests run
       # regardless, since a unit script is stdlib-only.
       #
-      # `LLM_WIKI_OPS` is the command the harness runs (conftest); a `uv run
+      # `LLM_WIKI_OPS` is the command the harness runs (`tests/harness.py`); a `uv run
       # --project` against the checkout, the same shape a developer's proof
       # run uses. `LLM_WIKI_OPS_PLUGIN` is the plugin's root: the
       # youtube-note cases look under it for `format_transcript.py`, at the
@@ -96,4 +96,4 @@ jobs:
       # `-rs`: every skip prints its reason, so a harness that skipped its
       # install tier is visible in the log, never a quiet green.
       - name: Run the harness
-        run: uv run --with pytest --python 3.12 pytest -q -rs tests
+        run: uv run --with pytest --python 3.12 pytest -q -rs

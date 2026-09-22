@@ -4,7 +4,7 @@ with a `frontmatter` object the extractor ignores today — into a staged page."
 
 import json
 
-from conftest import declared_job, extracted, ticket_in
+from harness import declared_job, extracted, ticket_in
 
 
 def test_a_unit_rendered_page_md_becomes_a_staged_page(ops, env, wiki):

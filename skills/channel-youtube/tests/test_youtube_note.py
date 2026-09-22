@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (Path(__file__).resolve().parents[1] / "skills" / "channel-youtube" / "scripts" / "youtube_note.py")
+SCRIPT = (Path(__file__).resolve().parents[1] / "scripts" / "youtube_note.py")
 # The address the unit itself runs, read off the unit: the formatter's place
 # in the plugin is the plugin's to move, and a second spelling here is how
 # the move went unseen.

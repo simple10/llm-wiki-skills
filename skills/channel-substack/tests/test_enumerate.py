@@ -23,9 +23,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (Path(__file__).resolve().parents[1]
-          / "skills/channel-substack/scripts"
-          / "enumerate_archive.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "enumerate_archive.py"
 
 
 def _module():

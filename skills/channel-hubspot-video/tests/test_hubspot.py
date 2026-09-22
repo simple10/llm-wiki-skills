@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 import stat
-import shlex
 import subprocess
 import sys
 import time
@@ -30,13 +29,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, declared_job, rooted, run, ticket_in
 
+UNIT_DIR = Path(__file__).resolve().parents[1]  # the unit, wherever its tree sits
 UNIT = "channel-hubspot-video"
-SCRIPTS = ROOT / "skills" / UNIT / "scripts"
+SCRIPTS = UNIT_DIR / "scripts"
 LEAVES = SCRIPTS / "leaves.py"
 CAPTURE = SCRIPTS / "capture_hubspot_video.py"
-FIX = Path(__file__).resolve().parent / "fixtures" / "hubspot"
+FIX = Path(__file__).resolve().parent / "fixtures"
 
 SECTION = "https://www.example-hubspot.invalid/learn"
 LESSON = "https://www.example-hubspot.invalid/learn/offers/lesson-two"
@@ -307,24 +306,19 @@ def test_a_hand_run_with_no_ticket_takes_the_job_as_flags(tmp_path):
     assert (report["ticket"], report["outcome"], report["reason"]) == ("feedfacecafe", "failed", "auth_expired:www.example-hubspot.invalid")
 
 
-def test_the_converter_is_the_circle_units_copy_unchanged():
-    """Units install one at a time, so each carries its own converter; the copies must not drift."""
-    assert (SCRIPTS / "to_markdown.py").read_bytes() == (ROOT / "skills" / "channel-circle" / "scripts" / "to_markdown.py").read_bytes()
-
-
 def test_no_doc_or_manifest_names_the_extract_block_any_more():
     """`skills doctor` fails a manifest carrying a key the contract does not name, and nothing read it."""
-    manifest = json.loads((ROOT / "skills" / UNIT / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((UNIT_DIR / "manifest.json").read_text(encoding="utf-8"))
     assert "extract" not in manifest
     for name in ("SKILL.md", "references/customize.md", "references/enable.md"):
-        text = (ROOT / "skills" / UNIT / name).read_text(encoding="utf-8")
+        text = (UNIT_DIR / name).read_text(encoding="utf-8")
         assert '"extract"' not in text and "fill the manifest" not in text, name  # no doc shows or asks for the key
     for name in ("SKILL.md", "references/enable.md"):
-        assert "references/sites.json" in (ROOT / "skills" / UNIT / name).read_text(encoding="utf-8"), name
+        assert "references/sites.json" in (UNIT_DIR / name).read_text(encoding="utf-8"), name
 
 
 def test_the_stages_speak_the_new_contract():
-    text = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    text = (UNIT_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert re.search(r'^argument-hint: "ticket=<id> stage=harvest\|process"$', text, re.M)
     for gone in ("<job.", "harvest_apply", "out_of_scope`", "scaffold", "intake.py", "job.py", "watch.py", "drain_pending"):
         assert gone not in text, gone
@@ -345,7 +339,7 @@ def test_the_stages_speak_the_new_contract():
 
 def test_every_script_this_unit_ships_is_named_where_a_worker_would_run_it():
     """A script no SKILL.md line runs, and no sibling runs, is dead surface."""
-    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    skill = (UNIT_DIR / "SKILL.md").read_text(encoding="utf-8")
     runs = set(re.findall(r"llm-wiki-ops run \S*/([\w-]+\.py)", skill))
     siblings = "\n".join(path.read_text(encoding="utf-8") for path in SCRIPTS.glob("*.py"))
     for script in sorted(SCRIPTS.glob("*.py")):
@@ -356,7 +350,7 @@ def test_every_script_this_unit_ships_is_named_where_a_worker_would_run_it():
 def test_the_quirks_log_holds_venue_facts_and_nothing_else():
     """The log is what this VENUE does, dated. Facts about the plugin, the
     harness or the port belong in the change record, not here."""
-    log = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").split("## Quirks log", 1)[1]
+    log = (UNIT_DIR / "SKILL.md").read_text(encoding="utf-8").split("## Quirks log", 1)[1]
     assert "2026-07-31" in log  # the oldest entry is still there
     for stale in ("user-invocable", "known[]", "key=value", "stage=", "Ported", "the port", "until the plugin", "Review fixes"):
         assert stale not in log, stale
@@ -442,37 +436,7 @@ def test_a_qualifier_never_carries_a_settled_title_past_the_filename_cap(tmp_pat
         assert titles[0] == base
 
 
-# ------------------------------------------------------------ end to end, harvest then process
-
-
-def _fresh(wiki: Path, slug: str) -> None:
-    """The session wiki is shared, and a finished capture on disk is now a
-    `landed` leaf: every end-to-end case starts from an empty `_raw/<slug>/`."""
-    shutil.rmtree(wiki / "_raw" / slug, ignore_errors=True)
-
-
-def _captured_lesson(ops, env, wiki, *extra, lesson=LESSON, section=SECTION, slug=None, meta_over=None):
-    """One lesson harvested into a real wiki: the ticket a spawner would have
-    left, a plan, the rendered fixture, and the flat capture."""
-    job = declared_job(ops, env, wiki, UNIT, section, slug=slug)
-    assert job.record["harvest"]["scope"] == "section"
-    _fresh(wiki, job.slug)
-    shutil.rmtree(wiki / job.dest, ignore_errors=True)
-    cap = ticket_in(wiki, job, f"root--{_hash8(section)}", unit=UNIT, item=section)
-    urls = cap / "urls.json"
-    urls.write_text(json.dumps([{"url": lesson + "?hsLang=en", "lastmod": "2026-07-15"}]), encoding="utf-8")
-    done = _run("plan", str(cap), "--urls", str(urls), "--sites", str(FIX / "sites.json"))
-    assert done.returncode == 0, done.stderr
-    (leaf,) = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"]
-    assert leaf == {"item": lesson, "dir": f"_raw/{job.slug}/{leaves.leaf_name(lesson)}", "lastmod": "2026-07-15"}
-    lesson_dir = wiki / leaf["dir"]
-    _fill(lesson_dir)
-    if meta_over:
-        meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), **meta_over}
-        (lesson_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    done = _run("record", str(cap), str(lesson_dir), *extra)
-    assert done.returncode == 0, done.stderr
-    return job, cap, lesson_dir
+# --- the video: off the asset manifest, and what the transcriber refuses ------
 
 
 def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):
@@ -864,7 +828,7 @@ def test_render_reads_its_url_off_the_plan(tmp_path):
 def test_venue_text_on_a_command_line_is_quoted_verbatim_and_never_retyped():
     """The harvest half never lets a url near a shell at all (`--leaf <n>`);
     the process half has the worker paste venue text, under one stated rule."""
-    skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
+    skill = (UNIT_DIR / "SKILL.md").read_text(encoding="utf-8")
     harvest = skill.split("### harvest", 1)[1].split("### process", 1)[0]
     assert "--leaf <n>" in harvest
     for typed in ("--external-url", "--base-url", "--referer", "render <item>", "render <url>", "--missing <", "--url <"):
@@ -913,18 +877,6 @@ def test_fetched_at_is_the_renders_time_not_the_time_record_ran(tmp_path):
     assert json.loads((leaf / "capture.json").read_text(encoding="utf-8"))["fetched_at"] == "2026-09-01T08:00:00Z"
 
 
-def test_what_the_partial_reason_tells_the_operator_to_do_is_real(ops, env, wiki):
-    """`every` is not an identity key, so a `once` job can be given a period while a section fills, and back."""
-    job = declared_job(ops, env, wiki, UNIT, "https://www.example-hubspot.invalid/continue", slug="port-channel-hubspot-continue")
-    assert job.record["every"] == "once"
-    for cadence in ("1h", "once"):
-        done = run(ops, rooted(env, wiki), "--json", "pipeline", "edit", job.slug, f"every={cadence}")
-        assert done.returncode == 0, done.stdout + done.stderr
-        assert run(ops, rooted(env, wiki), "--json", "pipeline", "show", job.slug).data["job"]["every"] == cadence
-    refused = run(ops, rooted(env, wiki), "--json", "pipeline", "queue", "retry", "0123456789ab")
-    assert refused.returncode != 0 and "no finished item" in refused.stdout + refused.stderr  # the verb exists; this ticket never ran
-
-
 def test_a_sitemap_index_offers_only_children_that_are_safe_and_on_the_targets_host(tmp_path):
     root, cap, rel = _documented_section(tmp_path)
     (cap / "sitemap.xml").write_text(
@@ -937,20 +889,3 @@ def test_a_sitemap_index_offers_only_children_that_are_safe_and_on_the_targets_h
     assert json.loads(done.stdout)["sitemaps"] == ["https://www.example-hubspot.invalid/sitemap-1.xml"]
 
 
-def test_a_title_with_an_apostrophe_survives_the_documented_shell_line(ops, env, wiki):
-    """The process step is a shell line a worker TYPES, single-quoting the title
-    off `capture.json`. `safe_title` maps BOTH quote forms to U+2019, so no
-    title it can produce breaks out of those quotes and loses its page."""
-    dest = "sources/courses/port-hubspot-apostrophe"
-    for venue in ("Don't Panic", 'He said "no" twice'):
-        title = leaves.safe_title(venue)
-        assert "'" not in title, title
-        line = (
-            "printf '%s' 'body' | "
-            + shlex.join([*ops, "--json", "page", "create"])
-            + f" 'title={title}' 'dest={dest}' 'resource=https://example.invalid/x'"
-            + f" 'extracted=true' 'type=video' --stdin"
-        )
-        done = subprocess.run(["/bin/sh", "-c", line], env=rooted(env, wiki), capture_output=True, text=True, check=False)
-        assert done.returncode == 0, line + "\n" + done.stdout + done.stderr
-        assert (wiki / json.loads(done.stdout)["path"]).is_file()

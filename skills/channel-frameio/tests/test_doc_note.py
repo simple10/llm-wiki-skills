@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "channel-frameio" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 SCRIPT = SCRIPTS / "frameio_doc_note.py"
 
 URL = "https://next.frame.io/share/11111111-1111-1111-1111-111111111111/view/def"

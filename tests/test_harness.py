@@ -3,7 +3,7 @@ rather than a red test."""
 
 from __future__ import annotations
 
-from conftest import NEUTRAL_CWD, ROOT, _cli
+from harness import NEUTRAL_CWD, ROOT, _cli
 
 
 def test_the_machine_cli_is_found_beside_a_path_spelled_ops():

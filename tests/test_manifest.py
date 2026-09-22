@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from conftest import MANIFEST, ROOT, SKILLS, unit_manifest
+from harness import MANIFEST, ROOT, SKILLS, unit_manifest
 
 _FLOOR = re.compile(r"^>=\d+\.\d+(\.\d+)?$")
 

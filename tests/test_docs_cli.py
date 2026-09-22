@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, _cli, rooted, run, unit_manifest
+from harness import ROOT, _cli, rooted, run, unit_manifest
 
 DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), ROOT / "README.md"])
 

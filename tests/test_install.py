@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from conftest import ROOT, SKILLS, SOURCE, enabled, rooted, run, unit_manifest
+from harness import ROOT, SKILLS, SOURCE, enabled, rooted, run, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
 
