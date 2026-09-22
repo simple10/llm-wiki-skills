@@ -336,13 +336,17 @@ def test_the_stages_speak_the_new_contract():
     assert "page.md" not in harvest and "page create" not in harvest
     # One sentence settles the step, and the reasoning stays in its one home.
     opening = text.split("## Stages", 1)[1].split("### harvest", 1)[0]
-    assert " ".join(opening.split()) == "`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections below are those steps."
+    assert " ".join(opening.split()) == (
+        "`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections below are those steps. "
+        "Either step opens with the policy read — the stage's overlay, then this unit's own, folded onto the step: "
+        "```sh llm-wiki-ops policy get <stage> channel-hubspot-video ```"
+    )
 
 
 def test_the_skill_stays_under_its_budget():
     """A skill is a command sequence, and this one is a platform template an
     installing agent reads end to end."""
-    assert len((ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").splitlines()) <= 204
+    assert len((ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").splitlines()) <= 210
 
 
 def test_every_script_this_unit_ships_is_named_where_a_worker_would_run_it():

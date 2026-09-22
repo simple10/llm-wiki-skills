@@ -17,7 +17,7 @@
       "stream.mux.com",
       "*.mux.com"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -26,7 +26,7 @@
   "usage": "/channel-hubspot-video ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "hubspot-cms",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "watch": {
     "defaults": {
       "every": "once",

@@ -15,7 +15,7 @@
       "*.circle.so",
       "circle.so"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -24,7 +24,7 @@
   "usage": "/channel-circle ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "circle",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "watch": {
     "defaults": {
       "every": "once",

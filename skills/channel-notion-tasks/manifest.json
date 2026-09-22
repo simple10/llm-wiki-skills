@@ -10,7 +10,7 @@
   "name": "channel-notion-tasks",
   "requires": {
     "credential": false,
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -19,7 +19,7 @@
   "usage": "/channel-notion-tasks ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "notion-tasks",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "watch": {
     "defaults": {
       "every": "1d"

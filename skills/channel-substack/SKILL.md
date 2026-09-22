@@ -23,6 +23,12 @@ of here; those go to the human via the run report.
 
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
 below are those steps.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-substack
+```
 
 ### harvest
 

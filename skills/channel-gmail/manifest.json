@@ -13,7 +13,7 @@
     "network": [
       "mail.google.com"
     ],
-    "ops": ">=1.88"
+    "ops": ">=1.96.0"
   },
   "stages": [
     "harvest",
@@ -22,7 +22,7 @@
   "usage": "/channel-gmail ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "gmail",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "watch": {
     "defaults": {
       "every": "1d"

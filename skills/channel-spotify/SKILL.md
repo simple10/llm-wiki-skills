@@ -32,6 +32,12 @@ and audio exactly when the creator distributes it openly.
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
 below are those steps. One ticket = one entity URL = one capture directory =
 one report; the loop both follow is `llm-wiki-ops reference agent-loop`.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-spotify
+```
 
 You are started in the capture directory, beside `ticket.json`, and both steps
 take `--capture-dir <capture_dir>` — the ticket's value, **verbatim and

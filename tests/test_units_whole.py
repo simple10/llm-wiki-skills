@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from conftest import ROOT, SKILLS, unit_manifest
+from conftest import MANIFEST, ROOT, SKILLS, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel"]
 SHIPPED = sorted(p for p in (ROOT / "skills").rglob("*") if p.is_file() and p.suffix in {".md", ".py", ".json"} and "__pycache__" not in p.parts)
@@ -66,6 +66,22 @@ def test_a_channel_unit_declares_both_stages_it_documents_and_is_invoked_by_tick
     assert "allowed-tools" not in front and "disable-model-invocation" not in front
     assert re.search(r"^## Stages", skill, re.M) and "report.json" in skill and "ticket.json" in skill
     assert re.search(r"^### harvest\b", skill, re.M) and re.search(r"^### process\b", skill, re.M), skill[:400]
+
+
+@pytest.mark.parametrize("name", CHANNELS)
+def test_either_step_of_a_unit_opens_with_the_policy_read(name):
+    """A wiki steers a unit through its overlays, never by editing the unit:
+    `reference skill-authoring` has either step open with `policy get <stage>
+    <unit>` — the stage's overlay, then the unit's own, in one call. That
+    two-name form is ops 1.95's, and the package's `min_ops_version` is past
+    it: a unit's own floor must not fall under the package's, or a unit
+    spelling the read would claim to run on a CLI that refuses it."""
+    skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+    stages = skill.split("\n## Stages", 1)[1].split("\n### harvest", 1)[0]
+    assert f"\n```sh\nllm-wiki-ops policy get <stage> {name}\n```\n" in stages, f"{name}: the Stages intro does not open with the policy read"
+    version = lambda text: tuple(int(b) for b in text.removeprefix(">=").split("."))  # noqa: E731
+    floor = unit_manifest(name)["requires"]["ops"]
+    assert version(floor) >= version(MANIFEST["min_ops_version"]), f"{name}: requires.ops {floor} is under the package's min_ops_version"
 
 
 @pytest.mark.parametrize("name", CHANNELS)

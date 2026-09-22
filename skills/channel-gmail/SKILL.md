@@ -29,6 +29,12 @@ and write your own files as `./<name>`. Never compose a path. Where
 
 `stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two
 sections below are those steps.
+Either step opens with the policy read — the stage's overlay, then this unit's
+own, folded onto the step:
+
+```sh
+llm-wiki-ops policy get <stage> channel-gmail
+```
 
 ### harvest
 
