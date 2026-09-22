@@ -12,11 +12,13 @@ this checkout's HEAD — commit before you run — and nothing fetches.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,8 +47,20 @@ def _cli(ops: list) -> list:
     """The machine CLI, out of the same command line. `init` is the one verb
     outside both scopes — it acts on a directory that is not a wiki yet, so it
     has no root to be dispatched with — and both scripts ship in one
-    distribution, so only the last word differs."""
-    return [*ops[:-1], "llm-wiki-cli"]
+    distribution, so only the last word differs. A path-spelled last word
+    keeps its directory: the dispatch sets `LLM_WIKI_OPS` to the console
+    script by ABSOLUTE path (the plugins' `env` contract), and `which` answers
+    one too, and that directory need not be on PATH."""
+    last = ops[-1]
+    return [*ops[:-1], str(Path(last).with_name("llm-wiki-cli")) if os.sep in last else "llm-wiki-cli"]
+
+
+# `run()` starts every call here, never in pytest's cwd: the CLI is root-bound
+# and the cwd's owner must agree with `LLM_WIKI_ROOT`'s, so a checkout that
+# sits INSIDE a wiki would have every `rooted()` call refused at the first
+# fixture, as an opaque error. A directory nobody owns binds nothing.
+NEUTRAL_CWD = Path(tempfile.mkdtemp(prefix="llm-wiki-harness-cwd-"))
+atexit.register(shutil.rmtree, NEUTRAL_CWD, ignore_errors=True)
 
 
 @dataclass
@@ -76,7 +90,9 @@ def env(tmp_path_factory, ops) -> dict:
     mp.symlink_to(ROOT, target_is_directory=True)
     e = dict(os.environ)
     # A suite started from inside a wiki session must not act on THAT wiki:
-    # these are what bind one ambiently, ahead of the `cwd=` a `run` case uses.
+    # `LLM_WIKI_ROOT` binds one ahead of the `cwd=` a `run` case uses, and
+    # `CLAUDE_PROJECT_DIR` — the harness's project dir, never a wiki root, and
+    # read by no CLI — goes too, so nothing downstream mistakes it for one.
     for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR"):
         e.pop(ambient, None)
     e.update(
@@ -92,7 +108,7 @@ def env(tmp_path_factory, ops) -> dict:
 
 
 def run(ops: list, env: dict, *args, cwd=None) -> Result:
-    cp = subprocess.run([*ops, *args], env=env, cwd=cwd, capture_output=True, text=True, check=False)
+    cp = subprocess.run([*ops, *args], env=env, cwd=cwd or NEUTRAL_CWD, capture_output=True, text=True, check=False)
     return Result(cp.returncode, cp.stdout, cp.stderr)
 
 

@@ -111,7 +111,7 @@ def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
 def _stub_front_door(tmp_path, body=None):
     """A recording `llm-wiki-ops` first on PATH.
 
-    It appends every call — argv, cwd, the re-entry guard, whatever arrived on
+    It appends every call — argv, cwd, the binding it inherited, whatever arrived on
     stdin — to `seen.jsonl`, then answers `page create`/`page edit` by writing
     the page and printing what the real verb prints. `body` is python run
     before that, for a case that wants `run` answered its own way.
@@ -325,7 +325,7 @@ def test_the_process_arm_leaves_harvests_capture_record_alone(tmp_path):
 def test_the_formatter_is_reached_by_the_bare_front_door_from_the_wiki_root(tmp_path):
     """No `--format-transcript`: the bare name on PATH, `run`, the plugin's
     address, with the wiki root as cwd — that cwd is all that binds the front
-    door to this wiki, now that no path into the wiki names a shim."""
+    door to this wiki."""
     cap = _capture(tmp_path)
     path, seen = _stub_front_door(
         tmp_path, "\nif argv[:1] == ['run']:\n    print('#### [00:00]\\n\\nstubbed transcript')\n    sys.exit(0)\n")

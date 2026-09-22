@@ -62,7 +62,7 @@ REPORT_NAME = "report.json"
 META_NAME = "meta.json"
 
 # The front door, by the bare name every SKILL.md already runs this unit's
-# scripts under — never a path into the wiki, which stops carrying a shim.
+# scripts under — never a path.
 OPS = "llm-wiki-ops"
 
 

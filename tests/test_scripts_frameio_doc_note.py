@@ -66,7 +66,7 @@ def _capture(root: Path, ext="pdf", *, title="Deck One - Big Share", capture=Non
 
 def _front_door(root: Path, monkeypatch, body="print(json.dumps({'ok': True}))"):
     """A recording `llm-wiki-ops` first on PATH. Every call appends its argv,
-    cwd, stdin and the re-entry guard to `seen.jsonl`, then runs `body`."""
+    cwd, stdin and the binding it inherited to `seen.jsonl`, then runs `body`."""
     bin_dir = root.parent / "stub-bin"
     bin_dir.mkdir(exist_ok=True)
     seen = root.parent / "seen.jsonl"
@@ -76,7 +76,7 @@ def _front_door(root: Path, monkeypatch, body="print(json.dumps({'ok': True}))")
         "import json, os, sys\n"
         f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
         "    'stdin': sys.stdin.read(),\n"
-        "    'guard': sorted(k for k in ('CLAUDE_PROJECT_DIR',) if k in os.environ)}) + '\\n')\n"
+        "    'inherited': sorted(k for k in ('CLAUDE_PROJECT_DIR',) if k in os.environ)}) + '\\n')\n"
         f"{body}\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
@@ -120,7 +120,7 @@ def test_the_page_is_written_by_the_front_door_from_the_wiki_root(tmp_path, monk
     assert f"dest={DEST}" in call["argv"] and f"resource={URL}" in call["argv"]
     assert "extracted=true" in call["argv"], "the string, not a boolean: `pages.py` reads `true`"
     assert call["argv"][-1] == "--stdin" and call["stdin"].startswith("# Deck One - Big Share\n")
-    assert Path(call["cwd"]) == root.resolve() and call["guard"] == []
+    assert Path(call["cwd"]) == root.resolve() and call["inherited"] == []
     assert json.loads(capsys.readouterr().out)["written"] == [PAGE]
 
 

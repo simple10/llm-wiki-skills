@@ -27,6 +27,9 @@ SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 PROFILE = "/home/u/.config/llm-wiki/credentials/realm/profiles/community.example"
 PROFILE_PROSE = f"domain: community.example\npath: {PROFILE}\nexists: no\n"
+# The CLI's own no-wiki `error` (1.97.0 prints it on stdout under `--json`,
+# beside a `_cmd_` block, and exits 2). The scripts read the no-wiki arm off a
+# non-zero exit, so what this stub has to get right is refusing.
 NO_WIKI = {"error": "no wiki here — run `llm-wiki-cli wiki <key> ...` to reach one, or `llm-wiki-cli init <dir>` to make one"}
 ABSENT = {"error": "no credential 'spotify' on this machine"}
 STORED = {"client_id": "cid", "client_secret": "sec"}
@@ -96,8 +99,9 @@ def test_a_minted_profile_is_the_path_the_cli_named(circle, front_door, tmp_path
     got = seen()
     assert got["argv"] == ["--json", "credential", "profile-dir", "community.example"], got
     assert Path(got["cwd"]) == tmp_path.resolve(), got
-    # neither the re-entry guard (refused 127) nor the variable the front
-    # door binds to AHEAD of the cwd (another wiki's credential realm)
+    # CLAUDE_PROJECT_DIR is the harness's project dir, never a wiki root; the
+    # CLI does not read it, and the unit drops it so the nested call carries
+    # nothing but the cwd
     assert got["inherited"] == [], got
 
 
