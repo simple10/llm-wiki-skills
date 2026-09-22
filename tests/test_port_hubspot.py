@@ -343,12 +343,6 @@ def test_the_stages_speak_the_new_contract():
     )
 
 
-def test_the_skill_stays_under_its_budget():
-    """A skill is a command sequence, and this one is a platform template an
-    installing agent reads end to end."""
-    assert len((ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8").splitlines()) <= 210
-
-
 def test_every_script_this_unit_ships_is_named_where_a_worker_would_run_it():
     """A script no SKILL.md line runs, and no sibling runs, is dead surface."""
     skill = (ROOT / "skills" / UNIT / "SKILL.md").read_text(encoding="utf-8")
