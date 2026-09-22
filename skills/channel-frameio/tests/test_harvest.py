@@ -17,8 +17,7 @@ from pathlib import Path
 
 import pytest
 
-UNIT = (Path(__file__).resolve().parents[1]
-        / "skills/channel-frameio")
+UNIT = Path(__file__).resolve().parents[1]  # the unit, wherever its tree sits
 SCRIPTS = UNIT / "scripts"
 
 SHARE = "https://next.frame.io/share/11111111-1111-1111-1111-111111111111"

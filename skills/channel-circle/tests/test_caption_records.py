@@ -6,7 +6,7 @@ import pytest
 # Venue capture scripts live in installed skill units at ops/skills/. They
 # are WIKI content (never shipped in the plugin repo) — skip when no wiki
 # provides one.
-SCRIPT = (Path(__file__).resolve().parents[1] / "skills" / "channel-circle" / "scripts"
+SCRIPT = (Path(__file__).resolve().parents[1] / "scripts"
           / "capture_lesson.py")
 if not SCRIPT.exists():
     pytest.skip("circle capture_lesson.py is wiki content (channel-circle "

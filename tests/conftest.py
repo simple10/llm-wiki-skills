@@ -13,6 +13,7 @@ this checkout's HEAD — commit before you run — and nothing fetches.
 from __future__ import annotations
 
 import atexit
+import importlib.util
 import json
 import os
 import shlex
@@ -191,3 +192,16 @@ def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
     assert r.data["pages"] or r.data["ledgers"], r.data
     return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]
 
+
+
+def unit_tests(unit: str, module: str) -> dict:
+    """A shipped test module's namespace — helpers, constants, imports —
+    without its tests. A unit's tests ship with it (`skills/<unit>/tests/`)
+    and know nothing of this harness; the harness tier for that unit lives
+    here and reads exactly as it did beside them, by taking their names.
+    `test_*` stays out, or pytest would collect those cases a second time."""
+    path = ROOT / "skills" / unit / "tests" / f"{module}.py"
+    spec = importlib.util.spec_from_file_location(f"_unit_tests_{unit}_{module}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return {k: v for k, v in vars(mod).items() if not k.startswith("__") and not k.startswith("test_")}

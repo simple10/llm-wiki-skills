@@ -12,7 +12,9 @@ import pytest
 from conftest import MANIFEST, ROOT, SKILLS, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel"]
-SHIPPED = sorted(p for p in (ROOT / "skills").rglob("*") if p.is_file() and p.suffix in {".md", ".py", ".json"} and "__pycache__" not in p.parts)
+# A unit's own tests ship too, but a test asserting a gone name is ABSENT is
+# not a unit telling a worker to look for it: the scan below skips them.
+SHIPPED = sorted(p for p in (ROOT / "skills").rglob("*") if p.is_file() and p.suffix in {".md", ".py", ".json"} and not {"__pycache__", "tests"} & set(p.parts))
 
 # Things the pre-cut-over host had and the rebuilt one does not. A unit that
 # names one is telling a worker to look for something that is not there. Each
@@ -142,6 +144,30 @@ def test_a_unit_is_reachable_by_the_invocation_its_spawner_types(name):
     front = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1]
     for refused in ("user-invocable:", "disable-model-invocation:", "allowed-tools:"):
         assert refused not in front, f"{name}: {refused} makes the unit unreachable by `/{name} ticket=<id>`"
+
+
+@pytest.mark.parametrize("name", SKILLS)
+def test_a_units_tests_ship_with_it_and_stand_alone(name):
+    """Two trees of tests. `skills/<unit>/tests/` is the unit's own — its
+    scripts against its fixtures — and it is installed into a wiki with the
+    unit, where an agent runs it from the enabled copy. So it may reach
+    nothing of this repo: not the harness (`conftest`), not the checkout
+    (`ROOT`, a `skills/channel-…` path, `tests/fixtures`), and it finds the
+    unit by its own place in the tree — `Path(__file__)` climbs one level,
+    never more. The harness tier for the unit is `tests/test_<venue>_harness.py`."""
+    import ast
+
+    shipped = sorted((ROOT / "skills" / name / "tests").glob("test_*.py"))
+    assert shipped, f"{name} ships no tests"
+    for path in shipped:
+        text = path.read_text(encoding="utf-8")
+        where = path.relative_to(ROOT)
+        tree = ast.parse(text)
+        assert not any(isinstance(n, ast.ImportFrom) and n.module == "conftest" for n in ast.walk(tree)), f"{where} imports the harness"
+        assert not any(isinstance(n, ast.Name) and n.id == "ROOT" for n in ast.walk(tree)), f"{where} names the checkout"
+        strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        assert not [v for v in strings if "skills/channel-" in v or "tests/fixtures" in v], f"{where} names the checkout's tree"
+        assert not re.search(r"__file__\)(?:\.resolve\(\))?\.parents\[[2-9]\]", text), f"{where} climbs above the unit"
 
 
 @pytest.mark.parametrize("name", CHANNELS)

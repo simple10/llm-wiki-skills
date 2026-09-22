@@ -96,4 +96,4 @@ jobs:
       # `-rs`: every skip prints its reason, so a harness that skipped its
       # install tier is visible in the log, never a quiet green.
       - name: Run the harness
-        run: uv run --with pytest --python 3.12 pytest -q -rs tests
+        run: uv run --with pytest --python 3.12 pytest -q -rs
