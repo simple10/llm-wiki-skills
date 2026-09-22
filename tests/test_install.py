@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from conftest import ROOT, SKILLS, SOURCE, TACTICS, enabled, rooted, run, unit_manifest
+from conftest import ROOT, SKILLS, SOURCE, enabled, rooted, run, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
 
@@ -110,14 +110,3 @@ def test_the_plugin_script_a_unit_runs_is_one_run_serves(ops, env, wiki, tmp_pat
     assert r.returncode != 2 and "no such script" not in r.stderr, f"{unit} runs {rel}: {r.stderr}"
 
 
-@pytest.mark.parametrize("name", TACTICS)
-def test_tactic_installs_or_is_already_seeded_and_lists_undiverged(ops, env, wiki, tactics_group, name):
-    # UNVERIFIED BODY. Spelled the way `skills` is today; nobody has run this
-    # against a ported group. The day the `tactics_group` skip lifts, a failure
-    # here most likely means this guess is wrong, not that the package is.
-    r = run(ops, rooted(env, wiki), "--json", "tactics", "install", name) if name != "_TEMPLATE" else None
-    if r is not None:
-        assert r.returncode == 0, r.stderr
-    rows = run(ops, rooted(env, wiki), "--json", "tactics", "ls").data["tactics"]
-    row = next(t for t in rows if t["name"] == name)
-    assert row["from"].startswith(f"{SOURCE}@") and not row["customized"], row

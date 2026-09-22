@@ -1103,7 +1103,7 @@ def test_an_unreadable_store_under_a_ticket_is_keyless_partial_and_says_auth(tmp
     report = read(root / rel, "report.json")
     assert report["outcome"] == "partial" and report["captured"]
     assert report["missing"] == [{"host": "api.spotify.com", "url": "https://api.spotify.com/v1/playlists/4rprjH5cIR72vskqa6RhpC", "why": "auth"}]
-    assert "could not be read" in report["reason"] and "INSTALL.md" in report["reason"]
+    assert "could not be read" in report["reason"] and "references/enable.md" in report["reason"]
     meta = read(root / rel, "meta.json")
     assert meta["auth"]["why"] == "auth" and meta["keyless"] is True  # the page the process step builds says both
 
@@ -1192,7 +1192,7 @@ def test_an_empty_secret_is_refused_not_stored(spotify, monkeypatch, tmp_path):
 
 
 def test_the_docs_never_tell_anyone_to_put_the_secret_on_a_command_line():
-    for doc in ("SKILL.md", "INSTALL.md"):
+    for doc in ("SKILL.md", "references/enable.md"):
         for line in (UNIT / doc).read_text(encoding="utf-8").splitlines():
             if "--client-secret" in line:
                 assert "deprecated" in line.lower(), f"{doc}: {line}"
@@ -1208,7 +1208,7 @@ def allowed(host: str, patterns: list) -> bool:
 def test_every_host_a_default_capture_fetches_is_declared(spotify):
     """Cover art is an asset of EVERY capture: undeclared, each confined run ends
     `partial` with a `denied` entry. The per-show feed and enclosure hosts are the
-    deliberate gap (INSTALL.md) and stay undeclared."""
+    deliberate gap (references/enable.md) and stay undeclared."""
     network = json.loads((UNIT / "manifest.json").read_text(encoding="utf-8"))["requires"]["network"]
     fetched = [spotify.API, spotify.TOKEN_URL, spotify.ITUNES_SEARCH, "https://open.spotify.com/embed/x/y"]
     fetched += entity("playlist")["images"] + entity("episode")["images"]

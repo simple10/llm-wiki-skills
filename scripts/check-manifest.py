@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The package's own check: every artifact the manifest names exists, and
-every skill or tactic on disk is named. Exit 1 with the list otherwise."""
+every skill on disk is named. Exit 1 with the list otherwise."""
 import json, sys
 from pathlib import Path
 
@@ -16,7 +16,6 @@ for (kind, name), path in named.items():
     if kind == "skill" and not (ROOT / path / "SKILL.md").is_file():
         problems.append(f"skill {name}: no SKILL.md under {path}")
 on_disk = {("skill", d.name) for d in (ROOT / "skills").iterdir() if (d / "SKILL.md").is_file()}
-on_disk |= {("tactic", p.stem) for p in (ROOT / "tactics").glob("*.md")}
 for key in sorted(on_disk - set(named)):
     problems.append(f"{key[0]} {key[1]} is on disk but not in the manifest")
 for p in problems:

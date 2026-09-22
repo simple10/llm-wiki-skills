@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((ROOT / "llm-wiki-package.json").read_text(encoding="utf-8"))
 SOURCE = MANIFEST["repository"]
 SKILLS = [a["name"] for a in MANIFEST["artifacts"] if a["type"] == "skill"]
-TACTICS = [a["name"] for a in MANIFEST["artifacts"] if a["type"] == "tactic"]
 
 
 def unit_manifest(name: str) -> dict:
@@ -111,18 +110,11 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     """One `init`ed wiki for the session — installs accumulate in it, which
     is what a real wiki does."""
     w = tmp_path_factory.mktemp("wiki") / "w"
-    r = run(_cli(ops), env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
+    # `key=` names the wiki in the machine registry, which the env above points
+    # at a throwaway config, so nothing on the developer's machine is touched.
+    r = run(_cli(ops), env, "init", str(w), "key=harness", "preset=general")  # values are key=value; init commits on its own
     assert r.returncode == 0, r.stderr
     return w
-
-
-@pytest.fixture(scope="session")
-def tactics_group(ops, env, wiki) -> None:
-    """Skips unless the CLI at hand has a `tactics` group. Asked of the CLI
-    rather than assumed, so the cases run again the day it is ported. Asked
-    INSIDE the wiki: a root-bound CLI refuses every argv without one."""
-    if run(ops, rooted(env, wiki), "tactics", "--help").returncode != 0:
-        pytest.skip("the ops CLI at hand has no `tactics` group — unported on the plugins side")
 
 
 def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
@@ -143,8 +135,9 @@ class Job:
 
 
 def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
-    """A real job for `unit` in the session wiki, declared the way INSTALL.md
-    says to — `pipeline extract` reads the job a capture belongs to, so a
+    """A real job for `unit` in the session wiki, declared the way
+    references/enable.md says to — `pipeline extract` reads the job a capture
+    belongs to, so a
     capture with no job behind it is refused. Idempotent for one
     (slug, target) pair; a wiki holds ONE job per target and a slug names one
     source for good, so a case wanting a job of its own passes both."""

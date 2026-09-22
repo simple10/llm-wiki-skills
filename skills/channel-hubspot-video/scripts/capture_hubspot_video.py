@@ -66,7 +66,7 @@ plugin's detect and download.)
 It launches a BROWSER: the Playwright Chromium build has to be on the machine
 already. A slice cannot install one — the floor write-denies
 `~/.cache/ms-playwright` and `~/Library/Caches/ms-playwright`
-(`schedule/runner/floor.py::DENY_WRITE_OUTSIDE`) — see the unit's INSTALL.md.
+(`schedule/runner/floor.py::DENY_WRITE_OUTSIDE`) — see the unit's references/enable.md.
 
 (The leading `ops/` is the run verb's frozen argument grammar, resolved by
 the front door to wherever this wiki's machinery tree lives.)

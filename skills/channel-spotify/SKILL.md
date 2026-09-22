@@ -173,7 +173,7 @@ column as is; that is display.
   probe; re-capture with credentials for the real thing.
 - **A confined harvest cannot read the store as shipped**: the capture goes
   keyless and reports `partial` with a `missing[]` entry `why: auth`. The two
-  ways to give it the API are the operator's — INSTALL.md, "Credentials under
+  ways to give it the API are the operator's — `references/enable.md`, "Credentials under
   a confined harvest". A ticket naming a `credential` is honored.
 - **Rate limits.** A 429 waits the venue's `Retry-After` (+1 s; sixty seconds
   when it names none, capped at five minutes), four tries.

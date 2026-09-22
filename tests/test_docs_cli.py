@@ -2,10 +2,10 @@
 has: the group, the verb and each `--flag`, read off `--help`, and each dotted
 `section.key=` of a job, read off a real job record.
 
-The docs are the interface. An agent follows INSTALL.md and SKILL.md to the
-letter, so `watch add --slug …` after the CLI became `pipeline add slug=…` is
-a unit that does not work, however green its scripts are — and nothing else
-here reads prose.
+The docs are the interface. An agent follows SKILL.md and its references to
+the letter, so `watch add --slug …` after the CLI became `pipeline add
+slug=…` is a unit that does not work, however green its scripts are — and
+nothing else here reads prose.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ import pytest
 
 from conftest import ROOT, rooted, run, unit_manifest
 
-DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), *ROOT.glob("tactics/*.md"), ROOT / "README.md"])
+DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), ROOT / "README.md"])
 
 # Groups the docs still name that the CLI at hand does not have. Each is
 # ASSERTED absent below, so the day one is ported this file says to drop it
 # from here — and its verbs start being checked like any other.
-UNPORTED = {"tactics": "unported on the plugins side"}
+UNPORTED: dict = {}
 
 # Groups the rebuild retired outright: a span that opens with one is stale
 # wherever it appears, prefixed by `llm-wiki-ops` or not.
-RETIRED = {"watch"}
+RETIRED = {"watch", "tactics"}
 
 # A bare `git pull` is git's, not this CLI's `git` group: a name both own is
 # only checked where the span says `llm-wiki-ops` out loud.
@@ -148,7 +148,9 @@ def _wrong(cli, job_record, text: str, unit: str | None) -> list:
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
 def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
-    unit = doc.parent.name if doc.parent.parent.name == "skills" else None
+    # `skills/<unit>/SKILL.md` and `skills/<unit>/references/*.md` both name a unit.
+    parts = doc.relative_to(ROOT).parts
+    unit = parts[1] if parts[0] == "skills" else None
     wrong = _wrong(cli, job_record, doc.read_text(encoding="utf-8"), unit)
     assert not wrong, f"{doc.relative_to(ROOT)}:\n  " + "\n  ".join(wrong)
 
@@ -164,7 +166,7 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
         ("`llm-wiki-ops skills enable x --conf`", "takes no `--conf`"),
         ("`llm-wiki-ops pipeline add u slug=s harvest.maxage=3m`", "no `harvest.maxage`"),
         ("`llm-wiki-ops pipeline add u slug=s option.mailbox=m`", "no `option.mailbox`"),
-        ("`<ops dir>/bin/llm-wiki-ops tactics install x`", "run by path"),  # no wiki carries a bin/
+        ("`<ops dir>/bin/llm-wiki-ops skills ls`", "run by path"),  # no wiki carries a bin/
         ("```\ncd w && llm-wiki-ops skills find x\n```", "has no `find`"),
         ('```\nllm-wiki-ops skills search "ep #400" --bogus\n```', "takes no `--bogus`"),
     ],
