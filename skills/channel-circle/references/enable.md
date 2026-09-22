@@ -18,11 +18,10 @@
    skill=channel-circle` — the skill's manifest supplies `every=once`,
    `harvest.scope=section`, `harvest.access=licensed`,
    `harvest.assets=download` and a `dest` of `sources/courses/<slug>`.
-   **`download` is what keeps a lesson's video**: the only reference Circle
-   serves is a signed HLS manifest that is dead within hours, and a video
-   that was never fetched is never transcribed. Pass
-   `harvest.assets=reference` only for a community whose lessons are text —
-   and know that a course is often many GB under `download`. Scope `section` means "under the
+   `reference` keeps no lesson video and yields no transcript (the venue's
+   only reference is a signed HLS manifest, dead within hours); `download`
+   is many GB per course. Pass `harvest.assets=reference` only for a
+   community whose lessons are text. Scope `section` means "under the
    job's url", so that url must be the space ROOT (`/c/<slug>`): from a
    lesson url every sibling lesson is outside it. Pass
    `harvest.scope=domain` to take the whole community. A course longer than

@@ -80,7 +80,7 @@ def _ticket(**over):
     ticket = {
         "v": 1, "ticket": "0123456789ab", "unit": UNIT, "slug": "talks", "item": SHARE, "target": SHARE,
         "capture_dir": "_raw/talks/share-0000--deadbeef", "dest": None, "hosts": ["*.frame.io", "frame.io"],
-        "harvest": {"scope": "domain", "access": "free", "exclude_urls": [], "assets": "reference"},
+        "harvest": {"scope": "domain", "access": "free", "exclude_urls": [], "assets": "download"},  # the shipped default
         "options": {}, "credential": None, "min_date": None, "known": [],
     }
     ticket.update(over)
@@ -88,7 +88,7 @@ def _ticket(**over):
 
 
 def _harvest(**keys):
-    return {"scope": "domain", "access": "free", "exclude_urls": [], "assets": "reference", **keys}
+    return {"scope": "domain", "access": "free", "exclude_urls": [], "assets": "download", **keys}
 
 
 # ---------------------------------------------------------------- the plan
@@ -172,6 +172,8 @@ def test_an_explicit_reference_plans_no_media_leaf_and_every_document():
     plan = mod.plan_leaves(leaves, _ticket(harvest=_harvest(assets="reference")))
     assert [p["item"] for p in plan["leaves"]] == [leaves[i]["view_url"] for i in (1, 5)]
     assert plan["skipped"]["reference"] == 4
+    assert plan["unplanned"] == [{"item": leaves[i]["view_url"], "name": leaves[i]["name"], "why": "reference"} for i in (0, 2, 3, 4)]
+    assert not mod.is_media_name("Notes.ts"), "a .ts stays a document: a false positive drops one, a false negative downloads a video"
     for assets in ("download", "download-audio", None):
         plan = mod.plan_leaves(leaves, _ticket(harvest=_harvest(assets=assets)))
         assert len(plan["leaves"]) == 6 and plan["skipped"]["reference"] == 0, assets
@@ -895,7 +897,7 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki, mon
     the unit's own PROCESS step over that leaf's capture dir writes ONE page
     under the ticket's `dest`, through the REAL `page create`."""
     job = declared_job(ops, env, wiki, UNIT, SHARE, "dest=sources/scrapes/port-frameio")
-    assert job.record["harvest"]["scope"] == "domain"  # the manifest's shipped default
+    assert (job.record["harvest"]["scope"], job.record["harvest"]["assets"]) == ("domain", "download")  # the manifest's shipped defaults
     cap = ticket_in(wiki, job, "share-0000--e2e00001", unit=UNIT, item=SHARE)
     held, fresh = _leaf(1, name="Old Deck.pdf"), _leaf(2, name="Q3 Roadmap.pdf", path=("Fixture Share", "Decks"))
     ticket = json.loads((cap / "ticket.json").read_text())
@@ -949,6 +951,26 @@ def test_a_share_document_becomes_a_page_under_the_jobs_dest(ops, env, wiki, mon
     assert code == 0, err + out
     assert json.loads(out)["written"] == [str(page.relative_to(wiki))]
     assert page.read_text(encoding="utf-8").count("# Q3 Roadmap.pdf") == 1
+
+
+def test_an_explicit_reference_on_the_job_reaches_the_plan(ops, env, wiki, monkeypatch, capsys, tmp_path):
+    """The operator's `harvest.assets=reference` rides the job record into the
+    ticket, and the driver's `--plan-only` leaves the media leaf out of
+    `plan.json` — named under `unplanned` — while the document is planned."""
+    job = declared_job(ops, env, wiki, UNIT, FOLDER, "dest=sources/scrapes/port-frameio-reference", "harvest.assets=reference", slug="port-frameio-reference")
+    assert job.record["harvest"]["assets"] == "reference"
+    cap = ticket_in(wiki, job, "share-0000--e2eref001", unit=UNIT, item=FOLDER)
+    video, deck = _leaf(1, name="Keynote.mov"), _leaf(2, name="Deck.pdf")
+    (cap / "tree.json").write_text(json.dumps({"leaves": [video, deck]}), encoding="utf-8")
+    rel = str(cap.relative_to(wiki))
+
+    code, out, err = _run_script("harvest_share.py", rel, "--plan-only", cwd=wiki)
+    assert code == 0, err
+    summary = json.loads(out)
+    assert (summary["planned"], summary["skipped"]["reference"]) == (1, 1), summary
+    plan = json.loads((cap / "plan.json").read_text())
+    assert [leaf["item"] for leaf in plan["leaves"]] == [deck["view_url"]]
+    assert plan["unplanned"] == [{"item": video["view_url"], "name": "Keynote.mov", "why": "reference"}]
 
 
 def test_two_assets_with_one_name_land_as_two_pages(ops, env, wiki, monkeypatch, capsys, tmp_path):

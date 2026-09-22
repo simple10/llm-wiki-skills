@@ -43,7 +43,8 @@ card name) are left unplanned and counted in `skipped.reference`; documents
 are captured under every value, because they ARE the page. To leave
 particular videos alone under `download`, list their view URLs in
 `harvest.exclude_urls` (`harvest_share.py <capture_dir> --plan-only` writes
-every leaf's view URL to `plan.json`).
+every planned leaf's view URL to `plan.json`, and the media leaves `reference`
+left out under `unplanned`).
 
 ## Stages
 
@@ -87,7 +88,7 @@ ONE process ticket per `captured[].dir`.
 | `capture_dir` | the TICKET's directory, `_raw/<slug>/<one>` — `tree.json`, `plan.json` and `report.json` go here. Never compose it |
 | `hosts` | your egress: `*.frame.io` and `frame.io`. The HLS and document-proxy hosts are under it; a host outside it is refused by the proxy — report it, never route around it |
 | `harvest.scope` | applied by this unit — see above. Must be `domain` |
-| `harvest.assets` | `download` captures every leaf; `reference` plans no media leaf — see above. `download-audio` is not told from `download`: the whole asset is kept |
+| `harvest.assets` | `download` captures every leaf; `reference` plans no media leaf of a share — see above. A target that IS a leaf viewer, and a refresh, is captured under every value: no card name reaches it. `download-audio` is not told from `download`: the whole asset is kept |
 | `harvest.exclude_urls` | leaf view URLs never to capture: an entry matches when it equals the URL, is a prefix of it, or (written with a `*`) globs it. The pipeline defines no matching rule for this key, so that reading is this unit's own |
 | `known[]` | pages this job already holds, by `resource` (the leaf's view URL, matched exactly) — skipped, which is also how a share too big for one slice resumes |
 | `refresh`, `resource` | a refresh ticket: re-capture exactly that one leaf viewer — see below |
@@ -159,7 +160,8 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
 - **Outcomes.** `ok`: every planned leaf landed. `partial`: some did, and the
   rest are the job's next spawn's (unverified: whether an `every: once` job is
   pulled again after a `partial` is the foreman's call — say so in your run
-  report). `skipped`: every leaf is already a page, or excluded. `failed`:
+  report). `skipped`: every leaf is already a page, excluded, or media under
+  `harvest.assets=reference`. `failed`:
   nothing landed, the share listed nothing, or scope emptied the plan. Exit 0
   for the first three, 1 for `failed`, 2 when the inputs do not add up.
 

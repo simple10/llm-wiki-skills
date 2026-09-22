@@ -134,6 +134,9 @@ History:
               leaf carries it. A leaf URL must be http(s).
   2026-09-19  the unit's two steps restored: nothing here renders a page, and
               a leaf's `body` is the file the venue served.
+  2026-09-22  `harvest.assets` honored: `reference` plans no media leaf, by
+              the card name's extension, and names each under `unplanned`;
+              the manifest's default is `download`.
 """
 
 import argparse
@@ -168,9 +171,10 @@ RAW_DIRNAME = "_raw"
 SCOPES = ("page", "section", "domain")
 #: What `harvest.assets: reference` leaves unplanned, by the card name's
 #: extension: a video or audio asset, the one kind of leaf `reference` would
-#: reduce to a signed URL that is dead by the next day.
+#: reduce to a signed URL that is dead within hours. No `ts`: a false positive
+#: drops a document, a false negative downloads one video.
 MEDIA_EXTS = frozenset(
-    "mp4 m4v mov mkv webm avi wmv mpg mpeg mxf mts m2ts ts 3gp mp3 m4a aac wav aif aiff flac ogg opus wma".split()
+    "mp4 m4v mov mkv webm avi wmv mpg mpeg mxf mts m2ts 3gp mp3 m4a aac wav aif aiff flac ogg opus wma".split()
 )
 SKIPPED = ("known", "excluded", "scope", "duplicate", "reference")
 
@@ -259,7 +263,9 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     """Which leaves this ticket owes, in manifest order, each with its dir.
 
     Pure: a manifest's leaves and a ticket in, `{"leaves": [...], "skipped":
-    {...}}` out. A leaf is `{item, dir, name, path, crumb, asset_id}`; `dir`
+    {...}, "unplanned": [...]}` out — `unplanned` names each media leaf that
+    `harvest.assets: reference` left out, so an operator can see what a
+    `reference` cost and a misjudged extension has a trace. A leaf is `{item, dir, name, path, crumb, asset_id}`; `dir`
     is wiki-relative and exactly `_raw/<slug>/<one component>`, the only shape
     `apply` mints a process ticket for. `crumb` is `path` below any top folder
     EVERY leaf of the manifest carries (`shared_top` — judged over the whole
@@ -270,7 +276,7 @@ def plan_leaves(leaves, ticket: dict) -> dict:
     scope = harvest.get("scope") if harvest.get("scope") in SCOPES else "domain"
     known = known_resources(ticket)
     skipped = dict.fromkeys(SKIPPED, 0)
-    planned, seen = [], set()
+    planned, unplanned, seen = [], [], set()
     paths = [[p for p in (leaf.get("path") or []) if isinstance(p, str)] for leaf in leaves]
     skip = shared_top(paths)
     for leaf in leaves:
@@ -285,6 +291,7 @@ def plan_leaves(leaves, ticket: dict) -> dict:
             skipped["known"] += 1
         elif unplanned_by_reference(leaf, harvest):
             skipped["reference"] += 1
+            unplanned.append({"item": url, "name": leaf.get("name"), "why": "reference"})
         else:
             path_bits = [p for p in (leaf.get("path") or []) if isinstance(p, str)]
             planned.append(
@@ -298,7 +305,7 @@ def plan_leaves(leaves, ticket: dict) -> dict:
                 }
             )
         seen.add(url)
-    return {"scope": scope, "leaves": planned, "skipped": skipped}
+    return {"scope": scope, "leaves": planned, "skipped": skipped, "unplanned": unplanned}
 
 
 def refresh_resource(ticket: dict):
@@ -325,7 +332,7 @@ def single_leaf_plan(ticket: dict) -> dict:
         skipped["excluded"] = 1
     else:
         leaves = [{"item": url, "dir": ticket["capture_dir"], "name": None, "path": [], "crumb": [], "asset_id": leaf_ids(url)[1]}]
-    return {"scope": harvest.get("scope") or "domain", "leaves": leaves, "skipped": skipped}
+    return {"scope": harvest.get("scope") or "domain", "leaves": leaves, "skipped": skipped, "unplanned": []}
 
 
 # ---------------------------------------------------------------- the report
@@ -409,7 +416,7 @@ def report_of(ticket: dict, plan: dict, states: dict) -> dict:
         elif skipped["excluded"]:
             outcome, reason = "skipped", f"harvest.exclude_urls excludes all {skipped['excluded']} leaves"
         elif skipped["reference"]:
-            outcome, reason = "skipped", f"harvest.assets=reference keeps nothing of media, and all {skipped['reference']} leaves are media"
+            outcome, reason = "skipped", f"harvest.assets=reference plans no media leaf, and all {skipped['reference']} leaves are media"
         else:
             outcome, reason = "failed", "the share enumerated no leaves"
     elif len(captured) == planned:
