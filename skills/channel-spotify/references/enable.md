@@ -60,8 +60,7 @@ stage unclaimable. A job with no binding on this machine captures keyless
 (`partial`, possibly-truncated list). A job bound with `llm-wiki-ops
 credential bind <slug> spotify` gets that one payload in its slice, named on
 its ticket, and the capture uses the API: full item lists, dates,
-`min_date`. It may be spent only at `api.spotify.com` and
-`accounts.spotify.com`, the exact `host:` keywords the manifest claims.
-Unverified live.
+`min_date`. The manifest's exact `host:spotify.com` keyword is the
+credential's claim. Unverified live.
 
 Hand runs outside a slice read the store directly and need neither.

@@ -6,8 +6,7 @@
     "posts",
     "paywall",
     "host:substack.com",
-    "host:*.substack.com",
-    "host:substackcdn.com"
+    "host:*.substack.com"
   ],
   "kind": "channel",
   "name": "channel-substack",

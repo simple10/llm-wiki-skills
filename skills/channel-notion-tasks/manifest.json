@@ -4,8 +4,7 @@
     "task",
     "tasks",
     "todo",
-    "workspace",
-    "host:mcp.notion.com"
+    "workspace"
   ],
   "kind": "channel",
   "name": "channel-notion-tasks",

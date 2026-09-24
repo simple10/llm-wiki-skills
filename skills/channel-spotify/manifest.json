@@ -9,11 +9,7 @@
     "audiobook",
     "album",
     "host:spotify.com",
-    "host:*.spotify.com",
-    "host:api.spotify.com",
-    "host:accounts.spotify.com",
-    "host:*.scdn.co",
-    "host:*.spotifycdn.com"
+    "host:*.spotify.com"
   ],
   "kind": "channel",
   "name": "channel-spotify",

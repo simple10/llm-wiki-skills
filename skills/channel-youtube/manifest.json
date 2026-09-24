@@ -8,9 +8,7 @@
     "transcript",
     "host:youtube.com",
     "host:*.youtube.com",
-    "host:youtu.be",
-    "host:*.googlevideo.com",
-    "host:*.ytimg.com"
+    "host:youtu.be"
   ],
   "kind": "channel",
   "name": "channel-youtube",
