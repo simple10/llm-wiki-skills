@@ -14,7 +14,7 @@ import types
 
 from pathlib import Path
 
-from harness import declared_job, ticket_in, unit_tests
+from harness import ROOT, declared_job, jsonc, snippet, ticket_in, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-spotify", "test_spotify"))
@@ -117,3 +117,24 @@ def test_a_hundred_cjk_characters_still_land_as_a_page(ops, env, wiki, spotify, 
     page = wiki / job.dest / ("語" * 66 + "….md")
     assert f"\n# {name}\n" in page.read_text(encoding="utf-8")
     assert f"source_title: {name}" in page.read_text(encoding="utf-8")
+
+
+# ------------------------------------------- the harvest sandbox covers what a capture fetches
+
+
+def allowed(host: str, patterns: list) -> bool:
+    return any(host == p or (p.startswith("*.") and host.endswith(p[1:])) for p in patterns)
+
+
+def test_every_host_a_default_capture_fetches_is_in_the_harvest_sandbox(spotify):
+    """Cover art is an asset of EVERY capture: unreached, each confined run ends
+    `partial` with a `denied` entry. The per-show feed and enclosure hosts are the
+    deliberate gap (the unit's references/enable.md) and stay out."""
+    reference = ROOT / "references" / "sandboxes" / "spotify" / "spotify.harvest.md"
+    network = jsonc(snippet(reference.read_text(encoding="utf-8")))["profile"]["network"]["allow_domain"]
+    fetched = [spotify.API, spotify.TOKEN_URL, spotify.ITUNES_SEARCH, "https://open.spotify.com/embed/x/y"]
+    fetched += entity("playlist")["images"] + entity("episode")["images"]
+    fetched += ["https://mosaic.scdn.co/640/x", "https://image-cdn-ak.spotifycdn.com/image/x", "https://image-cdn-fa.spotifycdn.com/image/x"]
+    for url in fetched:
+        assert allowed(spotify.host_of(url), network), f"{url} is fetched by a capture and not in the harvest sandbox {network}"
+    assert not allowed("feed.example", network) and not allowed("lexfridman.com", network)

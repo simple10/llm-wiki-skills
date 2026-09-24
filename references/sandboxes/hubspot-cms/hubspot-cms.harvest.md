@@ -19,6 +19,12 @@ machine first (`references/enable.md` step 1).
 - `*.mux.com`: the rendition hosts behind the master
   (`manifest-*.edgemv.mux.com`); the exact set is unverified.
 
+## Filesystem
+
+Read on Playwright's browser build (`$HOME/.cache/ms-playwright` on Linux,
+`$HOME/Library/Caches/ms-playwright` on macOS), which the capture
+scripts launch.
+
 ## Credential
 
 None.
@@ -26,10 +32,9 @@ None.
 ## Customize
 
 - The site's own host is the ticket's and joins at dispatch.
-- Playwright's browser cache (`$HOME/.cache/ms-playwright` on Linux,
-  `$HOME/Library/Caches/ms-playwright` on macOS): a `filesystem.read` entry,
-  if the machine layer does not already grant it. Unverified that a render
-  needs more than a read.
+- A Playwright install outside the default cache
+  (`PLAYWRIGHT_BROWSERS_PATH`): its directory as the `filesystem.read`
+  entry instead. Unverified that a render needs more than a read.
 
 ## Never loosen
 
@@ -46,6 +51,14 @@ customer, and a site is the ticket's.
     "meta": {
       "name": "channel-hubspot-video-harvest",
       "description": "channel-hubspot-video's harvest slice: the model endpoints and this venue's hosts."
+    },
+    "filesystem": {
+      // Playwright's browser build: Linux, then macOS. A path absent on
+      // this machine grants nothing.
+      "read": [
+        "$HOME/.cache/ms-playwright",
+        "$HOME/Library/Caches/ms-playwright"
+      ]
     },
     "network": {
       // Allow-list mode: naming any host denies every other.

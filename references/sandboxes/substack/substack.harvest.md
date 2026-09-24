@@ -15,6 +15,12 @@ None.
 - `*.substack.com`: each publication's subdomain and `api.substack.com`.
 - `substackcdn.com`: post images.
 
+## Filesystem
+
+Read on Playwright's browser build (`$HOME/.cache/ms-playwright` on Linux,
+`$HOME/Library/Caches/ms-playwright` on macOS), which the capture
+scripts launch.
+
 ## Credential
 
 None. Paid posts are recorded as paywalled, never fetched signed-in.
@@ -38,6 +44,14 @@ Add no host a post did not name in a report's `missing[]`.
     "meta": {
       "name": "channel-substack-harvest",
       "description": "channel-substack's harvest slice: the model endpoints and this venue's hosts."
+    },
+    "filesystem": {
+      // Playwright's browser build: Linux, then macOS. A path absent on
+      // this machine grants nothing.
+      "read": [
+        "$HOME/.cache/ms-playwright",
+        "$HOME/Library/Caches/ms-playwright"
+      ]
     },
     "network": {
       // Allow-list mode: naming any host denies every other.

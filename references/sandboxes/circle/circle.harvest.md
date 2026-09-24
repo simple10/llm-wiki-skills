@@ -17,6 +17,12 @@ supplies.
 - `*.circle.so`: every community subdomain, and the media and asset hosts
   under it (`cdn-media.circle.so`, `assets-v2.circle.so`).
 
+## Filesystem
+
+Read on Playwright's browser build (`$HOME/.cache/ms-playwright` on Linux,
+`$HOME/Library/Caches/ms-playwright` on macOS), which the capture
+scripts launch.
+
 ## Credential
 
 None declared (`requires.credential: false`). A members-only community
@@ -48,6 +54,14 @@ a report's `missing[]`.
     "meta": {
       "name": "channel-circle-harvest",
       "description": "channel-circle's harvest slice: the model endpoints and this venue's hosts."
+    },
+    "filesystem": {
+      // Playwright's browser build: Linux, then macOS. A path absent on
+      // this machine grants nothing.
+      "read": [
+        "$HOME/.cache/ms-playwright",
+        "$HOME/Library/Caches/ms-playwright"
+      ]
     },
     "network": {
       // Allow-list mode: naming any host denies every other.

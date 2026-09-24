@@ -10,9 +10,8 @@
    it on every machine that harvests this skill, outside any jail, with the
    Playwright version the script resolves (`playwright>=1.44`) — e.g.
    `uvx playwright install chromium`. Unverified, because no live slice has
-   run this skill since the rebuild: that the slice may READ that cache (the
-   floor's read list does not name it, so the machine-local
-   `~/.config/llm-wiki/sandbox/base.jsonc` or `slice.jsonc` has to grant it),
+   run this skill since the rebuild: that the harvest sandbox's read on that
+   cache is enough,
    that the uv-cached build and the `uvx` one agree on a browser revision, and
    that Chromium's own sandbox starts under the jail. If the first render dies
    on a missing executable, that is this step, not the site.
@@ -52,8 +51,7 @@
    job should skip in that job's `harvest.exclude_urls`. The copy is
    wiki-owned; site knowledge belongs in it, not in your head or the run
    report. **Then have the operator re-enable the skill** —
-   `llm-wiki-ops skills disable channel-hubspot-video` and
-   `llm-wiki-ops skills enable channel-hubspot-video` — because `run` and the
+   `/llm-wiki:enable channel-hubspot-video` — because `run` and the
    slice serve the ENABLED copy, and steps 2–4 edited the wiki's.
 5. **Declare the job.**
    `llm-wiki-ops pipeline add <section-root-url> slug=<site-section>

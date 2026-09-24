@@ -6,10 +6,7 @@
     "mux",
     "course",
     "player",
-    "host:play.hubspotvideo.com",
-    "host:image.mux.com",
-    "host:stream.mux.com",
-    "host:*.mux.com"
+    "host:play.hubspotvideo.com"
   ],
   "kind": "channel",
   "name": "channel-hubspot-video",

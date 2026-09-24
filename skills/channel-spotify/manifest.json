@@ -10,14 +10,15 @@
     "album",
     "host:spotify.com",
     "host:*.spotify.com",
+    "host:api.spotify.com",
+    "host:accounts.spotify.com",
     "host:*.scdn.co",
-    "host:*.spotifycdn.com",
-    "host:itunes.apple.com"
+    "host:*.spotifycdn.com"
   ],
   "kind": "channel",
   "name": "channel-spotify",
   "requires": {
-    "credential": false,
+    "credential": "optional",
     "ops": ">=1.96.0"
   },
   "stages": {

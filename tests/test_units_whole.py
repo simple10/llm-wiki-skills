@@ -128,7 +128,7 @@ def test_a_quirks_log_is_dated_one_liners(name):
 @pytest.mark.parametrize("name", CHANNELS)
 def test_the_step_a_unit_is_in_is_an_argument_not_a_file(name):
     """One discriminator: the `stage=` the host composes into the prompt. A
-    process ticket's capture dir IS the download ticket's for a single-item
+    process ticket's capture dir IS the harvest ticket's for a single-item
     job, and `ticket.json` lands there under one name — so a step read off
     that file can be the other step's, and the prompt cannot be clobbered."""
     skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")

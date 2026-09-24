@@ -189,7 +189,7 @@ def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extr
 
 
 def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) -> Path:
-    """A capture directory holding the `ticket.json` a download worker is
+    """A capture directory holding the `ticket.json` a harvest worker is
     started beside — every key `pipeline/dispatch.py` writes, the job's own
     sections riding along. Returns the directory; `leaf` is `<page>--<hash8>`
     for an item with an address, `<YYYY-MM-DD>` for a channel's pull."""

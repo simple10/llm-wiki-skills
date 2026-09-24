@@ -20,7 +20,10 @@ None.
 
 ## Credential
 
-None.
+`requires.credential: "optional"`. A job with a binding on this machine
+is granted that one payload and spends it at `api.spotify.com` and
+`accounts.spotify.com`, the exact `host:` keywords the manifest claims. A
+job with none runs keyless.
 
 ## Customize
 

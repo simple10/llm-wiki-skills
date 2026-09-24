@@ -24,7 +24,10 @@ None.
 
 ## Customize
 
-- Nothing beyond the ticket's host, which joins at dispatch.
+- yt-dlp writes a cache under `$HOME/.cache/yt-dlp`, which this sandbox
+  does not grant. Unverified whether a denied cache costs more than a
+  warning; if a harvest fails on it, a `filesystem.allow` on that directory
+  is the fix.
 
 ## Never loosen
 

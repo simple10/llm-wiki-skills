@@ -17,6 +17,12 @@ bin dir.
 - `*.frame.io`: the share app (`next.frame.io`), the HLS host
   (`sahls.frame.io`) and the proxy host (`assets.frame.io`).
 
+## Filesystem
+
+Read on Playwright's browser build (`$HOME/.cache/ms-playwright` on Linux,
+`$HOME/Library/Caches/ms-playwright` on macOS), which the capture
+scripts launch.
+
 ## Credential
 
 None. A share link is its own authorization.
@@ -40,6 +46,14 @@ back as `denied` and is the foreman's call.
     "meta": {
       "name": "channel-frameio-harvest",
       "description": "channel-frameio's harvest slice: the model endpoints and this venue's hosts."
+    },
+    "filesystem": {
+      // Playwright's browser build: Linux, then macOS. A path absent on
+      // this machine grants nothing.
+      "read": [
+        "$HOME/.cache/ms-playwright",
+        "$HOME/Library/Caches/ms-playwright"
+      ]
     },
     "network": {
       // Allow-list mode: naming any host denies every other.

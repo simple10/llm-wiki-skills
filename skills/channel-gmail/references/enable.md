@@ -48,8 +48,9 @@
    at what it now pulls and `bind` again. Do NOT bind on a machine whose
    session is not signed into that mailbox.
 3. Enable the skill on every OTHER machine that pulls
-   (`llm-wiki-ops skills enable channel-gmail`) — installed is not loaded,
-   and enablement never travels with a `git pull`.
+   (`/llm-wiki:enable channel-gmail`, which enables the bound harvest
+   sandbox there too) — installed is not loaded, and enablement never
+   travels with a `git pull`.
 4. **Where this skill's HARVEST is expected to work: only where
    `llm-wiki-ops whereami` reports `spawn: none`** — the foreman runs the
    worker in its own session, which holds the connector — until the plugin

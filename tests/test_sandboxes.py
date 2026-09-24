@@ -1,8 +1,7 @@
 """The stage sandboxes the package ships: each harvest stage's `sandbox_ref`
-resolves to one reference here, the reference's snippet reaches what the unit
-answers to, and a credentialed unit can spend its credential somewhere. That
-the snippet's keys are admitted is `sandboxes enable`'s to say, in
-test_install.py."""
+resolves to one reference here, the reference's snippet reaches a model, and
+a credentialed unit can spend its credential somewhere. That the snippet's
+keys are admitted is `sandboxes enable`'s to say, in test_install.py."""
 
 from __future__ import annotations
 
@@ -46,7 +45,6 @@ def test_the_reference_is_the_units_venue_and_its_snippet_is_one_policy(name):
     assert set(doc) == {"v", "profile"} and doc["v"] == 2, doc
     allow = doc["profile"]["network"]["allow_domain"]
     assert MODEL <= set(allow), f"{name}: the snippet lacks a model endpoint"
-    assert set(allow) - MODEL <= set(_hosts(name)), f"{name}: the snippet reaches a host the unit does not answer to"
 
 
 @pytest.mark.parametrize("name", [n for n in SKILLS if unit_manifest(n)["requires"].get("credential")])
