@@ -7,7 +7,7 @@
 
 Platform: HubSpot CMS + HubSpot Video, which is Mux underneath. Not tied to
 any one site — every HubSpot customer runs its own domain, which is why the
-unit's `requires.network` names the PLATFORM's fixed hosts (the player, Mux)
+unit's harvest sandbox names the PLATFORM's fixed hosts (the player, Mux)
 and no site: a site is reached by keywords and fingerprints, and its own host
 is the job's target.
 

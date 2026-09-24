@@ -38,7 +38,7 @@ with a deadline, killed with everything it started), `source_hosts_for()`,
 `strip_title()`, `one_line()`, `read_json()`/`write_json()` (atomic).
 
 What left, and why: the old record carried the host's job fields (`id`,
-`tags`, `areas`, `dest`, a `verdict` block). A download ticket carries none
+`tags`, `areas`, `dest`, a `verdict` block). A harvest ticket carries none
 of those — `dest` is null on it and a harvest slice cannot write there — so
 nothing here reads or writes them.
 """

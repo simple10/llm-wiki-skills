@@ -91,7 +91,7 @@ Given `--stage process` (or any `--written`), `report` is the PROCESS step's
 instead: `written[]` is the pages that step wrote, `captured[]` is empty, and
 no plan is read. The step is always told, never read off
 `ticket.json`: a single-item job's process ticket has the SAME capture dir as
-its download ticket, and the file lands there under one name.
+its harvest ticket, and the file lands there under one name.
 
 Exit status: `plan`, `detect` and `record` exit 0 on success, 1 when
 an input is missing or unusable (said on stderr). `record` exits 3 — and says
@@ -781,7 +781,7 @@ def build_report(
 ) -> dict:
     # The step is the caller's to say — never read off `ticket.json`: a
     # single-item job's process ticket has the SAME capture dir as its
-    # download ticket, and the file lands there under one name.
+    # harvest ticket, and the file lands there under one name.
     if stage == "process" or written:
         return process_report(ticket, written, missing, reason)
     settle_titles(capture_dir, plan)

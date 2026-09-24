@@ -268,8 +268,8 @@ Say the post, the page it landed as, and stop.
   which the shipped manifest does not (`requires.credential: false`, so free
   jobs need no binding): with `false`, `ticket.json`'s `credential` is null
   and the slice may read nothing. The operator's path, all in this wiki's own
-  copy: `requires.credential: true` in `manifest.json`, `skills disable` then
-  `skills enable` the unit, `llm-wiki-ops credential set <name>` (the storage
+  copy: `requires.credential: true` in `manifest.json`, `/llm-wiki:enable
+  channel-substack`, `llm-wiki-ops credential set <name>` (the storage
   state on stdin), `llm-wiki-ops credential bind <slug> <name>`,
   `harvest.access=licensed`. EVERY job on this unit in this wiki then needs a
   binding, free ones included. (Unverified end to end.)

@@ -159,7 +159,7 @@ def test_the_capture_record_is_flat_and_owns_no_lifecycle_key():
     for field in ("slug", "item", "title", "body", "content_type", "fetched_at"):
         assert isinstance(record[field], str), field
     assert not (set(record) & mod.OWNED_KEYS - {"title"}), "a host verb's keys are not a capture's to write"
-    assert "dest" not in record, "a download ticket carries no dest and a harvest slice cannot write one"
+    assert "dest" not in record, "a harvest ticket carries no dest and a harvest slice cannot write one"
 
 
 def test_a_captured_document_is_typed_by_its_extension_and_media_is_told_apart():

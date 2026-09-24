@@ -42,11 +42,10 @@
    Read off the plugin's source, unconfirmed by a run: a spawned slice is
    deny-read on `~/.claude.json` and its two other homes (the MCP server
    configuration) and on `~/.claude/.credentials.json`
-   (`schedule/runner/floor.py`); and this skill declares no
-   `requires.network` and its target is a channel name, so its slice is
-   minted with no hosts and its network is BLOCKED outright
-   (`pipeline/dispatch.py`, `schedule/runner/slice.py`). No host was invented
-   to cover that. Under a spawning runner the harvest worker reports
+   (`schedule/runner/floor.py`). Its egress is the sandbox its harvest stage
+   is bound to, which reaches `mcp.notion.com` (unverified as the connector's
+   endpoint); whether a jailed session loads the account's connectors at all
+   is unmeasured (llm-wiki-plugins#2282). Under a spawning runner the harvest worker reports
    `failed`, "no notion connector in this session", with `missing: [{"host": "connector",
    "url": "mcp:notion", "why": "denied"}]` — tell the operator now, so a
    scheduled run that fails this way is recognized and not retried into the

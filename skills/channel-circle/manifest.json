@@ -5,26 +5,26 @@
     "courses",
     "lesson",
     "lessons",
-    "space"
+    "space",
+    "host:circle.so",
+    "host:*.circle.so"
   ],
   "kind": "channel",
   "name": "channel-circle",
   "requires": {
     "credential": false,
-    "network": [
-      "*.circle.so",
-      "circle.so"
-    ],
     "ops": ">=1.96.0"
   },
-  "stages": [
-    "harvest",
-    "process"
-  ],
+  "stages": {
+    "harvest": {
+      "sandbox_ref": "simple10/llm-wiki-skills:circle/circle.harvest"
+    },
+    "process": {}
+  },
   "usage": "/channel-circle ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "circle",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "watch": {
     "defaults": {
       "every": "once",

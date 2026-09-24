@@ -7,7 +7,7 @@
 platform: frameio
 scope: platform-general (no hardcoded share ids or hosts).
 
-One download ticket captures the whole share. Nothing fans a share's leaves
+One harvest ticket captures the whole share. Nothing fans a share's leaves
 out into further tickets, so this script is the fan-out: it takes the leaf
 manifest `enumerate_tree.py` wrote, plans which leaves this ticket still owes,
 captures each one into its OWN capture dir beside the ticket's

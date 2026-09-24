@@ -42,7 +42,7 @@
 
 ## Known limitation — media egress under a confined harvest
 
-The manifest's `requires.network` covers the Spotify endpoints, Spotify's
+The harvest stage's sandbox reference covers the Spotify endpoints, Spotify's
 cover-art CDNs (`*.scdn.co`, `*.spotifycdn.com` — the cover is an asset of
 every capture) and the keyless iTunes feed lookup, and deliberately nothing
 more: the open-audio
@@ -55,33 +55,12 @@ deliberate — do not try to finish the allowlist.
 
 ## Credentials under a confined harvest
 
-Established from the host source (`pipeline/slicing.py::credential_for`,
-`schedule/runner/slice.py::compose_slice`, `common/wiki/secrets.py::get`), not
-yet from a live run. A slice is granted read on ONE credential payload, and
-only when the skill declares `requires.credential: true` and the job has a
-binding. This skill ships `requires.credential: false`, so inside a slice:
-
-- a machine with **no** `spotify` credential captures keyless, as documented
-  (`partial`, possibly-truncated list);
-- a machine that **has** one cannot read it: `credential get spotify` answers
-  `cannot read credential …`. The capture still lands, keyless, and its
-  report is `partial` with a `missing[]` entry `why: auth` and a reason that
-  points here. The API — full item lists, dates, `min_date` — is not used.
-
-Two ways to give a confined harvest the API; both are the operator's call:
-
-1. **Grant the one file on this machine.** `~/.config/llm-wiki/sandbox/slice.jsonc`
-   is the operator's own layer and may grant one path to every slice on the
-   box: a `filesystem.read` entry for the payload, which is `spotify.json`
-   inside the `store` directory that `llm-wiki-ops --json credential get spotify`
-   reports. Keeps keyless capture working on machines with no credentials.
-   Every slice on the box can then read that file. Unverified live.
-2. **Declare the credential.** Set `requires.credential: true` in this wiki's
-   copy of the manifest and bind it per job: `llm-wiki-ops credential bind <slug> spotify`.
-   The host then grants the slice that payload and puts its name on the
-   ticket, which the script honors. The cost: a machine with no binding is
-   INCAPABLE of the stage — skipped at the claim gate with a `bindings`
-   doctor row, never run — so the keyless fallback stops being reachable
-   from a ticket on that machine.
+This skill declares `requires.credential: "optional"`, which never makes the
+stage unclaimable. A job with no binding on this machine captures keyless
+(`partial`, possibly-truncated list). A job bound with `llm-wiki-ops
+credential bind <slug> spotify` gets that one payload in its slice, named on
+its ticket, and the capture uses the API: full item lists, dates,
+`min_date`. The manifest's exact `host:spotify.com` keyword is the
+credential's claim. Unverified live.
 
 Hand runs outside a slice read the store directly and need neither.
