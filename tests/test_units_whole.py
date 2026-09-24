@@ -61,7 +61,7 @@ def test_a_channel_unit_declares_both_stages_it_documents_and_is_invoked_by_tick
     """A channel unit renders its own venue's page, so it holds the pen at
     process too: the manifest declares both stages, the body documents both,
     and the one invocation for either is `/<unit> ticket=<id>`."""
-    assert unit_manifest(name)["stages"] == ["harvest", "process"], unit_manifest(name)["stages"]
+    assert list(unit_manifest(name)["stages"]) == ["harvest", "process"], unit_manifest(name)["stages"]
     skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
     front = skill.split("---", 2)[1]
     assert re.search(r'^argument-hint:\s*"ticket=<id> stage=harvest\|process"\s*$', front, re.M), front

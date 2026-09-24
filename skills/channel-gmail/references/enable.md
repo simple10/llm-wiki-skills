@@ -56,9 +56,10 @@
    grants a slice a connector. Read off the plugin's source, unconfirmed by a
    run: a spawned slice is deny-read on `~/.claude.json` and its two other
    homes (the MCP server configuration) and on `~/.claude/.credentials.json`
-   (`schedule/runner/floor.py`), and its egress is this skill's
-   `requires.network` alone — `mail.google.com`, which no step fetches and
-   which is not a connector's endpoint. No host was invented to cover that.
+   (`schedule/runner/floor.py`). Its egress is the sandbox its harvest stage
+   is bound to, which reaches the connector's endpoint,
+   `gmailmcp.googleapis.com`; whether a jailed session loads the account's
+   connectors at all is unmeasured (llm-wiki-plugins#2282).
    Under a spawning runner the worker reports `failed`, "no gmail connector
    in this session", with `missing: [{"host": "connector", "url":
    "mcp:gmail", "why": "denied"}]` — tell the operator now, so a scheduled

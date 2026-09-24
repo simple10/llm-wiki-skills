@@ -20,6 +20,7 @@ import atexit
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -91,14 +92,78 @@ def rooted(env: dict, wiki: Path) -> dict:
     return {**env, "LLM_WIKI_ROOT": str(Path(wiki).resolve())}
 
 
-def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
-    """The unit, installed and enabled in the session wiki — by whichever case
-    gets there first. Both verbs are no-ops over an identical copy, so a case
-    that needs the unit asks for it rather than leaning on another having run
-    (`-k`, `--lf`, a shuffled or split run)."""
-    for verb in (["skills", "install", name], ["skills", "enable", name, "--confirm"]):
-        r = run(ops, rooted(env, wiki), "--json", *verb)
+def jsonc(text: str) -> object:
+    """JSON with `//` line comments, which the sandbox snippets carry. A `//`
+    inside a string (a url in a description) is not a comment."""
+    out, in_string, i = [], False, 0
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            out.append(c)
+            if c == "\\":
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+            out.append(c)
+        elif text.startswith("//", i):
+            i = text.find("\n", i)
+            if i < 0:
+                break
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return json.loads("".join(out))
+
+
+def snippet(reference: str) -> str:
+    """The one fenced `jsonc` block of a sandbox reference: the profile a wiki
+    sandbox is written from."""
+    fences = re.findall(r"^```jsonc\n(.*?)^```$", reference, re.M | re.S)
+    assert len(fences) == 1, f"a sandbox reference carries {len(fences)} jsonc blocks, not one"
+    return fences[0]
+
+
+def bound(ops: list, env: dict, wiki: Path, name: str) -> None:
+    """Every stage of the installed unit that names a `sandbox_ref`, bound the
+    way `/llm-wiki:sandbox` and `/llm-wiki:enable` do it: the reference read
+    through the CLI, its snippet written and committed as a wiki sandbox, that
+    sandbox enabled, the stage bound. A snippet key the policy reader does not
+    admit fails here, at `sandboxes enable`."""
+    ops_dir = run(ops, rooted(env, wiki), "--json", "whereami").data["wiki"]["ops_dir"]
+    for stage, spec in unit_manifest(name)["stages"].items():
+        ref = spec.get("sandbox_ref")
+        if not ref:
+            continue
+        package, rel = ref.rsplit(":", 1)
+        r = run(ops, rooted(env, wiki), "--json", "packages", "reference", package, f"references/sandboxes/{rel}.md")
         assert r.returncode == 0, r.stdout + r.stderr
+        sandbox = f"{name}-{stage}"
+        template = wiki / ops_dir / "sandboxes" / f"{sandbox}.jsonc"
+        template.parent.mkdir(parents=True, exist_ok=True)
+        template.write_text(snippet(r.data["text"]), encoding="utf-8")
+        for verb in (
+            ["git", "commit", str(template.relative_to(wiki)), f"message=sandboxes: {sandbox} from {ref}"],
+            ["sandboxes", "enable", sandbox, "--confirm"],
+            ["skills", "bind", name, f"stage={stage}", f"sandbox={sandbox}", "--confirm"],
+        ):
+            r = run(ops, rooted(env, wiki), "--json", *verb)
+            assert r.returncode == 0, r.stdout + r.stderr
+
+
+def enabled(ops: list, env: dict, wiki: Path, name: str) -> None:
+    """The unit, installed, bound and enabled in the session wiki — by
+    whichever case gets there first. Each verb is a no-op over an identical
+    copy, so a case that needs the unit asks for it rather than leaning on
+    another having run (`-k`, `--lf`, a shuffled or split run)."""
+    r = run(ops, rooted(env, wiki), "--json", "skills", "install", name)
+    assert r.returncode == 0, r.stdout + r.stderr
+    bound(ops, env, wiki, name)
+    r = run(ops, rooted(env, wiki), "--json", "skills", "enable", name, "--confirm")
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
 @dataclass

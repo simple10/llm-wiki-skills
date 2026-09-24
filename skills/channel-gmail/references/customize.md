@@ -14,3 +14,17 @@ Customized is the point: writing the operator's filters into `## Stages`
 makes `skills ls` report the skill `customized`. That is configuration the
 wiki owns, not drift to repair — say so in your report so nobody "fixes"
 it with `skills install --force`.
+
+## Sandbox
+
+`stages.harvest.sandbox_ref` is
+`simple10/llm-wiki-skills:gmail/gmail.harvest`. What the stage reaches, and
+why:
+
+```sh
+llm-wiki-ops packages reference simple10/llm-wiki-skills references/sandboxes/gmail/gmail.harvest.md
+```
+
+`/llm-wiki:sandbox channel-gmail` reviews it into a wiki sandbox, and
+`/llm-wiki:enable channel-gmail` binds the stage. `process` names no sandbox
+and runs with no network.

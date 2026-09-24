@@ -5,6 +5,7 @@ install-tier case runs against. The code is `harness.py`'s.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -50,8 +51,13 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     """One `init`ed wiki for the session — installs accumulate in it, which
     is what a real wiki does."""
     w = tmp_path_factory.mktemp("wiki") / "w"
-    # `key=` names the wiki in the machine registry, which the env above points
-    # at a throwaway config, so nothing on the developer's machine is touched.
-    r = run(_cli(ops), env, "init", str(w), "key=harness", "preset=general")  # values are key=value; init commits on its own
+    r = run(_cli(ops), env, "init", str(w), "preset=general")  # values are key=value; init commits on its own
     assert r.returncode == 0, r.stderr
+    # `pipeline add` needs a joined checkout. `join` registers the wiki in the
+    # throwaway machine config above and seeds this box's sandbox base under
+    # HOME, so HOME is a scratch one for this call; uv keeps its real cache.
+    home = tmp_path_factory.mktemp("home")
+    uv_cache = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True, check=True).stdout.strip()
+    r = run(ops, {**env, "HOME": str(home), "UV_CACHE_DIR": uv_cache}, "join", "key=harness", cwd=w)
+    assert r.returncode == 0, r.stdout + r.stderr
     return w

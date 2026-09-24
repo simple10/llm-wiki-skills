@@ -4,27 +4,27 @@
     "newsletters",
     "archive",
     "posts",
-    "paywall"
+    "paywall",
+    "host:substack.com",
+    "host:*.substack.com",
+    "host:substackcdn.com"
   ],
   "kind": "channel",
   "name": "channel-substack",
   "requires": {
     "credential": false,
-    "network": [
-      "*.substack.com",
-      "substack.com",
-      "substackcdn.com"
-    ],
     "ops": ">=1.96.0"
   },
-  "stages": [
-    "harvest",
-    "process"
-  ],
+  "stages": {
+    "harvest": {
+      "sandbox_ref": "simple10/llm-wiki-skills:substack/substack.harvest"
+    },
+    "process": {}
+  },
   "usage": "/channel-substack ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "substack",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "watch": {
     "defaults": {
       "every": "1d",

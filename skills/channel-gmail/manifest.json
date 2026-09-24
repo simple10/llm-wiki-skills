@@ -4,25 +4,26 @@
     "email",
     "mailbox",
     "inbox",
-    "google"
+    "google",
+    "host:gmailmcp.googleapis.com",
+    "host:mail.google.com"
   ],
   "kind": "channel",
   "name": "channel-gmail",
   "requires": {
     "credential": true,
-    "network": [
-      "mail.google.com"
-    ],
     "ops": ">=1.96.0"
   },
-  "stages": [
-    "harvest",
-    "process"
-  ],
+  "stages": {
+    "harvest": {
+      "sandbox_ref": "simple10/llm-wiki-skills:gmail/gmail.harvest"
+    },
+    "process": {}
+  },
   "usage": "/channel-gmail ticket=<id> stage=harvest|process",
   "v": 2,
   "venue": "gmail",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "watch": {
     "defaults": {
       "every": "1d"

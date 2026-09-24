@@ -42,7 +42,7 @@
 
 ## Known limitation — media egress under a confined harvest
 
-The manifest's `requires.network` covers the Spotify endpoints, Spotify's
+The harvest stage's sandbox reference covers the Spotify endpoints, Spotify's
 cover-art CDNs (`*.scdn.co`, `*.spotifycdn.com` — the cover is an asset of
 every capture) and the keyless iTunes feed lookup, and deliberately nothing
 more: the open-audio

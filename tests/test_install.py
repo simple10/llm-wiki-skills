@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from harness import ROOT, SKILLS, SOURCE, enabled, rooted, run, unit_manifest
+from harness import ROOT, SKILLS, SOURCE, bound, enabled, rooted, run, unit_manifest
 
 CHANNELS = [n for n in SKILLS if unit_manifest(n).get("kind") == "channel" and unit_manifest(n).get("watch")]
 
@@ -31,6 +31,7 @@ def test_skill_installs_with_package_provenance_lists_clean_and_enables(ops, env
     assert not row["customized"] and not row["drifted"], row
     assert row["warnings"] == [], row
 
+    bound(ops, env, wiki, name)  # an unbound stage refuses `skills enable`
     # `--confirm`: enable decides what this machine loads, so it refuses unattended without it
     r = run(ops, rooted(env, wiki), "--json", "skills", "enable", name, "--confirm")
     assert r.returncode == 0, r.stderr

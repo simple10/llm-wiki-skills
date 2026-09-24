@@ -16,15 +16,15 @@
    that the uv-cached build and the `uvx` one agree on a browser revision, and
    that Chromium's own sandbox starts under the jail. If the first render dies
    on a missing executable, that is this step, not the site.
-2. **Pin the site's host.** In the wiki's copy of `manifest.json` add the
-   site's real domain to `requires.network` — from then on
+2. **Pin the site's host.** In the wiki's copy of `manifest.json` add
+   `host:<the site's real domain>` to `keywords` — from then on
    `skills search <domain>` answers from the wiki's copy directly. That is the
    only host to add: the platform's own — `play.hubspotvideo.com`,
    `image.mux.com`, `stream.mux.com` and `*.mux.com` (the rendition hosts
    behind the master playlist; the exact set is unverified) — ship in the
-   manifest, because they are the same for every HubSpot customer. A slice
-   reaches the job's target host plus what the ENABLED manifest lists and
-   nothing else; a host still missing comes back in the report's `missing[]`
+   harvest stage's sandbox reference, because they are the same for every
+   HubSpot customer. A slice reaches the job's target host plus its bound
+   sandbox and nothing else; a host still missing comes back in the report's `missing[]`
    as `denied`. Add no other key: `skills doctor` fails a manifest carrying
    one the contract does not name.
 3. **First capture, then selectors.** Run one capture, read the RENDERED

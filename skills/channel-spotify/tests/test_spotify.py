@@ -1094,7 +1094,7 @@ def test_the_docs_never_tell_anyone_to_put_the_secret_on_a_command_line():
                 assert "deprecated" in line.lower(), f"{doc}: {line}"
 
 
-# ------------------------------------------- requires.network covers what a capture fetches
+# ------------------------------------------- the host: keywords cover what a capture fetches
 
 
 def allowed(host: str, patterns: list) -> bool:
@@ -1104,11 +1104,13 @@ def allowed(host: str, patterns: list) -> bool:
 def test_every_host_a_default_capture_fetches_is_declared(spotify):
     """Cover art is an asset of EVERY capture: undeclared, each confined run ends
     `partial` with a `denied` entry. The per-show feed and enclosure hosts are the
-    deliberate gap (references/enable.md) and stay undeclared."""
-    network = json.loads((UNIT / "manifest.json").read_text(encoding="utf-8"))["requires"]["network"]
+    deliberate gap (references/enable.md) and stay undeclared. The sandbox
+    reference's allow-list covers every host keyword (the package's tests)."""
+    keywords = json.loads((UNIT / "manifest.json").read_text(encoding="utf-8"))["keywords"]
+    network = [k.removeprefix("host:") for k in keywords if k.startswith("host:")]
     fetched = [spotify.API, spotify.TOKEN_URL, spotify.ITUNES_SEARCH, "https://open.spotify.com/embed/x/y"]
     fetched += entity("playlist")["images"] + entity("episode")["images"]
     fetched += ["https://mosaic.scdn.co/640/x", "https://image-cdn-ak.spotifycdn.com/image/x", "https://image-cdn-fa.spotifycdn.com/image/x"]
     for url in fetched:
-        assert allowed(spotify.host_of(url), network), f"{url} is fetched by a capture and not in requires.network {network}"
+        assert allowed(spotify.host_of(url), network), f"{url} is fetched by a capture and not a host: keyword {network}"
     assert not allowed("feed.example", network) and not allowed("lexfridman.com", network)

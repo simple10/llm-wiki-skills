@@ -12,3 +12,17 @@ and their cost.
 
 Ask for an age floor (e.g. only posts from the last 3 months) — that
 becomes `harvest.max_age` on the job, and rides each ticket as `min_date`.
+
+## Sandbox
+
+`stages.harvest.sandbox_ref` is
+`simple10/llm-wiki-skills:substack/substack.harvest`. What the stage
+reaches, and why:
+
+```sh
+llm-wiki-ops packages reference simple10/llm-wiki-skills references/sandboxes/substack/substack.harvest.md
+```
+
+`/llm-wiki:sandbox channel-substack` reviews it into a wiki sandbox, and
+`/llm-wiki:enable channel-substack` binds the stage. `process` names no
+sandbox and runs with no network.

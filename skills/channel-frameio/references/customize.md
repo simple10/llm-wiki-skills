@@ -14,3 +14,17 @@ SKILL.md. The share's author, group and tags go on the JOB, not in this
 file — `meta.author=`, `meta.group=`, `meta.group_type=`, `meta.tags=`,
 `meta.areas=` on the `pipeline add` at enable — and the host stamps them
 onto every page the job lands.
+
+## Sandbox
+
+`stages.harvest.sandbox_ref` is
+`simple10/llm-wiki-skills:frameio/frameio.harvest`. What the stage reaches,
+and why:
+
+```sh
+llm-wiki-ops packages reference simple10/llm-wiki-skills references/sandboxes/frameio/frameio.harvest.md
+```
+
+`/llm-wiki:sandbox channel-frameio` reviews it into a wiki sandbox, and
+`/llm-wiki:enable channel-frameio` binds the stage. `process` names no
+sandbox and runs with no network.

@@ -265,7 +265,7 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <captu
   the iframe's media id), drop `embed-cloudfront.wistia.com/deliveries/…`
   (per-rendition manifests) and anything ending `.ts` (segments). One master
   per player.
-- Wistia's hosts are deliberately NOT in this unit's `requires.network`
+- Wistia's hosts are deliberately NOT in this unit's harvest sandbox
   (`circle.so`, `*.circle.so`, which covers `cdn-media.circle.so` and
   `assets-v2.circle.so`), so a Wistia-embedded lesson costs one widen: report
   `--missing-host fast.wistia.com denied` (and whatever other host the proxy

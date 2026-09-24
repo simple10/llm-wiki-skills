@@ -195,6 +195,7 @@ def test_a_missing_front_door_says_so_and_writes_nothing(tmp_path, monkeypatch):
     root = tmp_path / "wiki"
     cap = _capture(root)
     mod = _module()
+    monkeypatch.delenv("LLM_WIKI_OPS", raising=False)
     monkeypatch.setattr(mod.shutil, "which", lambda name: None)
     monkeypatch.setattr(sys, "argv", ["frameio_doc_note.py", str(root), f"--capture-dir={CAP_REL}", f"--dest={DEST}"])
     with pytest.raises(SystemExit) as excinfo:

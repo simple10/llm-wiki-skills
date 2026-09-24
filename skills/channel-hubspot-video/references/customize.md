@@ -20,3 +20,17 @@ you customize it.
    conclusive, and the last alone means the SKILL.md's *Media* section applies
    even where the rest of the site is not HubSpot-themed. A miss on all four
    means this is not the skill.
+
+## Sandbox
+
+`stages.harvest.sandbox_ref` is
+`simple10/llm-wiki-skills:hubspot-cms/hubspot-cms.harvest`. What the stage
+reaches, and why:
+
+```sh
+llm-wiki-ops packages reference simple10/llm-wiki-skills references/sandboxes/hubspot-cms/hubspot-cms.harvest.md
+```
+
+`/llm-wiki:sandbox channel-hubspot-video` reviews it into a wiki sandbox,
+and `/llm-wiki:enable channel-hubspot-video` binds the stage. `process`
+names no sandbox and runs with no network.
