@@ -297,9 +297,9 @@ def _holders(name: str) -> list:
     ("name", "at_least"),
     [
         ("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4), ("front_door", 9),
-        # open_ticket/post_update: web-page and channel-youtube at step 3; the
-        # floor rises with every step that copies them in (step 11).
-        ("open_ticket", 2), ("post_update", 2),
+        # open_ticket/post_update: every unit whose scripts talk to the
+        # ticket, at the final tip (step 11).
+        ("open_ticket", 11), ("post_update", 9),
     ],
 )
 def test_code_the_units_share_by_copying_is_one_piece_of_code(name, at_least):
