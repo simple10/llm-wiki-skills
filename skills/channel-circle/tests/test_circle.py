@@ -3,9 +3,9 @@
 Two steps. Harvest (`section_plan.py`) is the deterministic half — scope,
 exclusions, `known[]`, leaf directories, the flat capture records and the one
 posted update — so it is tested as pure functions everywhere, and its
-CLI-touching cases run through a stand-in front door (`_stub_ops`, the
-pattern channel-spotify's and channel-hubspot-video's tests already use)
-that answers `tickets open`/`tickets update`. Process has no script of its
+CLI-touching cases run through a stand-in front door (`_stub_ops`, the same
+stub-front-door pattern this rework's other units use) that answers
+`tickets open`/`tickets update`. Process has no script of its
 own: the cases below run SKILL.md's own three lines — `to_markdown.py`, then
 `page create`, then `page edit` — against the real CLI where one is at hand.
 Playwright cannot run here: the fixtures under `fixtures/` are what

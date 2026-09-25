@@ -603,8 +603,8 @@ def past_deadline(plan: dict, now: float | None = None) -> bool:
 
 # --- page names ---------------------------------------------------------------
 #
-# KEEP IN SYNC with the host. `pipeline extract` names a page FILE from the
-# capture's title and writes it with no existence check (llm-wiki-ops
+# KEEP IN SYNC with the host. The host's own extractor names a page FILE from
+# the capture's title and writes it with no existence check (llm-wiki-ops
 # `commands/pipeline/extract.py::_capture_to_page` -> `pipeline/pages.py::
 # name_for` -> `page/note.py::filename_for`): the filename is
 # `title.strip() + ".md"` — nothing folded, nothing dropped; a title carrying

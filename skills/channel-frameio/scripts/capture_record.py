@@ -93,7 +93,7 @@ def front_door_env() -> dict:
 def open_ticket(ticket: str, stage: str | None = None) -> dict:
     """This worker's own ticket (A-1), through the front door. Exits naming
     the refusal."""
-    me = "channel-frameio"
+    me = Path(__file__).stem
     door = front_door()
     if not door:
         sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
@@ -124,7 +124,7 @@ def post_update(
     """This worker's progress (A-2), through the front door. `missing` is an
     iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
     the side note every unit's `missing=` build follows the same way."""
-    me = "channel-frameio"
+    me = Path(__file__).stem
     door = front_door()
     if not door:
         sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
