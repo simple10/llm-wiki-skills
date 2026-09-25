@@ -119,6 +119,17 @@ def front_door() -> list:
     return [found] if found else []
 
 
+def _uv_project(door: list) -> str | None:
+    """The `--project <dir>` a `uv run --project <dir> … llm-wiki-ops` front
+    door names, or None. That project is the venv `format_transcript.py`'s
+    own imports (`llm_wiki_ops`, pyyaml) resolve in — the one a direct run
+    of it, bypassing `run`, still needs."""
+    for i, arg in enumerate(door):
+        if arg == "--project" and i + 1 < len(door):
+            return door[i + 1]
+    return None
+
+
 def open_ticket(ticket: str, stage: str | None = None) -> dict:
     """This worker's own ticket (A-1), through the front door. Exits naming
     the refusal."""
@@ -336,7 +347,18 @@ def format_transcript(captions, chapters_json, wiki, override):
     either way, so a swallowed error here ships a transcript-less page that
     reports success."""
     if override:
-        cmd, where = [sys.executable, str(Path(override).resolve())], {}
+        # A direct run still needs the formatter's own dependencies
+        # (`llm_wiki_ops`, pyyaml, …), which `sys.executable` alone never
+        # has. `LLM_WIKI_OPS` names the project that has them when it is
+        # itself a `uv run --project <dir> …` line (the harness's shape);
+        # reuse that project so the override runs under the same venv the
+        # front door would have used. A bare front door (no `--project`)
+        # falls back to `sys.executable`, as before.
+        proj = _uv_project(front_door())
+        if proj:
+            cmd, where = ["uv", "run", "--project", proj, str(Path(override).resolve())], {}
+        else:
+            cmd, where = [sys.executable, str(Path(override).resolve())], {}
     else:
         door = front_door()
         if not door:
