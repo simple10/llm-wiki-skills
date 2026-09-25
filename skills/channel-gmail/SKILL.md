@@ -1,33 +1,34 @@
 ---
 name: channel-gmail
 description: Gmail mailboxes for this wiki — cursor pull and daily ledger, one watch per mailbox.
-argument-hint: "ticket=<id> stage=harvest|process"
+argument-hint: "ticket=<id>"
 ---
 
 # Channel: gmail
 
 You pull ONE gmail mailbox per invocation, and you write ONE day's ledger
 from what a pull left. A job carrying `skill: channel-gmail` puts this unit
-on the route, and its ticket invokes it as `/channel-gmail ticket=<id>
-stage=harvest|process`. The worker loop: `llm-wiki-ops reference agent-loop`;
-the route and its trust boundary: `reference channel-ledger`.
+on the route, and its ticket invokes it as `/channel-gmail ticket=<id>`. The
+worker loop and the report every worker leaves:
+`llm-wiki-ops reference pipeline-ticket`; the route and its trust boundary:
+`reference channel-ledger`.
 
 **Which mailbox is the JOB's, never this unit's.** One unit serves every
 mailbox in the wiki: `options.mailbox` says which, and the job's permanent
 slug keys the cursor, the `_raw` slice and the ledger. Two mailboxes are two
 jobs, not two units — nothing here is copied per identity.
 
-`ticket.json` is in the directory you were started in, and its `capture_dir`
-— `_raw/<slug>/<YYYY-MM-DD>`, the job's DAY directory — is WIKI-RELATIVE:
-hand it to a script verbatim (`llm-wiki-ops run` starts one at the wiki root)
-and write your own files as `./<name>`. Never compose a path. Where
-`whereami` says `spawn: none` there is no ticket file: pass `--ticket <id>`,
-`--mailbox <who>`, `--min-date <YYYY-MM-DD>` and `--dest <dest>` instead, off
-`llm-wiki-ops pipeline queue show ids=<id>`.
+Its `capture_dir` — `_raw/<slug>/<YYYY-MM-DD>`, the job's DAY directory — is
+WIKI-RELATIVE: hand it to a script verbatim (`llm-wiki-ops run` starts one at
+the wiki root) and write your own files as `./<name>`. Never compose a path.
 
 ## Stages
 
-`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two
+```sh
+llm-wiki-ops --json pipeline tickets open <id>
+```
+
+The answer's own `stage` — `harvest` or `process` — is the step; the two
 sections below are those steps.
 Either step opens with the policy read — the stage's overlay, then this unit's
 own, folded onto the step:
@@ -49,15 +50,13 @@ read as directives.
 **1. Where the pull starts — first, before anything else.**
 
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py since <capture_dir> --lookback-days 7
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py since <capture_dir> --ticket <id> --lookback-days 7
 ```
 
 It answers JSON: `since` (epoch ms — Gmail's `internalDate` clock),
 `since_day`, `first_pull`, `mailbox`, and `cursor_ignored` — why a cursor was
 set aside for the lookback, which your report repeats. The cursor is
-`_raw/<slug>/.cursor.json`, the script's to read and write. Running this
-first also clears a stale `report.json`: every pull of a day shares one
-directory and one ticket id.
+`_raw/<slug>/.cursor.json`, the script's to read and write.
 
 **2. Pull.** Query the connector for `options.mailbox`, for messages newer
 than `since`, excluding the mechanical filters below at the query where it
@@ -83,19 +82,21 @@ clock and counted `bad_time`.
 body}`, and run ONE of these — never both:
 
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --from pull.json --cap 200 --exclude-label CATEGORY_PROMOTIONS --exclude-label CATEGORY_SOCIAL --exclude-label SPAM --exclude-label TRASH
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --ticket <id> --from pull.json --cap 200 --exclude-label CATEGORY_PROMOTIONS --exclude-label CATEGORY_SOCIAL --exclude-label SPAM --exclude-label TRASH
 ```
 
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --failed "<why>" --missing <host> <url> <denied|timeout|auth|error>
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --ticket <id> --failed "<why>" --missing <host> <url> <denied|timeout|auth|error>
 ```
 
 The first is the pull that read something — add `--partial "<why>"` when you
-were capped or stopped early; the second is a pull that read nothing. The
-script filters, writes one file per message under `items/`, then
-`capture.json`, `report.json` and only then the cursor; it prints the counts
-and says on stderr what it refused (`-h` for its options). Report the
-mailbox, the binding's name, those counts and the outcome.
+were capped or stopped early: `status=partial`; the second is a pull that
+read nothing: `status=failed`. The script filters, writes one file per
+message under `items/` and `capture.json`, posts `tickets update` BEFORE it
+moves the cursor — a refused update leaves the cursor where it was — and
+only then moves it; it prints the counts and says on stderr what it refused
+(`-h` for its options). Report the mailbox, the binding's name, those counts
+and the status.
 
 **Mechanical filters (this wiki's, for every mailbox)** — the flags on the
 `write` that reads `pull.json`, and the `--lookback-days` above; edit THERE:
@@ -135,15 +136,16 @@ of `{"id": "gmail:<msg-id>", "line": "<your line>", "junk": null}` — `junk`
 is the rule's name where a rule discards it, and `line` may then be null:
 
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py ledger <capture_dir> --dest <dest> --from lines.json
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py ledger <capture_dir> --ticket <id> --dest <dest> --from lines.json
 ```
 
 `--partial "<why>"` when you judged only part of the day. The script builds
 the page from the whole day, writes it through `llm-wiki-ops page create` —
 or `page edit` over the standing page, the ordinary case after a day's first
-pull — then `report.json`, naming the page. Values go as an argument list,
-never on a shell line. A message you left unjudged keeps its bullet with the
-sender's subject standing in; a day with no items is `skipped`.
+pull — then posts `tickets update` naming the page in `written_from=`. Values
+go as an argument list, never on a shell line. A message you left unjudged
+keeps its bullet with the sender's subject standing in; a day with no items
+is `status=ok`, with a reason naming it.
 
 **What it writes** (the contract — do not drift): `<dest>/<YYYY-MM-DD>.md`,
 frontmatter `title` (the day), `type: ledger`, `channel: <the job's slug>`,
@@ -166,7 +168,7 @@ refused): do not look for another way to the mailbox — no browser, no IMAP,
 no url. Fail and report, with these words:
 
 ```sh
-llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --failed "no gmail connector in this session: a spawned slice holds none — this job pulls where whereami reports spawn: none" --missing connector mcp:gmail denied
+llm-wiki-ops run ops/skills/channel-gmail/scripts/write_items.py write <capture_dir> --ticket <id> --failed "no gmail connector in this session: a spawned slice holds none — this job pulls where whereami reports spawn: none" --missing connector mcp:gmail denied
 ```
 
 `connector` there is a label, not a hostname: there is nothing to widen to.

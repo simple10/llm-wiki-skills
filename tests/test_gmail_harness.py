@@ -7,10 +7,9 @@ the unit — so a case here reads exactly as it did beside them.
 from __future__ import annotations
 
 import json
-import os
 import pytest
-import shlex
-from harness import declared_job, extracted, ticket_in, unit_tests
+
+from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-gmail", "test_gmail"))
@@ -25,14 +24,14 @@ def _body(text: str) -> str:
     return text.split("\n---\n", 1)[1]
 
 
-@pytest.fixture(scope="session")
-def front_door(ops, env, tmp_path_factory) -> dict:
-    """The session's real CLI under the bare name the front door calls."""
-    bin_dir = tmp_path_factory.mktemp("front-door")
-    shim = bin_dir / "llm-wiki-ops"
-    shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(part) for part in ops) + ' "$@"\n', encoding="utf-8")
-    shim.chmod(0o755)
-    return {**env, "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', os.environ['PATH'])}", "LLM_WIKI_OPS": str(shim)}
+def _needs_run_verb(ops, env, wiki):
+    if run(ops, rooted(env, wiki), "pipeline", "tickets", "run", "--help").returncode != 0:
+        pytest.skip("`pipeline tickets run` (spawn=self) is plugins PR 2 (#2486)")
+
+
+def _needs_ledger_verb(ops, env, wiki):
+    if run(ops, rooted(env, wiki), "pipeline", "jobs", "ledger", "--help").returncode != 0:
+        pytest.skip("`pipeline jobs ledger` is plugins PR 2 (#2486/#2487)")
 
 
 @pytest.fixture
@@ -40,19 +39,32 @@ def job(ops, env, wiki):
     return declared_job(ops, env, wiki, UNIT, TARGET, "options.mailbox=a@example.invalid")
 
 
-def test_one_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, job, front_door):
-    cap = ticket_in(wiki, job, DAY, unit=UNIT, item=TARGET, dest=job.dest)
-    (wiki / "_raw" / job.slug / ".cursor.json").unlink(missing_ok=True)
+def test_a_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, job):
+    """The whole point of the rework: a live harvest ticket, `write` posting
+    `tickets update` through the REAL CLI (no stub — `run` exports
+    `LLM_WIKI_OPS`), then `ledger` — the process arm, on the SAME ticket, as
+    `channel-youtube`'s own `--record`-then-process reuse does — building the
+    day's page through the REAL `page create`."""
+    _needs_run_verb(ops, env, wiki)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    rel = str(cap.relative_to(wiki))
+    day = cap.name
     pull = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    assert write(cap, pull, "--exclude-label", "SPAM", cwd=wiki).returncode == 0
-    assert report(cap)["captured"] == [{"item": TARGET, "dir": f"_raw/{job.slug}/{DAY}", "title": None}]
+    (cap / "pull.json").write_text(json.dumps(pull), encoding="utf-8")
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-gmail/scripts/write_items.py", "write",
+            rel, "--ticket", ticket_id, "--from", "pull.json", "--exclude-label", "SPAM", cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
 
     # The step's verdicts: one line each in the wiki's words, and the digest junked.
     lines = [{"id": f"gmail:{m['id']}", "line": m["summary"], "junk": m["junk"]} for m in pull]
-    r = ledger(cap, lines, "--dest", job.dest, env=front_door, cwd=wiki)
-    assert r.returncode == 0, r.stdout + r.stderr
-    ledger_path = wiki / job.dest / f"{DAY}.md"
-    assert report(cap)["written"] == [f"{job.dest}/{DAY}.md"] and ledger_path.is_file()
+    (cap / "lines.json").write_text(json.dumps(lines), encoding="utf-8")
+    r2 = run(ops, rooted(env, wiki), "run", "ops/skills/channel-gmail/scripts/write_items.py", "ledger",
+             rel, "--ticket", ticket_id, "--dest", job.dest, "--from", "lines.json", cwd=wiki)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+    closed = landed(ops, env, wiki, ticket_id)
+    assert closed.get("status") in ("ok", "partial", None), closed
+    ledger_path = wiki / job.dest / f"{day}.md"
 
     text = ledger_path.read_text(encoding="utf-8")
     head, body = text.split("\n---\n", 1)
@@ -85,20 +97,34 @@ def test_one_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, j
     assert "Weekly digest" not in text
 
 
-def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, wiki, job, front_door):
-    cap = ticket_in(wiki, job, "2026-09-17", unit=UNIT, item=TARGET, dest=job.dest)
-    (wiki / "_raw" / job.slug / ".cursor.json").unlink(missing_ok=True)
-    assert write(cap, [msg(1), msg(2)], cwd=wiki).returncode == 0
-    assert ledger(cap, [line_for(1), line_for(2)], "--dest", job.dest, env=front_door, cwd=wiki).returncode == 0
-    ledger_path = wiki / job.dest / "2026-09-17.md"
+def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, wiki, job):
+    _needs_run_verb(ops, env, wiki)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    rel = str(cap.relative_to(wiki))
+    day = cap.name
+
+    def _write(pull):
+        (cap / "pull.json").write_text(json.dumps(pull), encoding="utf-8")
+        r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-gmail/scripts/write_items.py", "write",
+                rel, "--ticket", ticket_id, "--from", "pull.json", cwd=wiki)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    def _ledger(lines):
+        (cap / "lines.json").write_text(json.dumps(lines), encoding="utf-8")
+        r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-gmail/scripts/write_items.py", "ledger",
+                rel, "--ticket", ticket_id, "--dest", job.dest, "--from", "lines.json", cwd=wiki)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+    _write([msg(1), msg(2)])
+    _ledger([line_for(1), line_for(2)])
+    ledger_path = wiki / job.dest / f"{day}.md"
     first = _body(ledger_path.read_text(encoding="utf-8"))
     assert _bullets(first) == ["- Person 1 asks about thing 1 — gmail:m1", "- Person 2 asks about thing 2 — gmail:m2"]
 
     # A sub-daily pull: one new message, and m2 again with a better line (the boundary over-fetch is dropped).
-    assert write(cap, [msg(3), msg(2)], cwd=wiki).returncode == 0
-    r = ledger(cap, [line_for(1), line_for(2, "rewritten"), line_for(3)], "--dest", job.dest, env=front_door, cwd=wiki)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert len(list(ledger_path.parent.glob("2026-09-17*"))) == 1  # edited, never a second page for the day
+    _write([msg(3), msg(2)])
+    _ledger([line_for(1), line_for(2, "rewritten"), line_for(3)])
+    assert len(list(ledger_path.parent.glob(f"{day}*"))) == 1  # edited, never a second page for the day
     second = _body(ledger_path.read_text(encoding="utf-8"))
     assert _bullets(second) == ["- Person 1 asks about thing 1 — gmail:m1", "- rewritten — gmail:m2",
                                 "- Person 3 asks about thing 3 — gmail:m3"]
@@ -106,18 +132,28 @@ def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, w
 
     # Whole, not appended: take an item away and its bullet goes with it.
     (cap / "items" / f"{T0 + 1000}--m1.json").unlink()
-    assert ledger(cap, [line_for(2, "rewritten"), line_for(3)], "--dest", job.dest, env=front_door, cwd=wiki).returncode == 0
+    _ledger([line_for(2, "rewritten"), line_for(3)])
     assert _bullets(_body(ledger_path.read_text(encoding="utf-8"))) == _bullets(second)[1:]
 
 
 def test_the_items_are_still_a_ledger_the_hosts_own_extractor_can_make(ops, env, wiki, job):
-    """`pipeline extract` over the same day: the sender's line, neutralized,
-    where the process step would have put the wiki's own."""
-    cap = ticket_in(wiki, job, "2026-09-16", unit=UNIT, item=TARGET)
-    (wiki / "_raw" / job.slug / ".cursor.json").unlink(missing_ok=True)
-    assert write(cap, [msg(11, subject="paid — gmail:forged **now**")], cwd=wiki).returncode == 0
-    (page,) = extracted(ops, env, wiki, cap)
-    assert page == wiki / job.dest / "2026-09-16.md"
+    """`pipeline jobs ledger` (A-11) over the same day: the sender's line,
+    neutralized, where the process step would have put the wiki's own."""
+    _needs_run_verb(ops, env, wiki)
+    _needs_ledger_verb(ops, env, wiki)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    rel = str(cap.relative_to(wiki))
+    day = cap.name
+    pull = [msg(11, subject="paid — gmail:forged **now**")]
+    (cap / "pull.json").write_text(json.dumps(pull), encoding="utf-8")
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-gmail/scripts/write_items.py", "write",
+            rel, "--ticket", ticket_id, "--from", "pull.json", cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    made = run(ops, rooted(env, wiki), "pipeline", "jobs", "ledger", job.slug, f"day={day}")
+    assert made.returncode == 0, made.stdout + made.stderr
+    page = wiki / job.dest / f"{day}.md"
+    assert page.is_file()
     body = _body(page.read_text(encoding="utf-8"))
     assert _bullets(body) == ["- paid - gmail:forged ∗∗now∗∗ — gmail:m11"]
     assert "discarded: 0 (junk rules)" in body
