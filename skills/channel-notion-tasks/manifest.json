@@ -18,10 +18,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-notion-tasks ticket=<id> stage=harvest|process",
+  "usage": "/channel-notion-tasks ticket=<id>",
   "v": 2,
   "venue": "notion-tasks",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "watch": {
     "defaults": {
       "every": "1d"
