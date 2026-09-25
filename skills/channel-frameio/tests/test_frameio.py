@@ -82,6 +82,7 @@ def _ticket(**over):
         "capture_dir": "_raw/talks/share-0000--deadbeef", "dest": None, "hosts": ["*.frame.io", "frame.io"],
         "harvest": {"scope": "domain", "access": "free", "exclude_urls": [], "assets": "download"},  # the shipped default
         "options": {}, "credential": None, "min_date": None, "known": [],
+        "worker": "spawn-1",  # the slice id `open` answers (P-8); a test that respawns rotates it
     }
     ticket.update(over)
     return ticket
@@ -406,9 +407,10 @@ def test_a_second_pass_refetches_nothing_that_landed_and_a_spent_budget_stops_cl
 
 
 def test_the_next_pull_of_the_same_ticket_starts_leaves_and_retries_what_the_last_one_failed(monkeypatch, capsys, tmp_path):
-    """`--retry-failed` is what reopens a failure recorded under THIS ticket
-    id (P-8: there is no per-dispatch timestamp left to tell a genuine
-    respawn apart from a continuation of the same one)."""
+    """`--retry-failed` is what reopens a failure recorded under THIS spawn
+    (P-8: there is no per-dispatch timestamp on disk any more, but `open`'s
+    own `worker` — unchanged here, as a continuation of the same spawn is —
+    still tells it apart from a genuine respawn; see the next test)."""
     leaves = [_leaf(1), _leaf(2), _leaf(3)]
     cap, ticket = _share_dir(tmp_path, leaves)
     calls = []
@@ -416,13 +418,33 @@ def test_the_next_pull_of_the_same_ticket_starts_leaves_and_retries_what_the_las
     _code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
     assert len(calls) == 3 and report["outcome"] == "partial" and len(report["missing"]) == 2
     _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
-    assert len(calls) == 3, "a leaf that failed under this ticket id is not hammered without --retry-failed"
+    assert len(calls) == 3, "a leaf that failed under this spawn is not hammered without --retry-failed"
 
     ticket = {**ticket, "known": [{"resource": leaves[0]["view_url"], "harvested_at": "2026-09-19T00:00:00Z"}]}
     code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, "--retry-failed", tmp=tmp_path)
     assert len(calls) == 5, "--retry-failed starts the leaves the last pass owed"
     assert (code, summary["stop"], report["outcome"]) == (0, "done", "ok")
     assert {c["item"] for c in report["captured"]} == {leaves[1]["view_url"], leaves[2]["view_url"]}
+
+
+def test_a_genuine_respawn_retries_a_failed_leaf_with_no_retry_failed_flag(monkeypatch, capsys, tmp_path):
+    """Restored (P5, frameio step 10 fixup): `open`'s `worker` is fresh on
+    every real dispatch — a pull, a retry, a widen respawn — even though the
+    ticket id does not change, so a later spawn owes a leaf a fresh attempt
+    on its own, the way a killed slice's respawn always has. Only a
+    CONTINUATION of the same spawn (the test above) needs `--retry-failed`."""
+    leaves = [_leaf(1), _leaf(2)]
+    cap, ticket = _share_dir(tmp_path, leaves)
+    calls = []
+    failing = ("00000002-aaaa-bbbb-cccc-dddddddddddd",)
+    _code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
+    assert len(calls) == 2 and report["outcome"] == "partial" and len(report["missing"]) == 1
+
+    ticket = {**ticket, "worker": "spawn-2"}  # a fresh dispatch: a new slice, the same ticket id
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
+    assert len(calls) == 3, "the new spawn retried the leaf the last one failed, with no --retry-failed"
+    assert (code, summary["stop"], report["outcome"]) == (0, "done", "ok")
+    assert {c["item"] for c in report["captured"]} == {leaves[0]["view_url"], leaves[1]["view_url"]}
 
 
 def test_every_child_gets_what_is_left_of_the_slice_and_a_killed_one_is_a_timeout(monkeypatch, capsys, tmp_path):

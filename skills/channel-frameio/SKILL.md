@@ -145,10 +145,10 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
 - **It is bounded, and you re-run it.** Run it with your tool's longest
   timeout. Its stdout summary says `"stop": "budget"` — run the same command
   again — or `"done"` / `"slice"` — stop. A leaf already captured is counted,
-  never re-fetched; a leaf THIS TICKET failed is left alone unless you pass
-  `--retry-failed` (a failure stays under this ticket id until you name it —
-  see the script's own docstring). Outside any slice — a hand run continuing
-  an old plan — pass `--slice-seconds 0`.
+  never re-fetched; a leaf THIS SPAWN failed is left alone unless you pass
+  `--retry-failed` (a genuine new spawn — the next pull, retry or widen
+  respawn — retries it on its own; see the script's own docstring). Outside
+  any slice — a hand run continuing an old plan — pass `--slice-seconds 0`.
 - **Outcomes.** `ok`: every planned leaf landed, or nothing new was in scope
   (P-4: known/excluded/reference — never a worker's `skipped`). `partial`:
   some leaves did, and the rest are the job's next spawn's (unverified:

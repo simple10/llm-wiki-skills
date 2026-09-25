@@ -65,13 +65,16 @@ count in its `reason`.
 a hash of the job's slug and target: the same on every pull, every retry and
 every respawn after a widen, into the same capture dir, which the spawner
 only ever `mkdir -p`s. There is no per-dispatch timestamp on disk any more
-(P-8: `open` answers no mtime), so the ticket id itself is the spawn's name —
-a failure an `error.json` recorded, and `plan.json`, count only when they
-carry the same one, and `--retry-failed` is what reopens a failure recorded
-under THIS ticket id (an operator's own call, since nothing here can tell a
-genuine respawn apart from a continuation of the same one any more). The
-first capturing pass of a spawn is the FIRST one to see no earlier `plan.json`
-for this ticket id.
+(P-8: `open` answers no mtime), but `open`'s own `worker` is one: the record's
+`worker` at start is the slice id, or the session's for `spawn=self`, fresh on
+every dispatch — a pull, a retry, a widen respawn — even though the ticket id
+does not change between them. So the spawn's name is `worker`, not the ticket
+id: a failure an `error.json` recorded, and `plan.json`, count only when they
+carry the same one, and a genuine respawn (a new `worker`) auto-reopens every
+failure the last one recorded, the same as it always did; `--retry-failed` is
+still there for reopening one under the SAME spawn, an operator's own call.
+The first capturing pass of a spawn is the FIRST one to see no earlier
+`plan.json` carrying this `worker`.
 
 A target that is itself a leaf viewer (`.../view/<asset-id>`) needs no
 manifest: it is one leaf, captured into the ticket's own capture dir.
@@ -342,17 +345,19 @@ def single_leaf_plan(ticket: dict) -> dict:
 # ---------------------------------------------------------------- the report
 
 
-def spawn_of(ticket_id):
-    """This run's own spawn marker (P-8): there is no per-dispatch timestamp
-    on disk any more (`open` answers no mtime, no `spawned_at`), and the
-    ticket's own id is stable across every pull, retry and respawn after a
-    widen — so it is what `leaf_state()` keys a recorded failure on: a
-    failure stays put until `--retry-failed` names it, rather than being
-    silently retried by the next pull of the same ticket. None is a hand run
-    with no `--ticket`: one open-ended "spawn", whose recorded failures
+def spawn_of(ticket: dict):
+    """This run's own spawn marker (P-8): `open`'s `worker` — the slice id, or
+    the session's for `spawn=self` — set fresh at every dispatch, unlike the
+    ticket's own id, which is stable across every pull, retry and respawn
+    after a widen. It is what `leaf_state()` keys a recorded failure on: a
+    failure stays put across a continuation of the SAME spawn (`--retry-failed`
+    reopens it by hand), and a later, genuine spawn — a new `worker` — owes
+    every leaf a fresh attempt automatically, the way a killed slice's
+    respawn always has. None is a hand run with no `--ticket` (no `open`, so
+    no `worker`): one open-ended "spawn", whose recorded failures
     `--retry-failed` reopens the same way.
     """
-    return ticket_id
+    return ticket.get("worker")
 
 
 def slice_epoch(spawn, earlier: dict, same_spawn: bool, now: float, cap: float = SLICE_CAP_SECONDS) -> float:
@@ -568,7 +573,7 @@ def main() -> int:
     # Whose state is on disk? The SPAWN's — see the module docstring. The id
     # is kept in the files for a reader; nothing is decided by it alone.
     ticket_id = ticket.get("ticket")
-    spawn = spawn_of(ticket_id)
+    spawn = spawn_of(ticket)
     now = time.time()
     earlier = read_json(directory / PLAN_NAME) or {}
     same_spawn = spawn is not None and earlier.get("spawn") == spawn
