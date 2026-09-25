@@ -23,10 +23,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-spotify ticket=<id> stage=harvest|process",
+  "usage": "/channel-spotify ticket=<id>",
   "v": 2,
   "venue": "spotify",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -36,7 +36,9 @@
         "scope": "page"
       },
       "transcribe": {
-        "when": "if-no-captions"
+        "options": {
+          "when": "if-no-captions"
+        }
       }
     },
     "dest": "sources/podcasts/{slug}",

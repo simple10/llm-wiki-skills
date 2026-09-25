@@ -24,14 +24,14 @@ Subcommands:
                 it arrived, items and audio routes planned), items.json,
                 assets.json (pending cover art + audio enclosures) and a flat
                 capture.json naming meta.json as the body. No page, no facts
-                object. Reads the URL, slug, min_date and asset policy off the
-                ticket.json the spawner left in that directory; flags override.
+                object. Reads the URL, slug, min_date and asset policy off
+                `tickets open`, given --ticket; flags override.
   process       PROCESS: meta.json -> the page, written under --dest through
                 `llm-wiki-ops page create` (or `page edit` when it is already
                 there), as a subprocess with an argv list. Prints the pages it
-                wrote; the caller passes them to `report --written`.
-  report        report.json into --capture-dir, read off what is there — the
-                last thing either worker writes.
+                wrote; the caller passes them to `report --written-from`.
+  report        posts `tickets update` from what --capture-dir holds — the
+                last thing either worker runs.
 
 Inputs:  entity URL (https://open.spotify.com/<type>/<id>) or spotify:<type>:<id>
 Outputs: JSON on stdout (all subcommands); capture writes files, stdout JSON
@@ -41,8 +41,9 @@ Outputs: JSON on stdout (all subcommands); capture writes files, stdout JSON
 
 Two steps, one script. Harvest captures bytes and may not write the job's
 `dest`; process reads those bytes and writes the page. Which step a worker is
-in is the `stage=` argument its prompt carries, never anything in ticket.json:
-a single-item job's two tickets share one capture directory and one file name.
+in is the SUBCOMMAND its prompt runs (`capture` or `process`), never
+anything on the ticket: a single-item job's two tickets share one capture
+directory and one file name.
 
 Auth: the `spotify` credential, {"client_id": ..., "client_secret": ...}
       (env SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET override). `auth
@@ -80,6 +81,9 @@ History:
               items that cannot be fetched makes the capture `partial`, a
               `skipped` report repeats nothing from an earlier pull, and the
               client secret is prompted for instead of taken from argv.
+  2026-09-25  Moved to the CLI-verb worker contract: `capture`/`process`
+              read the ticket through `tickets open`, `report` posts
+              `tickets update` — no more ticket.json/report.json on disk.
 """
 
 import argparse
@@ -269,6 +273,63 @@ def front_door() -> list:
         return shlex.split(named)
     found = shutil.which(OPS)
     return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
 
 
 # What a nested front-door call must NOT inherit from the one that ran this
@@ -698,12 +759,13 @@ def match_episode(feed_items, name, duration_ms, tol_s=150):
 # -------------------------------------------------------------------- capture
 
 
-# What the spawner leaves beside a worker, what the process step reads, and
-# what travels back out of the slice. The names are the host's; this unit only
-# reads the first and writes the other two.
-TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
-REPORT_NAME = "report.json"
+# A capture-arm verdict with nothing captured (known/excluded/gone/failed) —
+# no unit writes a report file any more — but `report` still has to run
+# LAST and post it, per SKILL.md's step order. This is that handoff, and
+# nothing else reads it: `capture`/`process` write it, `report` reads and
+# removes it.
+VERDICT_NAME = "verdict.json"
 
 # Frontmatter keys another verb owns — never among the `key=value` words the
 # process step hands `page create`, whatever the entity is called. `type` is
@@ -717,7 +779,6 @@ ASSET_POLICIES = ("reference", "download", "download-audio")
 # `download-audio` as "the enclosures, not the cover" is this unit's.
 ASSET_ARGS = {"reference": ["--mode", "reference"], "download": [], "download-audio": ["--skip-types", "image"]}
 
-OUTCOMES = ("ok", "partial", "skipped", "unchanged", "gone", "failed")
 WHYS = ("denied", "timeout", "auth", "error")
 
 # How the slice proxy words a refusal (measured by the plugin's own fetch
@@ -725,13 +786,10 @@ WHYS = ("denied", "timeout", "auth", "error")
 DENIED_MARKERS = ("tunnel connection failed", "not in the allowlist")
 
 
-def read_ticket(cap):
-    """`ticket.json` beside the capture, or `{}` — a hand run has none."""
-    try:
-        data = json.loads((Path(cap) / TICKET_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+def opened_ticket(ticket_id, stage=None):
+    """This worker's ticket through `tickets open` (A-1), or `{}` when there
+    is none — a hand run names its own inputs instead."""
+    return open_ticket(ticket_id, stage) if ticket_id else {}
 
 
 def now_iso():
@@ -922,22 +980,22 @@ def cmd_capture(a):
     # `capture_dir`, wiki-relative, verbatim — and a directory with no ticket in
     # it is refused rather than created, unless this is plainly a hand run.
     cap = Path(a.capture_dir)
-    ticket = read_ticket(cap)
+    ticket = opened_ticket(a.ticket, "harvest")
     if not ticket and not a.url:
         die(
-            f"{a.capture_dir} holds no {TICKET_NAME}. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
+            f"no --ticket and no entity URL. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
             f"(this script runs from the wiki root, {Path.cwd()}). A hand run names the entity URL as well."
         )
     # FIRST, before anything below can refuse: a respawn, and the next pull,
     # land in this same directory. What an earlier run left must not answer
-    # for this one — `report` reads `capture.json` as "it landed", `apply`
-    # never checks whose `report.json` it is reading, and a refusal that left
-    # the last run's `ok` report in place would be read as this run's.
-    for stale in (CAPTURE_NAME, REPORT_NAME):
+    # for this one — `report` reads `capture.json` as "it landed", and a
+    # refusal that left the last run's verdict in place would be read as
+    # this run's.
+    for stale in (CAPTURE_NAME, VERDICT_NAME):
         (cap / stale).unlink(missing_ok=True)
     url = a.url or ticket.get("item") or ticket.get("target")
     if not url:
-        die(f"no entity URL: pass one, or run beside a {TICKET_NAME} that names an item")
+        die("no entity URL: pass one, or run with --ticket naming an item")
     slug = a.slug or ticket.get("slug")
     min_date = a.min_date or ticket.get("min_date")
     if min_date and not _published_day(min_date):
@@ -947,17 +1005,18 @@ def cmd_capture(a):
         die(f"unknown assets policy {policy!r} (one of: {', '.join(ASSET_POLICIES)})")
     cap.mkdir(parents=True, exist_ok=True)
 
-    def verdict(outcome, reason, code, **said):
-        """A run that ends here, with nothing captured: the report is the whole
-        of it, written from THIS run's facts and nothing on disk."""
+    def verdict(status, reason, code, **said):
+        """A run that ends here, with nothing captured: `report` still runs
+        LAST and posts it, so the verdict is handed off through VERDICT_NAME
+        rather than posted here."""
         if ticket:
-            _dump(cap / REPORT_NAME, build_report(cap, ticket, outcome=outcome, reason=reason))
-        print(json.dumps({"url": url, **said, "outcome": outcome, "reason": reason, "capture_dir": str(cap)}, indent=1))
+            _dump(cap / VERDICT_NAME, {"ticket": ticket.get("ticket"), "stage": "harvest", "status": status, "reason": reason})
+        print(json.dumps({"url": url, **said, "outcome": status, "reason": reason, "capture_dir": str(cap)}, indent=1))
         sys.exit(code)
 
     if ticket and already_held(ticket, url) and not ticket.get("refresh"):
-        # The pull whose target the job already holds: a designed non-event.
-        verdict("skipped", f"known: {url}", 0, skipped=True)
+        # The pull whose target the job already holds: a designed non-event (P-4: ok + a reason naming known).
+        verdict("ok", f"known: {url}", 0, skipped=True)
 
     for stale in OWN_FILES:  # past the skip: this run re-plans them all, or dies and must not leave the last run's
         (cap / stale).unlink(missing_ok=True)
@@ -978,7 +1037,7 @@ def cmd_capture(a):
             ent = fetch_entity(token, typ, eid, a.market) if token else fetch_entity_keyless(typ, eid)
         except NotFound as gone:
             # 404/410 for the entity itself. On a refresh ticket that is the
-            # `gone` verdict (agent-loop), and `apply` dates it on the page; on
+            # `gone` status, and the host's `close` dates it on the page; on
             # a first pull there is nothing to be gone FROM, so it failed.
             # Spotify answers 404 for "not offered in this market" too.
             reason = (
@@ -1092,18 +1151,18 @@ def cmd_process(a):
     # verbatim off the ticket. The STEP is never read here — it is the `stage=`
     # the prompt carries, and this subcommand is what that argument chose.
     cap = Path(a.capture_dir)
-    ticket = read_ticket(cap)
+    ticket = opened_ticket(a.ticket, "process")
     if not ticket and not a.dest:
         die(
-            f"{a.capture_dir} holds no {TICKET_NAME}. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
+            f"no --ticket and no --dest. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
             f"(this script runs from the wiki root, {Path.cwd()}). A hand run names --dest as well."
         )
     dest = a.dest or ticket.get("dest")
     if not dest:
-        die(f"no dest: pass --dest, or run beside a {TICKET_NAME} that names one")
-    # FIRST, before anything below can refuse: harvest's own report is in this
-    # directory, and `apply` never checks whose ticket a report answers.
-    (cap / REPORT_NAME).unlink(missing_ok=True)
+        die("no dest: pass --dest, or run with --ticket naming one")
+    # FIRST, before anything below can refuse: an earlier run's verdict is in
+    # this directory, and `report` never checks whose ticket it answers.
+    (cap / VERDICT_NAME).unlink(missing_ok=True)
     try:
         meta = json.loads((cap / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -1113,15 +1172,18 @@ def cmd_process(a):
 
     section = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
 
-    def verdict(outcome, reason, code, **said):
+    def verdict(status, reason, code, **said):
+        """As `cmd_capture`'s: handed off through VERDICT_NAME for `report`,
+        run LAST, to post."""
         if ticket:
-            _dump(cap / REPORT_NAME, build_report(cap, ticket, outcome=outcome, reason=reason))
-        print(json.dumps({"url": meta.get("url"), **said, "outcome": outcome, "reason": reason, "dest": dest}, indent=1))
+            _dump(cap / VERDICT_NAME, {"ticket": ticket.get("ticket"), "stage": "process", "status": status, "reason": reason})
+        print(json.dumps({"url": meta.get("url"), **said, "outcome": status, "reason": reason, "dest": dest}, indent=1))
         sys.exit(code)
 
     rule = excluded_by(meta, section.get("exclude_rules"))
     if rule:
-        verdict("skipped", f"excluded by process.exclude_rules: {rule!r}", 0, skipped=True)
+        # P-4: a capture that earns no page is `ok`, with the rule named in the reason.
+        verdict("ok", f"excluded by process.exclude_rules: {rule!r}", 0, skipped=True)
     meta = refiltered(meta, a.min_date or ticket.get("min_date"))
 
     keys = page_frontmatter(meta)
@@ -1148,18 +1210,19 @@ def cmd_process(a):
 # --------------------------------------------------------------------- report
 
 
-def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capture_dir=None, extra_missing=(), written=()):
-    """`report.json` for one run over this capture dir, read off what is there.
+def build_update(cap, ticket, *, capture_dir=None, extra_missing=()):
+    """The `tickets update` arguments for a FRESH run over this capture dir —
+    never called for a TERMINAL prior verdict (`cmd_report` posts that one
+    directly) — read off what is on disk.
 
-    `written` makes it a PROCESS report: those pages are what landed, and
-    `captured[]` is empty — the harvest report already named the capture.
-    Otherwise `captured[]` names the capture dir exactly when `capture.json` is
-    there.
+    `captured[]` names the capture dir exactly when `capture.json` is there.
     `missing[]` is every failed asset in `assets.json`, every feed lookup the
     capture could not reach (`meta.json` `unreachable`), and whatever the
-    caller adds. The outcome, unless the caller names one: `failed` with no
-    capture; `partial` when something is missing or the item list came from
-    the keyless embed (possibly truncated); else `ok`.
+    caller adds. P-5: `failed` with no capture; `partial` ONLY when the item
+    list itself was truncated by a page the API could not fetch — a re-run
+    picks up where it left off; every other shortfall (a missing asset, a
+    credential the slice could not read, a keyless capture) is a LASTING
+    fact about this pull — `ok`, named in `reason` and `missing[]`.
     """
     cap = Path(cap)
 
@@ -1169,18 +1232,14 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
         except (OSError, ValueError):
             return default
 
-    # `skipped` and `gone` fetched nothing THIS run: whatever the directory
-    # holds is an earlier pull's, and its `missing[]` is not this run's to repeat.
-    fresh = outcome not in ("skipped", "gone")
-    record = load(CAPTURE_NAME, None) if fresh else None
-    meta = load("meta.json", {}) if fresh else {}
-    assets = load("assets.json", []) if fresh else []
+    record = load(CAPTURE_NAME, None)
+    meta = load("meta.json", {})
+    assets = load("assets.json", [])
     if not isinstance(meta, dict):
         meta = {}
     where = capture_dir or ticket.get("capture_dir") or str(cap)
-    written = [str(w) for w in written]
-    captured, missing, why_partial = [], [], []
-    if isinstance(record, dict) and not written:
+    captured, missing, why_ok = [], [], []
+    if isinstance(record, dict):
         captured.append({"item": record.get("item"), "dir": where, "title": record.get("title")})
     for m in (meta.get("unreachable") or []) if isinstance(meta, dict) else []:
         if isinstance(m, dict) and m.get("url"):
@@ -1190,99 +1249,104 @@ def build_report(cap, ticket, *, outcome=None, reason=None, ticket_id=None, capt
             missing.append({"host": host_of(entry["src_url"]), "url": entry["src_url"], "why": why_for(entry.get("error"))})
     missing.extend(extra_missing)
     if missing:
-        why_partial.append(f"{len(missing)} url(s) not reached")
+        why_ok.append(f"{len(missing)} url(s) not reached")
     cut, auth = meta.get("truncated"), meta.get("auth")
+    truncated_reason = None
     if isinstance(cut, dict) and cut.get("url"):
         missing.append({"host": host_of(cut["url"]), "url": cut["url"], "why": cut.get("why") if cut.get("why") in WHYS else "error"})
-        why_partial.append(
+        truncated_reason = (
             f"item list TRUNCATED at {cut.get('got')} of {cut.get('expected') or '?'}: a page of it could not be "
             f"fetched ({cut.get('said')}) — re-run the ticket to complete it"
         )
     if isinstance(auth, dict) and auth.get("url"):
         missing.append({"host": host_of(auth["url"]), "url": auth["url"], "why": "auth"})
-        why_partial.append(
+        why_ok.append(
             f"API credentials exist on this machine and could not be read here ({auth.get('said')}), so the API was "
             f"not used. Fix: a confined slice is granted no credential payload for this unit — see the unit's "
             f"references/enable.md, 'Credentials under a confined harvest'"
         )
     if meta.get("keyless"):
-        why_partial.append("keyless capture: the item list may be truncated")
-    if outcome is None:
-        outcome = "failed" if not (captured or written) else ("partial" if why_partial else "ok")
-    if reason is None:
-        if outcome == "failed":
-            reason = f"no {CAPTURE_NAME} in {where}"
-        elif outcome == "partial":
-            reason = "; ".join(why_partial) or None
-    return {
-        "v": 1,
-        "ticket": ticket_id or ticket.get("ticket"),
-        "outcome": outcome,
-        "reason": reason,
-        "captured": captured,
-        "written": written,
-        "missing": missing,
-        "discovered": [],
-    }
+        why_ok.append("keyless capture: the item list may be truncated")
 
-
-TERMINAL = ("skipped", "gone", "failed")  # the verdicts `capture` writes itself, with nothing captured
+    if not captured:
+        status, reason = "failed", f"no {CAPTURE_NAME} in {where}"
+    elif truncated_reason:
+        status, reason = "partial", truncated_reason
+    else:
+        status, reason = "ok", ("; ".join(why_ok) if why_ok else None)
+    return {"status": status, "reason": reason, "captured": captured, "missing": missing}
 
 
 def cmd_report(a):
+    """Posts `tickets update` — run LAST, per SKILL.md. Exit codes keep
+    their old meaning: 0 posted (whatever the status), 1 posted `failed`,
+    2 refused (nothing posted)."""
     cap = Path(a.capture_dir)  # wiki-relative: `llm-wiki-ops run` starts this in the wiki root
-    ticket = read_ticket(cap)
-    if not ticket and not (a.ticket and a.dir):
-        die(
-            f"{a.capture_dir} holds no {TICKET_NAME}. --capture-dir is the ticket's `capture_dir`, WIKI-RELATIVE "
-            f"(this script runs from the wiki root). A hand run passes --ticket <id> and --dir <capture_dir>."
-        )
+    ticket_id = a.ticket
+    if not ticket_id:
+        die("no --ticket")
     # Read, then REMOVED, before anything below can refuse: a refusal that left
-    # an earlier `ok` report in place would hand `apply` a success this run did
-    # not have. (Not before the refusal above — a directory with no ticket in it
-    # is not known to be ours.)
+    # an earlier verdict in place would be read as this run's.
     try:
-        prior = json.loads((cap / REPORT_NAME).read_text(encoding="utf-8"))
+        prior = json.loads((cap / VERDICT_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         prior = None
-    (cap / REPORT_NAME).unlink(missing_ok=True)
+    (cap / VERDICT_NAME).unlink(missing_ok=True)
     extra = []
     for spec in a.missing or []:
         url, _, why = spec.rpartition("=")
         if not url or why not in WHYS:
             die(f"--missing takes <url>=<{'|'.join(WHYS)}>, got {spec!r}")
         extra.append({"host": host_of(url), "url": url, "why": why})
-    ticket_id = a.ticket or ticket.get("ticket")
-    if not ticket_id:
-        die(f"no ticket id: pass --ticket, or run beside a {TICKET_NAME}")
-    # `capture` may have ended this run with a verdict of its own (known, gone,
-    # not found) and its reason: running `report` after it, as the flow says
-    # to, must not flatten that into "no capture.json". The report on disk is
-    # this run's only when it carries THIS ticket and no capture landed since —
-    # `capture` removes any earlier report first, and a report another verb
-    # left carries another ticket's id.
-    outcome, reason = a.outcome, a.reason
+
+    # `capture`/`process` may have ended this run with a verdict of its own
+    # (known, excluded, gone, not found): running `report` after it, as the
+    # flow says to, must not flatten that into "no capture.json". The
+    # verdict on disk is this run's only when it carries THIS ticket and no
+    # capture landed since.
     if (
-        outcome is None
-        and not a.written
-        and isinstance(prior, dict)
-        and prior.get("ticket") == ticket_id
-        and prior.get("outcome") in TERMINAL
-        and not prior.get("captured")
+        isinstance(prior, dict) and prior.get("ticket") == ticket_id
         and not (cap / CAPTURE_NAME).exists()
     ):
-        outcome, reason = prior["outcome"], reason or prior.get("reason")
-    report = build_report(
-        cap, ticket, outcome=outcome, reason=reason, ticket_id=ticket_id, capture_dir=a.dir,
-        extra_missing=extra, written=a.written or (),
+        status, reason, stage = prior["status"], prior.get("reason"), prior.get("stage") or "harvest"
+        code = post_update(ticket_id, stage, status, reason=reason, missing=[(m["host"], m["url"], m["why"]) for m in extra])
+        print(json.dumps({"status": status, "reason": reason}, indent=1))
+        if code:
+            sys.exit(2)
+        if status == "failed":
+            sys.exit(1)
+        return
+
+    if a.written_from:
+        # The page LANDED, but the capture behind it may still be degraded
+        # (truncated, keyless, a missing asset) — `written_from=` never
+        # launders that into a quiet `ok`: the status/reason are the same
+        # derivation as a harvest report, `captured[]` just goes unclaimed.
+        ticket = opened_ticket(ticket_id, "process") if not a.dir else {}
+        update = build_update(cap, ticket, capture_dir=a.dir, extra_missing=extra)
+        code = post_update(
+            ticket_id, "process", update["status"], reason=update["reason"], written_from=a.written_from,
+            missing=[(m["host"], m["url"], m["why"]) for m in update["missing"]],
+        )
+        print(json.dumps({**update, "written_from": a.written_from}, indent=1))
+        if code:
+            sys.exit(2)
+        if update["status"] == "failed":
+            sys.exit(1)
+        return
+
+    # No prior verdict and no --written-from: a fresh harvest capture, read off disk.
+    # `--dir` names a hand run's own capture dir, which needs no ticket lookup.
+    ticket = opened_ticket(ticket_id, "harvest") if not a.dir else {}
+    update = build_update(cap, ticket, capture_dir=a.dir, extra_missing=extra)
+    code = post_update(
+        ticket_id, "harvest", update["status"], reason=update["reason"],
+        captured=[c["dir"] for c in update["captured"]], missing=[(m["host"], m["url"], m["why"]) for m in update["missing"]],
     )
-    if report["outcome"] in ("ok", "partial", "unchanged") and not (report["captured"] or report["written"]):
-        # agent-loop: a report claiming a capture with nothing captured fails its
-        # ticket anyway — refuse to write the claim rather than let `apply` find it.
-        die(f"outcome {report['outcome']!r} with nothing captured: there is no {CAPTURE_NAME} in {a.capture_dir}")
-    _dump(cap / REPORT_NAME, report)
-    print(json.dumps(report, indent=1))
-    if report["outcome"] == "failed":
+    print(json.dumps(update, indent=1))
+    if code:
+        sys.exit(2)
+    if update["status"] == "failed":
         sys.exit(1)
 
 
@@ -1522,11 +1586,12 @@ def main():
         "capture",
         help="capture an entity into --capture-dir: meta.json, items.json, assets.json, capture.json",
     )
-    c.add_argument("url", nargs="?", help=f"entity URL/URI; default: `item` in <capture-dir>/{TICKET_NAME}")
+    c.add_argument("url", nargs="?", help="entity URL/URI; default: the ticket's `item`")
     c.add_argument(
         "--capture-dir", required=True,
-        help=f"the ticket's `capture_dir`, WIKI-RELATIVE and verbatim (holds {TICKET_NAME}); the script runs from the wiki root",
+        help="the ticket's `capture_dir`, WIKI-RELATIVE and verbatim; the script runs from the wiki root",
     )
+    c.add_argument("--ticket", help="the ticket id, opened for the rest of these defaults; REQUIRED unless every other flag names a hand run's inputs")
     c.add_argument("--slug", help=f"job slug for {CAPTURE_NAME}; default: the ticket's `slug`")
     c.add_argument("--market", default="US")
     c.add_argument("--min-date", help="drop items released before YYYY-MM-DD; default: the ticket's `min_date`")
@@ -1544,22 +1609,22 @@ def main():
     )
     c.add_argument(
         "--capture-dir", required=True,
-        help=f"the ticket's `capture_dir`, WIKI-RELATIVE and verbatim (holds {TICKET_NAME} and meta.json)",
+        help="the ticket's `capture_dir`, WIKI-RELATIVE and verbatim (holds meta.json)",
     )
+    c.add_argument("--ticket", help="the ticket id, opened for --dest's default; REQUIRED unless --dest names a hand run's")
     c.add_argument("--dest", help="the ticket's `dest`, WIKI-RELATIVE; default: the ticket's own")
     c.add_argument("--min-date", help="drop items released before YYYY-MM-DD; default: the ticket's `min_date`")
     c.set_defaults(fn=cmd_process)
 
-    c = sub.add_parser("report", help=f"write {REPORT_NAME} from what the capture dir holds — run it LAST")
+    c = sub.add_parser("report", help="post `tickets update` from what the capture dir holds — run it LAST")
     c.add_argument("--capture-dir", required=True, help="the ticket's `capture_dir`, WIKI-RELATIVE and verbatim")
-    c.add_argument("--ticket", help=f"ticket id; default: `ticket` in <capture-dir>/{TICKET_NAME}")
-    c.add_argument("--dir", help="wiki-relative capture dir for captured[]; default: the ticket's `capture_dir`")
-    c.add_argument("--outcome", choices=OUTCOMES, help="override the outcome read off the capture dir")
-    c.add_argument("--reason")
+    c.add_argument("--ticket", required=True, help="the ticket id")
+    c.add_argument("--dir", help="wiki-relative capture dir for captured[]; default: the ticket's `capture_dir`. Given, this is a PROCESS report")
     c.add_argument("--missing", action="append", metavar="URL=WHY", help=f"a url not reached; WHY is {'|'.join(WHYS)}")
     c.add_argument(
-        "--written", action="append", metavar="PATH",
-        help="a page this process run wrote, wiki-relative; repeatable. Given, the report is a PROCESS report",
+        "--written-from", metavar="FILE",
+        help="a JSON list of wiki-relative pages this process run wrote, relative to --capture-dir. Given, the "
+        "post is a PROCESS report: `written_from=` is posted and no capture is claimed",
     )
     c.set_defaults(fn=cmd_report)
 

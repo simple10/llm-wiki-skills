@@ -18,7 +18,7 @@
    `llm-wiki-ops run ops/skills/channel-spotify/scripts/spotify.py search "lex fridman #400" --type episode`
    — confirm the match with the operator, then watch the chosen URL.
 3. **Declare the job**: one per entity URL.
-   `llm-wiki-ops pipeline add <entity-url> slug=<content-name>
+   `llm-wiki-ops pipeline jobs add <entity-url> slug=<content-name>
    description="<what this is>" skill=channel-spotify
    meta.group="<name>" meta.group_type=playlist|series` — a playlist or show
    is a bundle. open.spotify.com is a generic share host carrying no source
