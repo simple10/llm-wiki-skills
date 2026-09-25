@@ -29,9 +29,8 @@ llm-wiki-ops --json pipeline tickets open <id>
 ```
 
 The answer's own `stage` — `harvest` or `process` — is the step; the two
-sections below are those steps.
-Either step opens with the policy read — the stage's overlay, then this unit's
-own, folded onto the step:
+sections below are those steps. Either step opens with the policy read —
+the stage's overlay, then this unit's own, folded onto the step:
 
 ```sh
 llm-wiki-ops policy get <stage> channel-gmail
