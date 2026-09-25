@@ -21,10 +21,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-circle ticket=<id> stage=harvest|process",
+  "usage": "/channel-circle ticket=<id>",
   "v": 2,
   "venue": "circle",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "watch": {
     "defaults": {
       "every": "once",

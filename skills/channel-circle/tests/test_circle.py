@@ -2,12 +2,15 @@
 
 Two steps. Harvest (`section_plan.py`) is the deterministic half — scope,
 exclusions, `known[]`, leaf directories, the flat capture records and the one
-report — so it is tested as pure functions everywhere. Process has no script
-of its own: the cases below run SKILL.md's own three lines — `to_markdown.py`,
-then `page create`, then `page edit` — against the real CLI where one is at
-hand. Playwright cannot run here: the fixtures under `fixtures/` are
-what `capture_lesson.py` leaves (`page.html`, `meta.json`) for a space root
-and two lessons.
+posted update — so it is tested as pure functions everywhere, and its
+CLI-touching cases run through a stand-in front door (`_stub_ops`, the
+pattern channel-spotify's and channel-hubspot-video's tests already use)
+that answers `tickets open`/`tickets update`. Process has no script of its
+own: the cases below run SKILL.md's own three lines — `to_markdown.py`, then
+`page create`, then `page edit` — against the real CLI where one is at hand.
+Playwright cannot run here: the fixtures under `fixtures/` are what
+`capture_lesson.py` leaves (`page.html`, `meta.json`) for a space root and
+two lessons.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -56,11 +60,12 @@ def root_meta() -> dict:
 
 
 def ticket(**over) -> dict:
+    """The ticket `open_ticket` would answer (A-1)."""
     base = {
-        "v": 1, "ticket": "0123456789ab", "unit": UNIT, "slug": "course", "item": TARGET, "target": TARGET,
+        "ticket": "0123456789ab", "slug": "course", "item": TARGET, "target": TARGET,
         "capture_dir": "_raw/course/c-course-one--aaaaaaaa", "dest": None, "hosts": ["community.example.invalid"],
         "harvest": {"scope": "section", "access": "licensed", "exclude_urls": [], "assets": "reference"},
-        "options": {}, "credential": None, "min_date": None, "known": [],
+        "options": {}, "credential": None, "min_date": None, "known": [], "refresh": False, "resource": None,
     }
     base.update(over)
     return base
@@ -73,6 +78,81 @@ def plan_of(**over) -> dict:
 
 def why(plan: dict) -> dict:
     return {d["url"]: d["why"] for d in plan["dropped"]}
+
+
+# ------------------------------------------------------------ the ticket stub
+
+
+def _stub_ops(tmp_path: Path, ticket_dict: dict | None) -> str:
+    """A stand-in front door: `pipeline tickets open` answers `ticket_dict`
+    (refused, naming nothing, where it is None); `pipeline tickets update` is
+    recorded to `update-calls.jsonl` and answers a bare 0.
+
+    Written under a dot-directory, never directly in `tmp_path` — several
+    callers use `tmp_path` itself as the fake wiki root."""
+    home = tmp_path / ".ops-stub"
+    home.mkdir(exist_ok=True)
+    stub = home / "ops_stub.py"
+    updates = home / "update-calls.jsonl"
+    stub.write_text(
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    if TICKET is None:\n"
+        "        sys.exit('ops_stub: no ticket')\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        f"    pathlib.Path({str(updates)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return shlex.join([sys.executable, str(stub)])
+
+
+def _updates(tmp_path: Path) -> list:
+    path = tmp_path / ".ops-stub" / "update-calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def _kv(argv: list) -> dict:
+    return dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("--"))
+
+
+def run_plan(*args, tmp_path=None, ticket_dict=None) -> subprocess.CompletedProcess:
+    """`section_plan.py` over absolute paths, no cwd — for the pure-over-files
+    cases that do not care where they run from."""
+    argv = list(args)
+    env = dict(os.environ)
+    if tmp_path is not None:
+        env["LLM_WIKI_OPS"] = _stub_ops(tmp_path, ticket_dict)
+        if argv and argv[0] in ("plan", "report") and ticket_dict is not None and "--ticket" not in argv:
+            argv += ["--ticket", ticket_dict["ticket"]]
+    return subprocess.run([sys.executable, str(PLAN), *map(str, argv)], capture_output=True, text=True, env=env)
+
+
+def bytes_in(directory: Path, fixture: str = "lesson-1", title: str | None = None) -> Path:
+    """What `capture_lesson.py --leaf` leaves: the venue's own bytes, nothing
+    rendered. `title` stands in for the browser title a real capture records."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("page.html", "meta.json"):
+        shutil.copy(FIX / fixture / name, directory / name)
+    if title is not None:
+        meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
+        (directory / "meta.json").write_text(json.dumps({**meta, "title": title}), encoding="utf-8")
+    return directory
+
+
+@pytest.fixture
+def slice_dir(tmp_path) -> tuple[Path, dict]:
+    """A job's `_raw/<slug>/` with the root capture on disk, and the ticket
+    `tickets open` would answer for it."""
+    cap = tmp_path / "_raw" / "course" / "c-course-one--aaaaaaaa"
+    cap.mkdir(parents=True)
+    for name in ("page.html", "meta.json"):
+        shutil.copy(FIX / "root" / name, cap / name)
+    return cap, ticket()
 
 
 # --- the planner, pure ---------------------------------------------------------
@@ -230,94 +310,84 @@ def test_the_plan_names_each_lessons_section_off_the_sidebar():
 # --- plan → record → report over files, no CLI needed -------------------------
 
 
-def run_plan(*args) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(PLAN), *map(str, args)], capture_output=True, text=True, check=False)
-
-
-def bytes_in(directory: Path, fixture: str = "lesson-1", title: str | None = None) -> Path:
-    """What `capture_lesson.py --leaf` leaves: the venue's own bytes, nothing
-    rendered. `title` stands in for the browser title a real capture records."""
-    directory.mkdir(parents=True, exist_ok=True)
-    for name in ("page.html", "meta.json"):
-        shutil.copy(FIX / fixture / name, directory / name)
-    if title is not None:
-        meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
-        (directory / "meta.json").write_text(json.dumps({**meta, "title": title}), encoding="utf-8")
-    return directory
-
-
-@pytest.fixture
-def slice_dir(tmp_path) -> Path:
-    """A job's `_raw/<slug>/` with the ticket's capture dir holding the ticket
-    and the root capture."""
-    cap = tmp_path / "_raw" / "course" / "c-course-one--aaaaaaaa"
-    cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(ticket()), encoding="utf-8")
-    for name in ("page.html", "meta.json"):
-        shutil.copy(FIX / "root" / name, cap / name)
-    return cap
-
-
-def test_report_is_partial_until_every_planned_leaf_is_on_disk(slice_dir):
-    assert run_plan("plan", slice_dir).returncode == 0
-    plan = json.loads((slice_dir / "plan.json").read_text(encoding="utf-8"))
-    first = slice_dir.parent / plan["leaves"][0]["dir"].split("/")[-1]
+def test_report_is_partial_until_every_planned_leaf_is_on_disk(slice_dir, tmp_path):
+    cap, t = slice_dir
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
+    first = cap.parent / plan["leaves"][0]["dir"].split("/")[-1]
     bytes_in(first, "lesson-1")
-    assert run_plan("record", slice_dir, L1).returncode == 0
+    assert run_plan("record", cap, L1).returncode == 0
 
-    done = run_plan("report", slice_dir)
-    report = json.loads((slice_dir / "report.json").read_text(encoding="utf-8"))
-    assert done.returncode == 0 and report["outcome"] == "partial" and "1 of 2" in report["reason"]
-    assert report["captured"] == [{"item": L1, "dir": plan["leaves"][0]["dir"], "title": "Getting the Frame Right"}]
-    assert (report["v"], report["ticket"], report["written"], report["discovered"]) == (1, "0123456789ab", [], [])
-
-
-def test_auth_expiry_names_every_unreached_lesson_as_auth(slice_dir):
-    assert run_plan("plan", slice_dir).returncode == 0
-    done = run_plan("report", slice_dir, "--auth-expired")
-    report = json.loads(done.stdout)
-    assert done.returncode == 1 and report["outcome"] == "failed"
-    assert report["reason"].startswith("auth_expired:community.example.invalid")
-    assert report["missing"] == [{"host": "community.example.invalid", "url": url, "why": "auth"} for url in (L1, L2)]
+    done = run_plan("report", cap, tmp_path=tmp_path, ticket_dict=t)
+    assert done.returncode == 0
+    call = _updates(tmp_path)[-1]
+    kv = _kv(call)
+    assert kv["status"] == "partial" and "1 of 2" in kv["reason"]
+    assert call[3] == "0123456789ab" and kv["captured"] == plan["leaves"][0]["dir"]
 
 
-def test_a_root_that_never_rendered_still_leaves_a_report(tmp_path):
+def test_auth_expiry_names_every_unreached_lesson_as_auth(slice_dir, tmp_path):
+    cap, t = slice_dir
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    done = run_plan("report", cap, "--auth-expired", tmp_path=tmp_path, ticket_dict=t)
+    kv = _kv(_updates(tmp_path)[-1])
+    assert done.returncode == 1 and kv["status"] == "failed"
+    assert kv["reason"].startswith("auth_expired:community.example.invalid")
+    call = _updates(tmp_path)[-1]
+    missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
+    assert missing == [f"community.example.invalid,{url},auth" for url in (L1, L2)]
+
+
+def test_a_root_that_never_rendered_still_posts_an_update(tmp_path):
     cap = tmp_path / "_raw" / "course" / "c-course-one--aaaaaaaa"
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(ticket()), encoding="utf-8")
-    assert run_plan("plan", cap).returncode == 1  # no meta.json: nothing to plan from
-    done = run_plan("report", cap, "--auth-expired")
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert done.returncode == 1 and report["outcome"] == "failed" and report["captured"] == []
-    assert report["missing"] == [{"host": "community.example.invalid", "url": TARGET, "why": "auth"}]
+    t = ticket()
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 1  # no meta.json: nothing to plan from
+    done = run_plan("report", cap, "--auth-expired", tmp_path=tmp_path, ticket_dict=t)
+    kv = _kv(_updates(tmp_path)[-1])
+    assert done.returncode == 1 and kv["status"] == "failed" and "captured" not in kv
+    call = _updates(tmp_path)[-1]
+    missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
+    assert missing == [f"community.example.invalid,{TARGET},auth"]
 
 
-def test_everything_already_held_is_skipped_not_failed(slice_dir):
-    (slice_dir / "ticket.json").write_text(
-        json.dumps(ticket(known=[{"resource": L1, "harvested_at": None}, {"resource": L2, "harvested_at": None}])),
-        encoding="utf-8")
-    assert run_plan("plan", slice_dir).returncode == 0
-    done = run_plan("report", slice_dir)
-    assert done.returncode == 0 and json.loads(done.stdout)["outcome"] == "skipped"
+def test_everything_already_held_is_ok_not_failed(slice_dir, tmp_path):
+    cap, _ = slice_dir
+    t = ticket(known=[{"resource": L1, "harvested_at": None}, {"resource": L2, "harvested_at": None}])
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    done = run_plan("report", cap, tmp_path=tmp_path, ticket_dict=t)
+    # P-4: nothing new is `ok`, never a worker's `skipped`.
+    assert done.returncode == 0 and _kv(_updates(tmp_path)[-1])["status"] == "ok"
 
 
-def test_record_refuses_a_url_the_plan_does_not_hold(slice_dir):
-    assert run_plan("plan", slice_dir).returncode == 0
-    done = run_plan("record", slice_dir, OTHER_SPACE)
+def test_record_refuses_a_url_the_plan_does_not_hold(slice_dir, tmp_path):
+    cap, t = slice_dir
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    done = run_plan("record", cap, OTHER_SPACE)
     assert done.returncode == 1 and "not a leaf" in done.stderr
 
 
-def test_a_missing_asset_host_makes_a_full_capture_partial(slice_dir):
-    assert run_plan("plan", slice_dir).returncode == 0
-    plan = json.loads((slice_dir / "plan.json").read_text(encoding="utf-8"))
+def test_a_missing_asset_host_leaves_a_full_capture_ok(slice_dir, tmp_path):
+    """P-5: a denied media host is a LASTING shortfall — the section still
+    landed in full, so it is `ok`, never `partial`."""
+    cap, t = slice_dir
+    assert run_plan("plan", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     for leaf, fixture in zip(plan["leaves"], ("lesson-1", "lesson-2")):
-        bytes_in(slice_dir.parent / leaf["dir"].split("/")[-1], fixture)
-        assert run_plan("record", slice_dir, leaf["url"]).returncode == 0
-    assert json.loads(run_plan("report", slice_dir).stdout)["outcome"] == "ok"
-    denied = run_plan("report", slice_dir, "--missing", "fast.wistia.com", "https://fast.wistia.com/embed/medias/x.m3u8", "denied")
-    report = json.loads(denied.stdout)
-    assert report["outcome"] == "partial" and len(report["captured"]) == 2 and report["missing"][0]["why"] == "denied"
-    assert run_plan("report", slice_dir, "--missing", "h", "https://h/x", "paywalled").returncode == 2
+        bytes_in(cap.parent / leaf["dir"].split("/")[-1], fixture)
+        assert run_plan("record", cap, leaf["url"]).returncode == 0
+    assert run_plan("report", cap, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    assert _kv(_updates(tmp_path)[-1])["status"] == "ok"
+    denied = run_plan("report", cap, "--missing", "fast.wistia.com", "https://fast.wistia.com/embed/medias/x.m3u8", "denied",
+                      tmp_path=tmp_path, ticket_dict=t)
+    kv = _kv(_updates(tmp_path)[-1])
+    assert denied.returncode == 0 and kv["status"] == "ok"
+    call = _updates(tmp_path)[-1]
+    captured = [a.split("=", 1)[1] for a in call if a.startswith("captured=")]
+    assert len(captured) == 2
+    missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
+    assert missing == ["fast.wistia.com,https://fast.wistia.com/embed/medias/x.m3u8,denied"]
+    assert run_plan("report", cap, "--missing", "h", "https://h/x", "paywalled", tmp_path=tmp_path, ticket_dict=t).returncode == 2
 
 
 # --- capture_lesson: the url off the ticket when none is given ----------------
@@ -327,11 +397,8 @@ def test_capture_lesson_takes_its_url_off_the_ticket_when_none_is_given(tmp_path
     spec_c = importlib.util.spec_from_file_location("circle_capture_lesson", SCRIPTS / "capture_lesson.py")
     capture = importlib.util.module_from_spec(spec_c)
     spec_c.loader.exec_module(capture)  # playwright is imported inside main(), never here
-    assert capture.ticket_target(tmp_path) is None
-    (tmp_path / "ticket.json").write_text(json.dumps(ticket()), encoding="utf-8")
-    assert capture.ticket_target(tmp_path) == TARGET
-    (tmp_path / "ticket.json").write_text("[1, 2]", encoding="utf-8")
-    assert capture.ticket_target(tmp_path) is None
+    assert capture.ticket_target(tmp_path, None) is None
+    assert capture.ticket_target(tmp_path, "no-such-ticket") is None
 
 
 # =============================================================================
@@ -348,11 +415,19 @@ def load_capture():
     return capture
 
 
-def cli(script: Path, *args, cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
+def cli(script: Path, *args, cwd: Path, env: dict | None = None, tmp_path=None, ticket_dict=None) -> subprocess.CompletedProcess:
     """A unit script THE DOCUMENTED WAY: cwd is the wiki root — what
-    `llm-wiki-ops run` gives it — and every path argument is wiki-relative."""
+    `llm-wiki-ops run` gives it — and every path argument is wiki-relative.
+    `tmp_path` stands up the ticket stub front door and `--ticket` is
+    appended to `plan`/`report` when `ticket_dict` names one."""
     assert not any(os.path.isabs(str(a)) for a in args), "the documented form takes wiki-relative paths"
-    return subprocess.run([sys.executable, str(script), *map(str, args)], cwd=cwd, env=env, capture_output=True, text=True)
+    e = {**os.environ, **(env or {})}
+    argv = list(args)
+    if tmp_path is not None:
+        e["LLM_WIKI_OPS"] = _stub_ops(tmp_path, ticket_dict)
+        if argv and argv[0] in ("plan", "report") and ticket_dict is not None and "--ticket" not in argv:
+            argv += ["--ticket", ticket_dict["ticket"]]
+    return subprocess.run([sys.executable, str(script), *map(str, argv)], cwd=cwd, env=e, capture_output=True, text=True)
 
 
 def last_json(done: subprocess.CompletedProcess) -> dict:
@@ -361,12 +436,11 @@ def last_json(done: subprocess.CompletedProcess) -> dict:
 
 @pytest.fixture
 def wiki_root(tmp_path) -> tuple[Path, str]:
-    """A bare wiki root holding one spawned ticket and its root capture:
-    `(root, the ticket's wiki-relative capture_dir)`."""
+    """A bare wiki root holding one root capture: `(root, the ticket's
+    wiki-relative capture_dir)`. The ticket itself is `ticket()`."""
     rel = "_raw/course/c-course-one--aaaaaaaa"
     cap = tmp_path / rel
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(ticket()), encoding="utf-8")
     for name in ("page.html", "meta.json"):
         shutil.copy(FIX / "root" / name, cap / name)
     return tmp_path, rel
@@ -384,7 +458,7 @@ def test_safe_title_is_what_the_hosts_filename_rule_accepts():
     assert mod.safe_title("Lesson 3: Pricing") == "Lesson 3 - Pricing"
     assert mod.safe_title('What is "X"? A/B <test> | more*') == "What is \u2019X\u2019 A-B (test) - more"
     assert mod.safe_title(".hidden. ") == "hidden" and mod.safe_title(" . ..dots") == "dots"
-    assert mod.safe_title("a\x00b\tc\nd\x7fe f") == "a b c d e f"  # control chars, newlines, tabs: a space
+    assert mod.safe_title("a\x00b\tc\nd\x7fe f") == "a b c d e f"  # control chars, newlines, tabs: a space
     for empty in ("", None, "   ", "???", "\n", "..."):
         assert mod.safe_title(empty) == "Untitled" and mod.safe_title(empty, fallback="Untitled lesson") == "Untitled lesson"
     long = mod.safe_title("x" * 500)
@@ -407,24 +481,27 @@ def test_the_plan_carries_the_safe_title_and_keeps_the_venues_own_beside_it():
         ("Lesson 3 - Pricing", "Lesson 3: Pricing?"), ("Reading the Room", None)]
 
 
-def test_titles_differing_only_in_a_refused_character_collide_once_safe_and_are_told_apart(wiki_root):
+def test_titles_differing_only_in_a_refused_character_collide_once_safe_and_are_told_apart(wiki_root, tmp_path):
     """`A/B` and `A-B` are two titles at the venue and ONE filename: the safe
     form is what `capture.json` holds BEFORE titles are settled, and what a
     lesson that never landed reserves."""
     root, rel = wiki_root
+    t = ticket()
     three = f"{TARGET}/sections/222/lessons/2003"
     (root / rel / "meta.json").write_text(json.dumps({"title": "C", "discovered_lesson_links": [
         {"href": f"{TARGET}/sections/111", "text": "Module One"}, {"href": L1, "text": "A/B testing\n\n01:00"},
         {"href": L2, "text": "A-B testing\n\n01:00"},
         {"href": f"{TARGET}/sections/222", "text": "Module Two"}, {"href": three, "text": "A:B testing\n\n01:00"},
     ]}), encoding="utf-8")
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
     # Leaf 1 never lands: it still RESERVES `A-B testing`, its safe form.
     for leaf in plan["leaves"][1:]:
         fill(root, leaf)
         assert cli(PLAN, "record", rel, "--leaf", leaf["order"], cwd=root).returncode == 0
-    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
-    titles = [c["title"] for c in report["captured"]]
+    assert cli(PLAN, "report", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    call = _updates(tmp_path)[-1]
+    captured = [a.split("=", 1)[1] for a in call if a.startswith("captured=")]
+    titles = [json.loads((root / d / "capture.json").read_text(encoding="utf-8"))["title"] for d in captured]
     # Lesson 2 shares lesson 1's section, so the section tells nothing apart: its url's hash does.
     assert titles == [f"A-B testing ({hashlib.sha1(L2.encode()).hexdigest()[:8]})", "A -B testing"], (
         "the unlanded namesake's SAFE title was not reserved")
@@ -455,8 +532,9 @@ def test_a_qualifier_never_pushes_a_title_back_over_the_byte_cap():
 
 
 # --- S11: a venue url is data, never shell --------------------------------------
-def test_a_hostile_href_never_reaches_a_plan(wiki_root):
+def test_a_hostile_href_never_reaches_a_plan(wiki_root, tmp_path):
     root, rel = wiki_root
+    t = ticket()
     meta = root_meta()
     meta["discovered_lesson_links"] += [
         {"href": HOSTILE_HREF, "text": "Pwn\n\n00:01"},
@@ -468,7 +546,7 @@ def test_a_hostile_href_never_reaches_a_plan(wiki_root):
         {"href": f"{TARGET}/sections/111/lessons/2007 8", "text": "x"},
     ]
     (root / rel / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    done = cli(PLAN, "plan", rel, cwd=root)
+    done = cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t)
     plan = last_json_plan(done)
     assert [leaf["url"] for leaf in plan["leaves"]] == [L1, L2]
     unsafe = [d for d in plan["dropped"] if d["why"] == "unsafe_url"]
@@ -513,9 +591,36 @@ def stub_front_door(tmp_path: Path, answer: dict, rc: int = 0) -> tuple[dict, Pa
     return env, seen
 
 
+def stub_capture_front_door(tmp_path: Path, ticket_dict: dict, profile_answer: dict, rc: int = 0) -> tuple[dict, Path]:
+    """`capture_lesson.py`'s own front door reaches two verbs: `tickets open`
+    (its `--ticket`'s target) and `credential profile-dir` (the auth
+    profile). This stub answers both for real and records the LAST argv."""
+    home = tmp_path / ".ops-stub"
+    home.mkdir(exist_ok=True)
+    stub, seen = home / "ops_stub.py", home / "seen.json"
+    stub.write_text(
+        "import json, sys\n"
+        "argv = sys.argv[1:]\n"
+        f"json.dump({{'argv': argv}}, open({str(seen)!r}, 'w'))\n"
+        "argv = [a for a in argv if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict))})\n"
+        f"PROFILE = json.loads({json.dumps(json.dumps(profile_answer))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:2] == ['credential', 'profile-dir']:\n"
+        f"    print(json.dumps(PROFILE))\n"
+        f"    sys.exit({rc})\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return {**os.environ, "LLM_WIKI_OPS": shlex.join([sys.executable, str(stub)])}, seen
+
+
 def test_detect_hands_the_plugins_asset_script_the_planned_url_as_an_argument_list(wiki_root, tmp_path_factory):
     root, rel = wiki_root
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket()
+    door_home = tmp_path_factory.mktemp("ticket-door")
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=door_home, ticket_dict=t))
     leaf = plan["leaves"][1]
     env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {})
     assert cli(PLAN, "detect", rel, "--leaf", 2, cwd=root, env=env).returncode == 0
@@ -531,14 +636,17 @@ def test_detect_hands_the_plugins_asset_script_the_planned_url_as_an_argument_li
     assert cli(PLAN, "detect", rel, "--leaf", 1, cwd=root, env=env).returncode == 1 and not seen.exists()
 
 
-def test_capture_lesson_reads_a_leafs_url_and_dir_off_the_plan(wiki_root):
+def test_capture_lesson_reads_a_leafs_url_and_dir_off_the_plan(wiki_root, tmp_path_factory, monkeypatch):
     root, rel = wiki_root
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket()
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("door"), ticket_dict=t))
     capture = load_capture()
     url, out, is_target, refused = capture.resolve_job(root, plan=f"{rel}/plan.json", leaf=2)
     assert (url, out, is_target, refused) == (L2, root / plan["leaves"][1]["dir"], False, None)
-    # With neither url nor leaf: the ticket's own target, into the ticket's own dir, resolved against the ROOT.
-    assert capture.resolve_job(root, out=rel) == (TARGET, root / rel, True, None)
+    # With neither url nor leaf: --ticket's own target, into the ticket's own dir, resolved against the ROOT.
+    monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("ticket-door"), t))
+    assert capture.resolve_job(root, out=rel, ticket=t["ticket"]) == (TARGET, root / rel, True, None)
+    monkeypatch.delenv("LLM_WIKI_OPS", raising=False)
     assert capture.resolve_job(root, url=L1, out="_raw/course/by-hand")[:3] == (L1, root / "_raw/course/by-hand", False)
     for kwargs, code in (({"plan": f"{rel}/plan.json", "leaf": 9}, 4), ({"leaf": 1}, 4), ({"plan": f"{rel}/nope.json", "leaf": 1}, 4),
                          ({}, 4), ({"out": "_raw/course/empty"}, 4), ({"url": "file:///etc/passwd", "out": rel}, 4),
@@ -546,56 +654,66 @@ def test_capture_lesson_reads_a_leafs_url_and_dir_off_the_plan(wiki_root):
         assert capture.resolve_job(root, **kwargs)[3][0] == code, kwargs
 
 
-def test_capture_lesson_the_documented_way_clears_a_stale_report_and_reads_the_profile_answer(wiki_root, tmp_path_factory):
+def test_capture_lesson_the_documented_way_reads_the_profile_answer(wiki_root, tmp_path_factory):
     """No browser here — and none is needed to reach the answer that matters:
     `<root> --out <capture_dir>`, cwd the wiki root, relative paths."""
     root, rel = wiki_root
-    (root / rel / "report.json").write_text('{"outcome": "ok", "captured": [{"dir": "stale"}]}', encoding="utf-8")
-    env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {"domain": "community.example.invalid", "path": "/nowhere/profile", "exists": False})
-    done = cli(CAPTURE, ".", "--out", rel, cwd=root, env=env)
+    t = ticket()
+    env, seen = stub_capture_front_door(
+        tmp_path_factory.mktemp("door"), t, {"domain": "community.example.invalid", "path": "/nowhere/profile", "exists": False},
+    )
+    done = cli(CAPTURE, ".", "--out", rel, "--ticket", t["ticket"], cwd=root, env=env)
     assert done.returncode == 2 and "no auth profile" in done.stderr, done.stderr  # absent: a login is what fixes it
-    assert not (root / rel / "report.json").exists(), "a respawn must not be read as the success an earlier pull had"
     assert json.loads(seen.read_text(encoding="utf-8"))["argv"] == ["--json", "credential", "profile-dir", "community.example.invalid"]
     # The store unreachable — what a jail with no grant on it answers: 5, never 2.
-    env, _ = stub_front_door(tmp_path_factory.mktemp("door5"), {"error": "permission denied"}, rc=1)
-    assert cli(CAPTURE, ".", "--out", rel, cwd=root, env=env).returncode == 5
+    env, _ = stub_capture_front_door(tmp_path_factory.mktemp("door5"), t, {"error": "permission denied"}, rc=1)
+    assert cli(CAPTURE, ".", "--out", rel, "--ticket", t["ticket"], cwd=root, env=env).returncode == 5
     # `--leaf`, the documented way.
-    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    t = ticket()
+    assert cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("ticket-door"), ticket_dict=t).returncode == 0
     env, seen = stub_front_door(tmp_path_factory.mktemp("door2"), {"domain": "community.example.invalid", "path": "/nowhere", "exists": False})
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("ticket-door2"), ticket_dict=t))
     done = cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 1, cwd=root, env=env)
-    assert done.returncode == 2 and (root / last_json_plan(cli(PLAN, "plan", rel, cwd=root))["leaves"][0]["dir"]).is_dir()
+    assert done.returncode == 2 and (root / plan["leaves"][0]["dir"]).is_dir()
     assert cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 7, cwd=root, env=env).returncode == 4
 
 
 # --- S5: stop before the cap, and make "resume" real ----------------------------
 
 
-def spawned_ago(root: Path, rel: str, seconds: float) -> None:
-    then = time.time() - seconds
-    os.utime(root / rel / "ticket.json", (then, then))
+def backdate_plan(cap: Path, seconds: float) -> None:
+    """A plan whose deadline is `seconds` further in the past than it really
+    is — what a real spawn that long ago would have left. There is no file to
+    backdate any more (P-8): the deadline fields themselves are moved."""
+    plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
+    plan["deadline_epoch"] -= seconds
+    (cap / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
 
 
-def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, tmp_path):
+def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
-    spawned_ago(root, rel, 100)
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
-    assert abs(plan["deadline_epoch"] - (time.time() - 100 + 1500)) < 5 and plan["deadline"].endswith("Z")
-    assert abs(last_json_plan(cli(PLAN, "plan", rel, "--budget-s", 60, cwd=root))["deadline_epoch"] - (time.time() - 40)) < 5
-    # A re-dispatch rewrites ticket.json: the next slice's deadline is its own.
-    spawned_ago(root, rel, 0)
-    assert last_json_plan(cli(PLAN, "plan", rel, cwd=root))["deadline_epoch"] > time.time() + 1400
-    hand = tmp_path / "hand" / "_raw" / "course" / "r--00000000"
+    t = ticket()
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
+    assert abs(plan["deadline_epoch"] - (time.time() + 1500)) < 5 and plan["deadline"].endswith("Z")
+    door2 = tmp_path_factory.mktemp("deadline-door2")
+    budgeted = last_json_plan(cli(PLAN, "plan", rel, "--budget-s", 60, cwd=root, tmp_path=door2, ticket_dict=t))
+    assert abs(budgeted["deadline_epoch"] - (time.time() + 60)) < 5
+    hand = tmp_path_factory.mktemp("deadline-hand") / "_raw" / "course" / "r--00000000"
     hand.mkdir(parents=True)
     shutil.copy(FIX / "root" / "meta.json", hand / "meta.json")
-    by_hand = cli(PLAN, "plan", "_raw/course/r--00000000", "--target", TARGET, "--slug", "course", cwd=tmp_path / "hand")
+    by_hand = subprocess.run(
+        [sys.executable, str(PLAN), "plan", "_raw/course/r--00000000", "--target", TARGET, "--slug", "course"],
+        cwd=hand.parents[2], capture_output=True, text=True,
+    )
     assert last_json_plan(by_hand)["deadline"] is None and not mod.past_deadline(last_json_plan(by_hand))
 
 
 def test_past_the_deadline_record_says_stop_and_no_new_lesson_is_started(wiki_root, tmp_path_factory):
     root, rel = wiki_root
-    spawned_ago(root, rel, 1600)  # 100 s past the 1500 s budget, 200 s before the kill
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket()
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("ticket-door"), ticket_dict=t))
     fill(root, plan["leaves"][0])
+    backdate_plan(root / rel, 1600)  # 100 s past the 1500 s budget, 200 s before the kill
     done = cli(PLAN, "record", rel, "--leaf", 1, cwd=root)
     answer = last_json(done)
     assert done.returncode == 3 and answer["stop"] is True and answer["deadline_passed"] is True and answer["remaining"] == [2]
@@ -606,45 +724,56 @@ def test_past_the_deadline_record_says_stop_and_no_new_lesson_is_started(wiki_ro
     assert refused.returncode == 6 and "deadline" in refused.stderr and not seen.exists()
     assert not (root / plan["leaves"][1]["dir"]).exists()
 
-    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
-    assert report["outcome"] == "partial" and [c["item"] for c in report["captured"]] == [L1]
+    report_door = tmp_path_factory.mktemp("report-door")
+    done = cli(PLAN, "report", rel, cwd=root, tmp_path=report_door, ticket_dict=t)
+    kv = _kv(_updates(report_door)[-1])
+    assert kv["status"] == "partial"
+    call = _updates(report_door)[-1]
+    assert [a.split("=", 1)[1] for a in call if a.startswith("captured=")] == [plan["leaves"][0]["dir"]]
     # The reason tells the operator exactly what resumes an `every: once` job — nothing does by itself.
-    for said in ("1 of 2", "deadline passed", "pipeline queue retry 0123456789ab", "pipeline edit course every=1d", "NOT pulled again"):
-        assert said in report["reason"], said
+    for said in ("1 of 2", "deadline passed", "pipeline tickets retry 0123456789ab", "pipeline jobs edit course every=1d", "NOT pulled again"):
+        assert said in kv["reason"], said
 
-    # Inside the budget the same record is plain success.
-    spawned_ago(root, rel, 10)
-    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    # Inside the budget (a fresh plan) the same record is plain success.
+    fresh_door = tmp_path_factory.mktemp("fresh-door")
+    assert cli(PLAN, "plan", rel, cwd=root, tmp_path=fresh_door, ticket_dict=t).returncode == 0
     inside = cli(PLAN, "record", rel, "--leaf", 1, cwd=root)
     assert inside.returncode == 0 and last_json(inside)["stop"] is False and last_json(inside)["remaining"] == [2]
 
 
-def test_a_killed_slices_lessons_are_landed_in_the_next_plan_and_reported_by_it(wiki_root):
-    """The cap kills a slice with NO report: nothing is minted, `known[]` does
-    not grow, and the retry used to re-plan every lesson in the same order and
-    die at the same place. What survives the kill is the disk."""
+def test_a_killed_slices_lessons_are_landed_in_the_next_plan_and_reported_by_it(wiki_root, tmp_path_factory):
+    """The cap kills a slice with NO update posted: nothing is minted,
+    `known[]` does not grow, and the retry used to re-plan every lesson in the
+    same order and die at the same place. What survives the kill is the disk."""
     root, rel = wiki_root
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket()
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("door1"), ticket_dict=t))
     assert [leaf["landed"] for leaf in plan["leaves"]] == [False, False]
     fill(root, plan["leaves"][0])
     assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
-    # The report is cheap and re-runnable: written after EVERY leaf, it is already truthful when the kill comes.
-    early = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
-    assert early["outcome"] == "partial" and len(early["captured"]) == 1
+    # The update is cheap and re-postable: sent after EVERY leaf, it is already truthful when the kill comes.
+    early_door = tmp_path_factory.mktemp("door2")
+    assert cli(PLAN, "report", rel, cwd=root, tmp_path=early_door, ticket_dict=t).returncode == 0
+    early = _kv(_updates(early_door)[-1])
+    assert early["status"] == "partial"
 
-    spawned_ago(root, rel, 0)  # …killed; the operator re-queues; the spawner rewrites ticket.json; a new slice plans:
-    again = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    # …killed; the operator re-queues; a new slice plans:
+    again = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("door3"), ticket_dict=t))
     assert [leaf["landed"] for leaf in again["leaves"]] == [True, False]
-    assert not (root / rel / "report.json").exists(), "`plan` clears the last slice's report before anything else"
     fill(root, again["leaves"][1], "lesson-2")
     assert cli(PLAN, "record", rel, "--leaf", 2, cwd=root).returncode == 0
-    final = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
-    assert final["outcome"] == "ok" and [c["item"] for c in final["captured"]] == [L1, L2]
+    final_door = tmp_path_factory.mktemp("door4")
+    assert cli(PLAN, "report", rel, cwd=root, tmp_path=final_door, ticket_dict=t).returncode == 0
+    final_call = _updates(final_door)[-1]
+    final = _kv(final_call)
+    assert final["status"] == "ok"
+    assert [a.split("=", 1)[1] for a in final_call if a.startswith("captured=")] == [again["leaves"][0]["dir"], again["leaves"][1]["dir"]]
     # A record left in a leaf's dir by some OTHER url is not this lesson landed.
     record_path = root / again["leaves"][1]["dir"] / "capture.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record_path.write_text(json.dumps({**record, "item": OTHER_SPACE}), encoding="utf-8")
-    assert [leaf["landed"] for leaf in last_json_plan(cli(PLAN, "plan", rel, cwd=root))["leaves"]] == [True, False]
+    replanned = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("door5"), ticket_dict=t))
+    assert [leaf["landed"] for leaf in replanned["leaves"]] == [True, False]
 
 
 # --- S7: a refresh ticket re-fetches exactly one lesson --------------------------
@@ -665,55 +794,62 @@ def test_a_refresh_plans_exactly_its_resource_though_known_holds_it(scope):
     assert [(leaf["url"], leaf["dir"], leaf["root"]) for leaf in plan["leaves"]] == [(L1, t["capture_dir"], True)]
 
 
-def test_a_refresh_forces_the_recapture_and_reports_it_captured(tmp_path):
+def test_a_refresh_forces_the_recapture_and_reports_it_captured(tmp_path, tmp_path_factory):
     t = refresh_ticket()
     cap = tmp_path / t["capture_dir"]
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(t), encoding="utf-8")
     # What the FIRST pull left here — the directory is the page's own, stable across pulls.
     (cap / "page.html").write_text("<html><body>THE OLD BODY.</body></html>", encoding="utf-8")
     (cap / "capture.json").write_text(json.dumps({"item": L1, "title": "Getting the Frame Right", "body": "page.html"}), encoding="utf-8")
-    (cap / "report.json").write_text('{"outcome": "ok"}', encoding="utf-8")
     shutil.copy(FIX / "lesson-1" / "meta.json", cap / "meta.json")  # this run's root capture IS the lesson
-    plan = last_json_plan(cli(PLAN, "plan", t["capture_dir"], cwd=tmp_path))
+    plan = last_json_plan(cli(PLAN, "plan", t["capture_dir"], cwd=tmp_path, tmp_path=tmp_path_factory.mktemp("refresh-door1"), ticket_dict=t))
     assert [leaf["landed"] for leaf in plan["leaves"]] == [False]
-    assert not any((cap / name).exists() for name in ("capture.json", "page.html", "report.json"))
+    assert not any((cap / name).exists() for name in ("capture.json", "page.html"))
     # Nothing fetched again -> nothing captured -> failed; never the old record read as this run's.
-    nothing = cli(PLAN, "report", t["capture_dir"], cwd=tmp_path)
-    assert nothing.returncode == 1 and json.loads(nothing.stdout)["outcome"] == "failed"
+    door2 = tmp_path_factory.mktemp("refresh-door2")
+    nothing = cli(PLAN, "report", t["capture_dir"], cwd=tmp_path, tmp_path=door2, ticket_dict=t)
+    assert nothing.returncode == 1 and _kv(_updates(door2)[-1])["status"] == "failed"
     shutil.copy(FIX / "lesson-1" / "page.html", cap / "page.html")
     assert cli(PLAN, "record", t["capture_dir"], "--leaf", 1, cwd=tmp_path).returncode == 0
-    report = json.loads(cli(PLAN, "report", t["capture_dir"], cwd=tmp_path).stdout)
-    # `ok` WITH the capture: `unchanged` is `apply`'s verdict, by hashing these bytes — never this unit's word.
-    assert report["outcome"] == "ok" and report["captured"] == [{"item": L1, "dir": t["capture_dir"], "title": "Getting the Frame Right"}]
+    door3 = tmp_path_factory.mktemp("refresh-door3")
+    assert cli(PLAN, "report", t["capture_dir"], cwd=tmp_path, tmp_path=door3, ticket_dict=t).returncode == 0
+    call = _updates(door3)[-1]
+    kv = _kv(call)
+    # `ok` WITH the capture: `unchanged` is a later read's verdict, by hashing these bytes — never this unit's word.
+    assert kv["status"] == "ok" and [a.split("=", 1)[1] for a in call if a.startswith("captured=")] == [t["capture_dir"]]
 
 
-def test_gone_is_a_refresh_tickets_answer_alone(tmp_path, wiki_root):
+def test_gone_is_a_refresh_tickets_answer_alone(tmp_path, wiki_root, tmp_path_factory):
     t = refresh_ticket()
-    cap = tmp_path / "w" / t["capture_dir"]
+    w = tmp_path_factory.mktemp("gone-wiki")
+    cap = w / t["capture_dir"]
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(t), encoding="utf-8")
     (cap / "meta.json").write_text(json.dumps({"url": L1, "title": "Not found", "http_status": 404}), encoding="utf-8")
-    assert cli(PLAN, "plan", t["capture_dir"], cwd=tmp_path / "w").returncode == 0
-    done = cli(PLAN, "report", t["capture_dir"], cwd=tmp_path / "w")
-    assert done.returncode == 0 and json.loads(done.stdout)["outcome"] == "gone" and json.loads(done.stdout)["captured"] == []
+    assert cli(PLAN, "plan", t["capture_dir"], cwd=w, tmp_path=tmp_path_factory.mktemp("gone-door1"), ticket_dict=t).returncode == 0
+    door2 = tmp_path_factory.mktemp("gone-door2")
+    done = cli(PLAN, "report", t["capture_dir"], cwd=w, tmp_path=door2, ticket_dict=t)
+    kv = _kv(_updates(door2)[-1])
+    assert done.returncode == 0 and kv["status"] == "gone" and "captured" not in kv
     root, rel = wiki_root  # a first pull cannot say it
-    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
-    assert cli(PLAN, "report", rel, "--gone", cwd=root).returncode == 2 and not (root / rel / "report.json").exists()
+    door3 = tmp_path_factory.mktemp("gone-door3")
+    normal_t = ticket()
+    assert cli(PLAN, "plan", rel, cwd=root, tmp_path=door3, ticket_dict=normal_t).returncode == 0
+    assert cli(PLAN, "report", rel, "--gone", cwd=root, tmp_path=door3, ticket_dict=normal_t).returncode == 2
 
 
 # --- Rule 2: venue text forges nothing -------------------------------------------
 
 
-def test_harvest_folds_every_venue_value_it_writes_down(wiki_root):
+def test_harvest_folds_every_venue_value_it_writes_down(wiki_root, tmp_path):
     """`facts.json` is read by the process step and written into the page, so a
     course title carrying a rule and a heading must arrive as one line."""
     root, rel = wiki_root
+    t = ticket()
     meta = root_meta()
     meta["title"] = "Course One\n---\n# Forged Course"
     meta["discovered_lesson_links"][1]["text"] = "Lesson 3: A\t## Injected ```fence\n\n04:07"
     (root / rel / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
     leaf = plan["leaves"][0]
     fill(root, leaf)
     assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
@@ -725,26 +861,33 @@ def test_harvest_folds_every_venue_value_it_writes_down(wiki_root):
     assert record["title"] == "Lesson 3 - A ## Injected ```fence" and not set(record) & set(HOST_KEYS)
 
 
-def test_record_refuses_a_leaf_whose_bytes_never_landed(wiki_root):
+def test_record_refuses_a_leaf_whose_bytes_never_landed(wiki_root, tmp_path):
     root, rel = wiki_root
-    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
+    t = ticket()
+    assert cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t).returncode == 0
     done = cli(PLAN, "record", rel, "--leaf", 1, cwd=root)
     assert done.returncode == 1 and "page.html" in done.stderr
 
 
-def test_the_process_step_reports_the_pages_it_wrote_and_captures_nothing(wiki_root):
+def test_the_process_step_posts_the_pages_it_wrote_and_captures_nothing(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
-    done = cli(PLAN, "report", rel, "--stage", "process", "--written", "sources/courses/course/A Lesson.md", cwd=root)
-    report = json.loads(done.stdout)
-    assert done.returncode == 0 and report["outcome"] == "ok"
-    assert report["written"] == ["sources/courses/course/A Lesson.md"] and report["captured"] == []
-    # A capture the ticket's own rules excluded: `skipped`, nothing written, and the reason said.
-    skipped = json.loads(cli(PLAN, "report", rel, "--stage", "process", "--reason", "excluded by rule", cwd=root).stdout)
-    assert skipped["outcome"] == "skipped" and skipped["reason"] == "excluded by rule" and skipped["written"] == []
+    t = ticket()
+    (root / rel / "written.json").write_text(json.dumps(["sources/courses/course/A Lesson.md"]), encoding="utf-8")
+    done = cli(PLAN, "report", rel, "--stage", "process", "--written-from", "written.json", cwd=root, tmp_path=tmp_path, ticket_dict=t)
+    call = _updates(tmp_path)[-1]
+    kv = _kv(call)
+    assert done.returncode == 0 and kv["status"] == "ok"
+    assert kv["written_from"] == "written.json" and "captured" not in kv
+    # A capture the ticket's own rules excluded: `ok`, nothing written, and the reason said.
+    door2 = tmp_path_factory.mktemp("process-excl-door")
+    excl = cli(PLAN, "report", rel, "--stage", "process", "--reason", "excluded by rule", cwd=root, tmp_path=door2, ticket_dict=t)
+    kv2 = _kv(_updates(door2)[-1])
+    assert excl.returncode == 0 and kv2["status"] == "ok" and kv2["reason"] == "excluded by rule"
     # A path carrying a TITLE is data: it is written down, never outside the wiki, and never something else.
     for bad in ("../../etc/passwd.md", "sources/courses/course/A Lesson.txt", ".hidden/x.md"):
-        assert cli(PLAN, "report", rel, "--stage", "process", "--written", bad, cwd=root).returncode == 2
-        assert not (root / rel / "report.json").exists()
+        (root / rel / "bad.json").write_text(json.dumps([bad]), encoding="utf-8")
+        bad_door = tmp_path_factory.mktemp(f"process-bad-{hashlib.sha1(bad.encode()).hexdigest()[:6]}")
+        assert cli(PLAN, "report", rel, "--stage", "process", "--written-from", "bad.json", cwd=root, tmp_path=bad_door, ticket_dict=t).returncode == 2
     assert mod.page_path("/etc/passwd.md") is None and mod.page_path(" sources/a/b.md ") == "sources/a/b.md"
 
 
@@ -783,61 +926,76 @@ def test_an_exclusion_is_whole_segments_and_this_units_own_reading():
     assert "this unit's reading" in mod.excluded.__doc__.lower()
 
 
-# --- the report: what it says, and what it never leaves behind ------------------------
+# --- the report: what it posts, and what it never leaves behind ------------------------
 
 
-def test_a_report_that_refuses_leaves_no_earlier_report_behind(wiki_root):
+def test_a_report_that_refuses_posts_nothing(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
-    assert cli(PLAN, "plan", rel, cwd=root).returncode == 0
-    stale = root / rel / "report.json"
-    for bad in (["--missing", "h", "https://h/x", "paywalled"], ["--missing", "h", HOSTILE_HREF, "denied"],
-                ["--missing-leaf", "9", "error"], ["--missing-host", "bad host;rm", "denied"], ["--gone"]):
-        stale.write_text('{"outcome": "ok", "captured": [{"dir": "an-earlier-run"}]}', encoding="utf-8")
-        done = cli(PLAN, "report", rel, *bad, cwd=root)
-        assert done.returncode == 2 and not stale.exists(), bad
+    t = ticket()
+    assert cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    for i, bad in enumerate((["--missing", "h", "https://h/x", "paywalled"], ["--missing", "h", HOSTILE_HREF, "denied"],
+                             ["--missing-leaf", "9", "error"], ["--missing-host", "bad host;rm", "denied"], ["--gone"])):
+        door = tmp_path_factory.mktemp(f"refuse-door-{i}")
+        done = cli(PLAN, "report", rel, *bad, cwd=root, tmp_path=door, ticket_dict=t)
+        assert done.returncode == 2 and not _updates(door), bad
         assert "$(touch" not in done.stderr
-    # A directory that is not a ticket's is refused — nothing is written at the wiki root (Rule 3).
-    assert cli(PLAN, "report", ".", cwd=root).returncode == 2 and not (root / "report.json").exists()
-    assert cli(PLAN, "report", "_raw/course/typo", cwd=root).returncode == 2 and not (root / "_raw/course/typo").exists()
+    # A directory that is not a ticket's has no plan.json: it posts `failed`,
+    # never a claim of anything captured — and nothing is written at the wiki
+    # root either way (Rule 3).
+    door2 = tmp_path_factory.mktemp("refuse-door-dot")
+    dotcall = cli(PLAN, "report", ".", cwd=root, tmp_path=door2, ticket_dict=t)
+    assert dotcall.returncode == 1 and _kv(_updates(door2)[-1])["status"] == "failed"
+    door3 = tmp_path_factory.mktemp("refuse-door-typo")
+    typocall = cli(PLAN, "report", "_raw/course/typo", cwd=root, tmp_path=door3, ticket_dict=t)
+    assert typocall.returncode == 1 and _kv(_updates(door3)[-1])["status"] == "failed"
+    assert not (root / "_raw/course/typo").exists()
 
 
-def test_missing_is_named_by_leaf_number_or_by_host_never_by_a_typed_url(wiki_root):
+def test_missing_is_named_by_leaf_number_or_by_host_never_by_a_typed_url(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket()
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
     fill(root, plan["leaves"][0])
     assert cli(PLAN, "record", rel, "--leaf", 1, cwd=root).returncode == 0
-    report = json.loads(cli(PLAN, "report", rel, "--missing-leaf", 2, "error", "--missing-host", "Fast.Wistia.com", "denied", cwd=root).stdout)
-    assert report["outcome"] == "partial" and report["missing"] == [
-        {"host": "community.example.invalid", "url": L2, "why": "error"},
-        {"host": "fast.wistia.com", "url": "https://fast.wistia.com/", "why": "denied"}]
-    assert "not reached" not in report["reason"]  # lesson 2 is accounted for: it is missing, not unreached
+    door2 = tmp_path_factory.mktemp("missing-door2")
+    done = cli(PLAN, "report", rel, "--missing-leaf", 2, "error", "--missing-host", "Fast.Wistia.com", "denied",
+              cwd=root, tmp_path=door2, ticket_dict=t)
+    call = _updates(door2)[-1]
+    kv = _kv(call)
+    assert done.returncode == 0 and kv["status"] == "partial"
+    missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
+    assert missing == [f"community.example.invalid,{L2},error", "fast.wistia.com,https://fast.wistia.com/,denied"]
+    assert "not reached" not in kv["reason"]  # lesson 2 is accounted for: it is missing, not unreached
 
 
-def test_the_report_says_a_min_date_was_not_applied(wiki_root):
+def test_the_report_says_a_min_date_was_not_applied(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
-    (root / rel / "ticket.json").write_text(json.dumps(ticket(min_date="2026-01-01")), encoding="utf-8")
-    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root))
+    t = ticket(min_date="2026-01-01")
+    plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
     assert plan["min_date"] == "2026-01-01" and len(plan["leaves"]) == 2  # no lesson is dropped for it
     for leaf in plan["leaves"]:
         fill(root, leaf)
         assert cli(PLAN, "record", rel, "--leaf", leaf["order"], cwd=root).returncode == 0
-    report = json.loads(cli(PLAN, "report", rel, cwd=root).stdout)
-    assert report["outcome"] == "ok" and "min_date 2026-01-01 NOT applied" in report["reason"]
+    door2 = tmp_path_factory.mktemp("mindate-door2")
+    done = cli(PLAN, "report", rel, cwd=root, tmp_path=door2, ticket_dict=t)
+    kv = _kv(_updates(door2)[-1])
+    assert done.returncode == 0 and kv["status"] == "ok" and "min_date 2026-01-01 NOT applied" in kv["reason"]
 
 
 def test_the_planners_help_is_its_own_docstring():
     assert mod.__doc__ in subprocess.run([sys.executable, str(PLAN), "-h"], capture_output=True, text=True).stdout
 
 
-def test_the_outage_probe_takes_its_url_off_the_ticket_too(wiki_root):
+def test_the_outage_probe_takes_its_ticket_id_too(wiki_root, tmp_path_factory, monkeypatch):
     root, rel = wiki_root
     spec_p = importlib.util.spec_from_file_location("circle_outage_probe", SCRIPTS / "outage_probe.py")
     probe = importlib.util.module_from_spec(spec_p)
     spec_p.loader.exec_module(probe)  # playwright is imported inside main(), never here
-    assert probe.ticket_target(root, rel) == TARGET  # wiki-relative, resolved against the ROOT
-    assert probe.ticket_target(root, None) is None and probe.ticket_target(root, "_raw/course/none") is None
-    (root / rel / "ticket.json").write_text(json.dumps(ticket(target="file:///etc/passwd")), encoding="utf-8")
-    assert probe.ticket_target(root, rel) is None
+    assert probe.ticket_target(root, None) is None  # no --ticket at all
+    monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("probe-open"), ticket()))
+    assert probe.ticket_target(root, "0123456789ab") == TARGET  # wiki-relative resolution is the CLI's, not this script's
+    monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("probe-hostile"), ticket(target="file:///etc/passwd")))
+    assert probe.ticket_target(root, "0123456789ab") is None
 
 
 def test_the_documented_page_line_names_a_type():

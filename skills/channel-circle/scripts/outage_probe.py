@@ -24,13 +24,13 @@ and measures the wrapper's rendered size.
 
 Usage:
   llm-wiki-ops run ops/skills/channel-circle/scripts/outage_probe.py \
-         <root> --ticket-dir <capture_dir> [--headed] [--settle-ms 8000]
+         <root> --ticket <id> [--headed] [--settle-ms 8000]
          <root> <course-url> …                       # HAND RUNS ONLY
 
-`<root>` is the wiki root (`.` under `llm-wiki-ops run`). With `--ticket-dir`
-(wiki-relative: resolved against `<root>`) the url probed is the `target` of
-that directory's `ticket.json` — a worker never types a venue url onto a
-command line. Always exits 0 (it's a probe, not a gate).
+`<root>` is the wiki root (`.` under `llm-wiki-ops run`). With `--ticket <id>`
+the url probed is that ticket's own `target` (A-1), through `tickets open` —
+a worker never types a venue url onto a command line. Always exits 0 (it's a
+probe, not a gate).
 Prints a JSON verdict on stdout:
   {fixed, wrapper_children, wrapper_chars, http_5xx, sample_5xx,
    final_url, title, auth_ok}
@@ -44,6 +44,8 @@ History:
   2026-08-04  auth profile lookup moves through the credential store's
               `profile-dir` verb instead of a hardcoded path.
   2026-09-19  `--ticket-dir`: the url comes off the ticket, never a command line.
+  2026-09-25  `--ticket-dir` becomes `--ticket <id>`: the target comes off
+              `tickets open` instead of a file beside the capture dir.
 """
 
 import argparse
@@ -126,16 +128,19 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
-def ticket_target(root, ticket_dir) -> str | None:
-    """The http(s) `target` of `<root>/<ticket_dir>/ticket.json`, or None."""
-    if not ticket_dir:
+def ticket_target(root, ticket_id) -> str | None:
+    """The http(s) `target` of `--ticket <id>` (A-1), through `tickets open`
+    — or None where there is no ticket id."""
+    if not ticket_id:
         return None
-    base = Path(ticket_dir) if Path(ticket_dir).is_absolute() else Path(root) / ticket_dir
+    proc = _ops(root, "pipeline", "tickets", "open", ticket_id)
     try:
-        ticket = json.loads((base / "ticket.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    if proc.returncode != 0 or not isinstance(answer, dict):
         return None
-    target = ticket.get("target") if isinstance(ticket, dict) else None
+    target = (answer.get("ticket") or {}).get("target") if isinstance(answer.get("ticket"), dict) else None
     return target if isinstance(target, str) and urlsplit(target).scheme in ("http", "https") else None
 
 
@@ -144,16 +149,16 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="wiki root path")
-    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY; default: `target` of <ticket-dir>/ticket.json")
-    ap.add_argument("--ticket-dir", help="the ticket's capture dir, wiki-relative — its ticket.json names the url")
+    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY; default: --ticket's own `target`")
+    ap.add_argument("--ticket", help="the ticket id, opened for its own `target`")
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     ap.add_argument("--settle-ms", type=int, default=8000, help="Wait after load for XHRs to fire / content to render")
     args = ap.parse_args()
 
-    args.url = args.url or ticket_target(args.root, args.ticket_dir)
+    args.url = args.url or ticket_target(args.root, args.ticket)
     if not args.url:
-        print(json.dumps({"fixed": False, "error": "no url: give --ticket-dir <capture_dir> (its ticket.json names the target)"}))
+        print(json.dumps({"fixed": False, "error": "no url: give --ticket <id> (opened for its own target)"}))
         return 0
     domain = domain_of(args.url)
 
