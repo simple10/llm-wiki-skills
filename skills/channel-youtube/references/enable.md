@@ -1,6 +1,6 @@
 # channel-youtube — after enabling
 
-1. Declare the job, naming the skill: `llm-wiki-ops pipeline add
+1. Declare the job, naming the skill: `llm-wiki-ops pipeline jobs add
    <video-url> slug=<video-name>
    description="<what this is>" skill=channel-youtube` — the skill's manifest
    supplies the rest (`every=once`, `harvest.scope=page`,

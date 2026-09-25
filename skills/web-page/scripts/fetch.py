@@ -13,8 +13,8 @@ fetches into `--capture-dir` and prints the would-be status as JSON, posting
 no `update` — the one thing the ticket arm does not cover.
 
 Three files land in the capture directory and nothing outside it: the body
-as the server sent it, `capture.json` naming it — the whole of what
-`pipeline extract` reads (P-11) — and nothing else; the report is
+as the server sent it, `capture.json` naming it — the whole of what the
+plugin's own extract reads (P-11) — and nothing else; the report is
 `tickets update`'s (P-2).
 
 Stdlib only, and deliberately NO PEP 723 block: the block routes a script
@@ -107,11 +107,12 @@ OPS = "llm-wiki-ops"
 
 
 def front_door() -> list:
-    """The front door, as an argv prefix (copied in every unit that talks to
-    the ticket). A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was
-    itself reached by — a command LINE, not a path — and that is the one
-    spelling a jail is sure to carry. Otherwise the bare name on PATH. Empty
-    when there is neither."""
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
     named = os.environ.get("LLM_WIKI_OPS")
     if named:
         return shlex.split(named)
@@ -121,21 +122,21 @@ def front_door() -> list:
 
 def open_ticket(ticket: str, stage: str | None = None) -> dict:
     """This worker's own ticket (A-1), through the front door. Exits naming
-    the refusal — there is no report to post yet, because there is no
-    capture directory to post one into until this answers."""
+    the refusal."""
+    me = Path(__file__).stem
     door = front_door()
     if not door:
-        sys.exit(f"fetch: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
     argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
     if stage:
         argv.append(f"stage={stage}")
     cp = subprocess.run(argv, capture_output=True, text=True)
     if cp.returncode != 0:
-        sys.exit(f"fetch: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
     try:
         return json.loads(cp.stdout)["ticket"]
     except (ValueError, KeyError) as exc:
-        sys.exit(f"fetch: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
 
 
 def post_update(
@@ -153,9 +154,10 @@ def post_update(
     """This worker's progress (A-2), through the front door. `missing` is an
     iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
     the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
     door = front_door()
     if not door:
-        sys.exit(f"fetch: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
     argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
     if reason:
         argv.append(f"reason={reason}")
@@ -171,7 +173,7 @@ def post_update(
         argv.append(f"note={note}")
     cp = subprocess.run(argv, capture_output=True, text=True)
     if cp.returncode != 0:
-        print(f"fetch: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
     return cp.returncode
 
 

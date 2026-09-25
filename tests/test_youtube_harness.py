@@ -10,11 +10,10 @@ import json
 import os
 import pytest
 import re
-import shlex
 
 from pathlib import Path
 
-from harness import declared_job, ticket_in, unit_tests
+from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-youtube", "test_youtube"))
@@ -27,34 +26,46 @@ def _formatter():
         pytest.skip("set LLM_WIKI_OPS_PLUGIN to the ops plugin's root — format_transcript.py is host code, not this package's")
     rel = re.search(r'^FORMATTER = "([^"]+)"$', BUILDER.read_text(encoding="utf-8"), re.M).group(1)
     path = Path(plugin) / rel
+    old = Path(plugin) / "skills/process/scripts/format_transcript.py"  # G3, plugins PR 4
+    if not path.is_file() and old.is_file():
+        path = old
     assert path.is_file(), f"{rel} is not under LLM_WIKI_OPS_PLUGIN={plugin} — did the plugin move it?"
     return path
 
 
+def _needs_run_verb(ops, env, wiki):
+    if run(ops, rooted(env, wiki), "pipeline", "tickets", "run", "--help").returncode != 0:
+        pytest.skip("`pipeline tickets run` (spawn=self) is plugins PR 2 (#2486)")
+
+
 def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
-    """The whole point of the rework. A ticketed capture dir holding what
-    yt-dlp leaves (fixtures; no network) → harvest's capture record → this
-    unit's own process step, through the REAL `page create` → one staged page
-    under the job's `dest`, carrying the venue-specific body and the venue's
-    own facts."""
+    """The whole point of the rework. A live ticket over what yt-dlp leaves
+    (fixtures; no network) → harvest's capture record → this unit's own
+    process step, through the REAL `page create` → one staged page under
+    the job's `dest`, carrying the venue-specific body and the venue's own
+    facts. `open_ticket`/`post_update` reach the REAL CLI here — no stub —
+    since `run` exports `LLM_WIKI_OPS` for the worker it starts."""
     formatter = _formatter()
+    _needs_run_verb(ops, env, wiki)
     job = declared_job(ops, env, wiki, UNIT, JOB_TARGET)
-    cap = ticket_in(wiki, job, "watch--5e2e0001", unit=UNIT, item=ITEM)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
     _fill(cap)
 
-    _record(wiki, cap)
-    _script(REPORTER, wiki, cap, "--outcome", "ok")
-    harvest_report = json.loads((cap / "report.json").read_text())
-    assert harvest_report["ticket"] == "0123456789ab" and harvest_report["outcome"] == "ok"
-    assert harvest_report["captured"] == [{"item": ITEM, "dir": f"_raw/{job.slug}/watch--5e2e0001", "title": META["title"]}]
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
+            "--capture-dir", str(cap.relative_to(wiki)), "--record", "--ticket", ticket_id, cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
     record = json.loads((cap / "capture.json").read_text())
     assert record["slug"] == job.slug and record["item"] == ITEM and "frontmatter" not in record
 
-    out = json.loads(_build(wiki, cap, "--format-transcript", str(formatter), dest=job.dest, ops=shlex.join(ops)).stdout)
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
+            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", ticket_id,
+            "--format-transcript", str(formatter), cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads(r.stdout)
     assert out["has_transcript"] is True and out["chapters"] == 2
-    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written-from", "written.json")
-    process_report = json.loads((cap / "report.json").read_text())
-    assert process_report["written"] == out["written"] and process_report["captured"] == []
+
+    closed = landed(ops, env, wiki, ticket_id)
+    assert closed.get("status") in ("ok", None), closed
 
     page = wiki / out["written"][0]
     text = page.read_text(encoding="utf-8")
@@ -94,27 +105,31 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
 def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_path, leaf, title, safe):
     """Through the REAL `page create`, which names the page's file from the
     title and refuses `:` `?` `/` `"` or a leading dot outright."""
-    job = declared_job(ops, env, wiki, UNIT, JOB_TARGET)
+    _needs_run_verb(ops, env, wiki)
     item = f"https://www.youtube.com/watch?v={leaf[-8:]}xyz"
-    cap = ticket_in(wiki, job, leaf, unit=UNIT, item=item)
+    job = declared_job(ops, env, wiki, UNIT, JOB_TARGET, slug=f"harness-yt-{leaf}")
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
     _fill(cap)
     (cap / "metadata.json").write_text(json.dumps({**META, "title": title}))
-    _record(wiki, cap)
+
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
+            "--capture-dir", str(cap.relative_to(wiki)), "--record", "--ticket", ticket_id, cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
     record = json.loads((cap / "capture.json").read_text())
 
     # FIRST: the refusal this pins is `page create`'s own, not an assertion of ours.
-    out = json.loads(_build(wiki, cap, "--format-transcript", str(_stub_formatter(tmp_path)),
-                            dest=job.dest, ops=shlex.join(ops)).stdout)
-    _script(REPORTER, wiki, cap, "--outcome", "ok", "--written", out["written"][0])
-    report = json.loads((cap / "report.json").read_text())
-    assert report["written"] == out["written"]
-    page = wiki / out["written"][0]
+    r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
+            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", ticket_id,
+            "--format-transcript", str(_stub_formatter(tmp_path)), cwd=wiki)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads(r.stdout)
     if safe:
         assert record["title"] == safe
+    page = wiki / out["written"][0]
     assert page.is_file() and page.name == f"{record['title']}.md"
     text = page.read_text(encoding="utf-8")
     _, front, body = text.split("---\n", 2)
     folded = " ".join(title.split())
     assert body.lstrip().startswith(f"# {folded.replace('<', '&lt;')}\n"), "the TRUE title is the H1"
-    assert f"source_title: " in front and folded[:20] in front
+    assert "source_title: " in front and folded[:20] in front
     assert len(re.findall(r"^---$", text, re.M)) == 2 and "\n# Forged" not in text

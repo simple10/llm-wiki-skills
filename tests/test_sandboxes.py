@@ -14,6 +14,11 @@ from harness import ROOT, SKILLS, SOURCE, jsonc, snippet, unit_manifest
 MODEL = {"api.anthropic.com", "api.openai.com", "chatgpt.com"}
 REFERENCES = ROOT / "references" / "sandboxes"
 
+# A unit's harvest stage MAY carry no `sandbox_ref` at all — the ninth unit's
+# `script` stage runs the seeded `harvest` sandbox instead (A-5) — so only a
+# unit that DOES name one has a reference to check here.
+SANDBOXED = [n for n in SKILLS if "sandbox_ref" in unit_manifest(n)["stages"].get("harvest", {})]
+
 
 def _reference(name: str) -> tuple[str, dict]:
     ref = unit_manifest(name)["stages"]["harvest"]["sandbox_ref"]
@@ -33,11 +38,11 @@ def test_only_harvest_names_a_sandbox_and_requires_names_no_network(name):
     manifest = unit_manifest(name)
     assert "network" not in manifest["requires"], name
     for stage, spec in manifest["stages"].items():
-        assert ("sandbox_ref" in spec) == (stage == "harvest"), (name, stage, spec)
+        assert stage == "harvest" or "sandbox_ref" not in spec, (name, stage, spec)
         assert not {"sandbox", "reviewed"} & set(spec), f"{name}: a package manifest carries no binding"
 
 
-@pytest.mark.parametrize("name", SKILLS)
+@pytest.mark.parametrize("name", SANDBOXED)
 def test_the_reference_is_the_units_venue_and_its_snippet_is_one_policy(name):
     rel, doc = _reference(name)
     venue = unit_manifest(name)["venue"]
@@ -55,7 +60,7 @@ def test_a_credentialed_unit_claims_an_exact_host_its_snippet_reaches(name):
 
 
 def test_every_reference_is_one_a_unit_names():
-    named = {_reference(n)[0] for n in SKILLS}
+    named = {_reference(n)[0] for n in SANDBOXED}
     shipped = {str(p.relative_to(REFERENCES).with_suffix("")) for p in REFERENCES.rglob("*.md")}
     assert shipped == named, shipped ^ named
 

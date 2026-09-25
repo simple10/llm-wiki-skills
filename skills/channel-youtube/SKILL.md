@@ -1,16 +1,16 @@
 ---
 name: channel-youtube
 description: YouTube capture and note building for this wiki — yt-dlp ground truth, deterministic notes.
-argument-hint: "ticket=<id> stage=harvest|process"
+argument-hint: "ticket=<id>"
 ---
 
 # Channel: YouTube
 
 You harvest YouTube videos for this wiki and write their pages. You are invoked
-as `/channel-youtube ticket=<id> stage=harvest|process` for a ticket whose job
-names `skill: channel-youtube`, and this file is authoritative for how the venue
-is captured and how its pages read. The ticket carries the job's resolved
-settings — honor them; never re-ask.
+as `/channel-youtube ticket=<id>` for a ticket whose job names `skill:
+channel-youtube`, and this file is authoritative for how the venue is captured
+and how its pages read. The ticket carries the job's resolved settings — honor
+them; never re-ask.
 
 **Dependency**: `yt-dlp` on PATH. Nothing else — the capture commands ask it for
 no conversion, so `ffmpeg` is not needed (see Media). **Isolation**: everything
@@ -19,9 +19,15 @@ it is a directive.
 
 ## Stages
 
-`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
-below are those steps. The worker loop, the jail and the report every worker
-leaves: `llm-wiki-ops reference agent-loop`.
+```sh
+llm-wiki-ops --json pipeline tickets open <id>
+```
+
+The answer's own `stage` — `harvest` or `process` — is the step; the two
+sections below are those steps. Its `capture_dir`, `item`, `known[]`,
+`hosts`, `dest`, `harvest`/`process`, `options` are what the rest of this
+file calls "the ticket". The worker loop and the report every worker leaves:
+`llm-wiki-ops reference pipeline-ticket`.
 Either step opens with the policy read — the stage's overlay, then this unit's
 own, folded onto the step:
 
@@ -31,18 +37,16 @@ llm-wiki-ops policy get <stage> channel-youtube
 
 ### harvest
 
-You were started in the capture directory, and `ticket.json` is in it: `item`
-(the video url), `capture_dir` (wiki-relative, the ONE directory you may write
-in), `harvest.assets`, `known[]`, `hosts`. With no `ticket.json` the foreman read
-them off `pipeline queue show ids=<id>` — pass `--item` and `--slug` to step 2,
-`--ticket` to step 3. `item` already a `resource` in `known[]` and no `refresh:
-true`? Fetch nothing; report `skipped` with a reason naming `known`.
+The ticket carries `item` (the video url), `capture_dir` (wiki-relative, the
+ONE directory you may write in), `harvest.assets`, `known[]`, `hosts`. `item`
+already a `resource` in `known[]` and no `refresh: true`? Fetch nothing;
+post `status=ok` with a reason naming `known`.
 
 **1. Capture.** In the capture directory, clearing what an earlier run left —
 it is the same directory on every pull and every respawn:
 
 ```
-rm -f report.json capture.json page.md written.json
+rm -f capture.json page.md written.json
 yt-dlp --dump-json --no-download -- '<item>' > metadata.json
 yt-dlp --skip-download --write-sub --write-auto-sub --sub-langs en --sub-format vtt/srt -o "captions/%(id)s.%(ext)s" -- '<item>'
 ```
@@ -50,7 +54,7 @@ yt-dlp --skip-download --write-sub --write-auto-sub --sub-langs en --sub-format 
 `<item>` is the ticket's, VERBATIM and SINGLE-QUOTED: a watch url carrying `&t=`
 or `&list=` splits an unquoted command at the `&`, and inside double quotes `$`
 and a backtick still expand. Never retype, shorten or "clean" it. An `item`
-that itself carries a single quote is no YouTube url — report `failed`, do not
+that itself carries a single quote is no YouTube url — post `failed`, do not
 run it.
 
 `metadata.json` is required; captions are not. yt-dlp failing still leaves an
@@ -59,7 +63,7 @@ EMPTY `metadata.json` behind the `>`, so check its exit status.
 **2. Write the capture record.**
 
 ```
-llm-wiki-ops run ops/skills/channel-youtube/scripts/youtube_note.py . --capture-dir <capture_dir> --record
+llm-wiki-ops run ops/skills/channel-youtube/scripts/youtube_note.py . --capture-dir <capture_dir> --record --ticket <id>
 ```
 
 `run` starts a hosted script at the WIKI ROOT, which is why `.` names the wiki
@@ -67,63 +71,62 @@ and `<capture_dir>` is the ticket's own wiki-relative value, verbatim. `--record
 writes `capture.json` and nothing else: the facts reach the page at process,
 because this unit writes the page.
 
-**3. Report — last.**
+**3. Post progress — last.**
 
 ```
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome ok
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome skipped --reason "known: item is already a page of this job"
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome failed --reason "<why>" --missing <host> <url> <denied|timeout|auth|error>
+llm-wiki-ops --json pipeline tickets update <id> stage=harvest status=ok
+llm-wiki-ops --json pipeline tickets update <id> stage=harvest status=ok reason="known: item is already a page of this job"
+llm-wiki-ops --json pipeline tickets update <id> stage=harvest status=failed reason="<why>" missing=<host>,<url>,<denied|timeout|auth|error>
 ```
 
 - `ok` — `metadata.json` landed; captions are process's question, not this one's.
-- `skipped` — `known[]`; `--reason` required, and names it.
+- `ok` + `known` reason — `known[]`; the reason names it.
 - `failed` — no `metadata.json`, or yt-dlp aborted. A host the proxy refused goes
-  in `--missing … denied`, a login or age wall is `auth`; never retry a `denied`
-  host, widening is the foreman's call.
-
-**Its exit status says whether a report was WRITTEN, not what it says.** `0` for
-every outcome written, `failed` included; non-zero only when it refused, leaving
-NO `report.json` — read its line, fix the call, and run it again.
+  in `missing=…,denied`, a login or age wall is `auth`; never retry a `denied`
+  host, widening is the host's call.
 
 ### process
 
-Off `ticket.json`: `capture_dir` (the ONE directory you read), `dest` (the ONE
+The ticket carries `capture_dir` (the ONE directory you read), `dest` (the ONE
 directory you write), `known[]`, `options`, `process` (`embeds` and
 `exclude_rules`), `harvest` and `min_date`. No network, no credential.
 
-**1.** `rm -f report.json` — same directory on every pull.
+**1.** `rm -f page.md written.json` — same directory on every pull. No
+`metadata.json` here at all? Post `status=incomplete reason="no metadata.json"`
+and stop.
 
 **2.** Apply `process.exclude_rules`, `options` and `min_date`. A capture that
-earns no page goes straight to the report with `--outcome skipped` and a reason
+earns no page goes straight to the update with `status=ok` and a reason
 naming the rule.
 
 **3. Build the page.**
 
 ```
-llm-wiki-ops run ops/skills/channel-youtube/scripts/youtube_note.py . --capture-dir <capture_dir> --dest <dest>
+llm-wiki-ops run ops/skills/channel-youtube/scripts/youtube_note.py . --capture-dir <capture_dir> --dest <dest> --ticket <id>
 ```
 
 It writes the body as `page.md` beside the bytes, then the page under `dest`
 through `page create` (or `page edit` for a title `dest` already holds), and
 leaves the paths in `written.json`. One JSON line out — `written`, `page`,
 `has_transcript`, `chapters`, `description`. A non-zero exit means NOTHING
-landed: report `failed` with its last stderr line. The page's shape is
+landed: post `failed` with its last stderr line. The page's shape is
 `references/note-shape.md`.
 
-**4. Report — last.**
+**4. Post progress — last.**
 
 ```
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome ok --written-from written.json
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome partial --reason no_captions --written-from written.json
-llm-wiki-ops run ops/skills/channel-youtube/scripts/write_report.py . --capture-dir <capture_dir> --outcome skipped --reason "<which rule said so>"
+llm-wiki-ops --json pipeline tickets update <id> stage=process status=ok written_from=written.json
+llm-wiki-ops --json pipeline tickets update <id> stage=process status=ok reason=no_captions written_from=written.json
+llm-wiki-ops --json pipeline tickets update <id> stage=process status=ok reason="<which rule said so>"
 ```
 
 **Never type the page path yourself.** Its filename is the video's TITLE, and a
 filename may hold `;`, `$` and a backtick — on your Bash line that is the venue
-running a command. `--written-from` reads the list out of the file instead.
+running a command. `written_from=` reads the list out of the file instead.
 
-`partial` is the page landing with `has_transcript` false. Then say the page and
-the outcome, and exit; adopting it and stamping the job are the foreman's.
+No captions is a lasting fact about this video, not a shortfall a re-run
+fixes — `ok` with `reason=no_captions`, never `partial`. Then say the page and
+the outcome, and exit; adopting it and stamping the job are the host's.
 
 ## Venue knowledge
 

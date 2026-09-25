@@ -8,8 +8,8 @@ and the page process writes — deterministic, so every YouTube page is
 consistent instead of hand-assembled (which flattened transcripts into one
 paragraph and dumped raw descriptions).
 
-  youtube_note.py <wiki> --capture-dir <dir> --record
-  youtube_note.py <wiki> --capture-dir <dir> --dest <dest>
+  youtube_note.py <wiki> --capture-dir <dir> --record --ticket <id>
+  youtube_note.py <wiki> --capture-dir <dir> --dest <dest> --ticket <id>
                   [--item <url>] [--slug <slug>] [--tag <tag>]... [--area <area>]...
                   [--format-transcript <path>]
 
@@ -20,16 +20,17 @@ writes the page under the ticket's `dest`.
 
 Reads, in the capture dir: `metadata.json` (`yt-dlp --dump-json`), the subtitle
 file yt-dlp fetched (.vtt or .srt, under `captions/` or beside the metadata),
-and `ticket.json` when the spawner left one (`slug`, `item`). `--slug`/`--item`
-override it. A directory with NO `ticket.json` is refused unless `--item` says
-what it holds (a hand run): `run` starts this script at the wiki root, so a
-mistyped `--capture-dir` is otherwise a page built from the wrong directory.
-The slug then defaults to the capture dir's parent (`_raw/<slug>/<leaf>`).
+and `tickets open <id>` when `--ticket` names one (`slug`, `item`).
+`--slug`/`--item` override it. Given no `--ticket` at all, refused unless
+`--item` says what the directory holds (a hand run): `run` starts this script
+at the wiki root, so a mistyped `--capture-dir` is otherwise a page built from
+the wrong directory. The slug then defaults to the capture dir's parent
+(`_raw/<slug>/<leaf>`).
 
 FIRST, before it reads anything, it removes what an earlier run left in the
-capture dir — `page.md`, `report.json`, and `capture.json` on the harvest arm —
-because a capture dir is stable across pulls and a respawn that fails must not
-be read as the success the run before it had. The process arm leaves
+capture dir — `page.md` and `written.json`, and `capture.json` on the harvest
+arm — because a capture dir is stable across pulls and a respawn that fails
+must not be read as the success the run before it had. The process arm leaves
 `capture.json` alone: that is harvest's answer, not this run's.
 
 The harvest arm writes, in the capture dir and nowhere else:
@@ -63,8 +64,8 @@ can open a fence or a heading that swallows the rest of the page; and the
 front-door calls take an argv LIST, never a shell line, because a venue that
 can type onto a Bash line can run a command.
 
-`report.json` is NOT this script's: `write_report.py` beside it writes that,
-last.
+Progress is NOT this script's to post: `tickets update` is `SKILL.md`'s own
+step, last.
 
 This script belongs to the `channel-youtube` skill unit and is WIKI-OWNED: it
 ships in the catalog, `skills install` copies it, and the wiki's copy is the one
@@ -116,6 +117,63 @@ def front_door() -> list:
         return shlex.split(named)
     found = shutil.which(OPS)
     return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
 
 
 # What a nested front-door call must NOT inherit from the one that ran this
@@ -436,25 +494,23 @@ def safe_chapters(meta):
     return rows
 
 
-TICKET_NAME = "ticket.json"
 CAPTURE_NAME = "capture.json"
 METADATA_NAME = "metadata.json"
 BODY_NAME = "page.md"
-REPORT_NAME = "report.json"
 # Written for the formatter's one call and removed after it: `metadata.json`'s
 # chapters with their titles made safe to print (`safe_chapters`).
 CHAPTERS_NAME = "chapters.safe.json"
-# Where the process arm leaves the pages it wrote, for the report step to read.
-# A FIXED name, so the page's path — which carries the venue's title — never
-# has to be typed onto a command line. `safe_title` makes a title a legal
-# FILENAME; it leaves `;`, `$` and a backtick alone, because a filename may
-# hold them.
+# Where the process arm leaves the pages it wrote, for the `tickets update`
+# step to read. A FIXED name, so the page's path — which carries the venue's
+# title — never has to be typed onto a command line. `safe_title` makes a
+# title a legal FILENAME; it leaves `;`, `$` and a backtick alone, because a
+# filename may hold them.
 WRITTEN_NAME = "written.json"
 # What an earlier run over this SAME directory may have left. Removed first.
 # `capture.json` is harvest's own answer to "this item landed", so only the
 # harvest arm clears it — a process run that wiped it would throw away the
 # record of the bytes it is standing on.
-STALE = (BODY_NAME, REPORT_NAME, CHAPTERS_NAME, WRITTEN_NAME)
+STALE = (BODY_NAME, CHAPTERS_NAME, WRITTEN_NAME)
 
 # Keys this script never puts on the page verb's command line: `title` is its
 # own argument, `status` is the verb's default, and identity and the harvest
@@ -488,15 +544,6 @@ def embeds_of(ticket):
     """The ticket's `process.embeds`, or True where it says nothing."""
     process = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
     return process.get("embeds") is not False
-
-
-def read_ticket(cap_dir):
-    """`ticket.json` as the spawner wrote it, or `{}` — a hand run has none."""
-    try:
-        ticket = json.loads((Path(cap_dir) / TICKET_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return ticket if isinstance(ticket, dict) else {}
 
 
 def find_captions(cap_dir):
@@ -634,12 +681,13 @@ def fetched_at_of(metadata_path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wiki", type=Path, help="the wiki root — what binds the front door to this wiki")
-    ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off ticket.json")
+    ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off `tickets open`")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--record", action="store_true", help="HARVEST: write `capture.json` for the bytes already in the capture dir, and nothing else")
     mode.add_argument("--dest", default=None, help="PROCESS: the ticket's `dest`, verbatim — the one directory the page may land in")
-    ap.add_argument("--item", default=None, help="the video url. Defaults to ticket.json's `item`; REQUIRED where there is no ticket.json (a hand run)")
-    ap.add_argument("--slug", default=None, help="the job slug. Defaults to ticket.json's `slug`, then the capture dir's parent")
+    ap.add_argument("--ticket", default=None, help="the ticket id — opened for `slug`/`item`/`process`; REQUIRED unless --item says what a hand run holds")
+    ap.add_argument("--item", default=None, help="the video url. Defaults to the ticket's `item`; REQUIRED where there is no --ticket (a hand run)")
+    ap.add_argument("--slug", default=None, help="the job slug. Defaults to the ticket's `slug`, then the capture dir's parent")
     ap.add_argument("--tag", action="append", default=[], help="a tag for `frontmatter.tags` (repeatable) — a hand run's; a ticket carries none")
     ap.add_argument("--area", action="append", default=[], help="a knowledge area for `frontmatter.areas` (repeatable) — a hand run's; a ticket carries none")
     ap.add_argument(
@@ -661,21 +709,21 @@ def main():
 
     given = Path(args.capture_dir)
     if given.is_absolute() or ".." in given.parts:
-        sys.exit(f"youtube_note: --capture-dir is WIKI-RELATIVE (ticket.json's `capture_dir`, verbatim), not {args.capture_dir!r}")
+        sys.exit(f"youtube_note: --capture-dir is WIKI-RELATIVE (the ticket's `capture_dir`, verbatim), not {args.capture_dir!r}")
     cap_dir = args.wiki / given
     if not cap_dir.is_dir():
         sys.exit(f"youtube_note: {cap_dir} is not a directory — --capture-dir is relative to the wiki root, {args.wiki}")
-    ticket = read_ticket(cap_dir)
-    if not ticket and not args.item:
+    if not args.ticket and not args.item:
         sys.exit(
-            f"youtube_note: no {TICKET_NAME} in {cap_dir} — not a spawned capture directory. "
+            "youtube_note: no --ticket and no --item — not a spawned run. "
             "For a hand run say what it holds: --item <video url> (and --slug)"
         )
+    ticket = open_ticket(args.ticket, "harvest" if args.record else "process") if args.ticket else {}
 
     # FIRST, before anything can fail: a capture dir is stable across pulls, so
     # what an earlier run left here must not outlive a build that fails.
-    # `capture.json` is what says "this item landed", and `report.json` is what
-    # `apply` reads — it does not check whose ticket a report answers.
+    # `capture.json` is what says "this item landed"; every report is
+    # `tickets update`'s, which does not check whose ticket a report answers.
     for name in (*STALE, *((CAPTURE_NAME,) if args.record else ())):
         (cap_dir / name).unlink(missing_ok=True)
 
