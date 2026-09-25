@@ -139,8 +139,8 @@ History:
               file beside the capture dir; the spawn marker and the slice
               clock are re-anchored on the ticket id and this run's own first
               write (P-8), since there is no per-dispatch timestamp left to
-              read; every status is posted via `tickets update` instead of
-              written to `report.json`. `skipped` becomes `ok` (P-4).
+              read; every status is posted via `tickets update` — a report
+              file is no longer written at all. `skipped` becomes `ok` (P-4).
 """
 
 import argparse

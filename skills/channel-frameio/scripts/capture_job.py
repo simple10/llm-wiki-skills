@@ -22,8 +22,8 @@ bytes do not carry — the leaf's folder path, the operator's
 `--author`/`--group`/`--title-strip` — is recorded in `meta.json`, which is
 where the process step reads it back.
 
-It runs no queue verb and writes no report: `report.json` is the ticket's, and
-`harvest_share.py` writes it from what this left on disk.
+It runs no queue verb and posts no update: that is `harvest_share.py`'s own,
+from what this left on disk.
 
 The leaf dir must be exactly `_raw/<slug>/<one component>` — the slice is
 granted the job's whole `_raw/<slug>/`, and `apply` mints a process ticket for

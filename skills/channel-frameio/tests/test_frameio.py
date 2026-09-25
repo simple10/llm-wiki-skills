@@ -14,8 +14,7 @@ without a CLI so it runs everywhere; the end-to-end cases put a fixture asset
 where `capture_asset.py` would have left it, run the unit's own process step
 over it, and — for a video, whose page only the transcribe stage can mint —
 the REAL extractor. CLI-touching cases run through a stand-in front door
-(`_stub_ops`, the pattern channel-spotify's and channel-hubspot-video's tests
-already use) that answers `tickets open`/`tickets update`.
+(`_stub_ops`) that answers `tickets open`/`tickets update`.
 
 Loaded by path: unit scripts live under `skills/<unit>/scripts/` and are
 launched with `uv run`, so there is no package to import them from.
