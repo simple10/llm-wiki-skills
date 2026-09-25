@@ -1,0 +1,23 @@
+{
+  "keywords": [
+    "page",
+    "url",
+    "article",
+    "web"
+  ],
+  "kind": "media",
+  "name": "web-page",
+  "requires": {
+    "credential": false,
+    "ops": ">=1.96.0"
+  },
+  "stages": {
+    "harvest": {
+      "script": "scripts/fetch.py"
+    }
+  },
+  "usage": "llm-wiki-ops run ops/skills/web-page/scripts/fetch.py ticket=<id>",
+  "v": 2,
+  "venue": "web",
+  "version": "1.0.0"
+}
