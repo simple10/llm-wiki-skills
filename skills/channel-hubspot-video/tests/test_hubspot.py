@@ -776,7 +776,7 @@ def test_the_asset_steps_carry_the_pages_url_as_argv_and_never_through_a_shell(t
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["video"] == "downloaded" and "the plugin script said" not in done.stdout
     detect, download = (json.loads(line) for line in seen.read_text(encoding="utf-8").splitlines())
-    script = "skills/harvest/scripts/assets.py"
+    script = "scripts/assets.py"
     assert detect["argv"] == ["run", script, "detect", f"{leaf['dir']}/page.html", "--base-url", LESSON, "--out", f"{leaf['dir']}/assets.json",
                               "--network-log", f"{leaf['dir']}/net.json"]
     assert download["argv"] == ["run", script, "download", f"{leaf['dir']}/assets.json", "--dest", "_raw/site-learn/assets", "--referer", LESSON]

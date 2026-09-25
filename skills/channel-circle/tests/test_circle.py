@@ -520,7 +520,7 @@ def test_detect_hands_the_plugins_asset_script_the_planned_url_as_an_argument_li
     env, seen = stub_front_door(tmp_path_factory.mktemp("door"), {})
     assert cli(PLAN, "detect", rel, "--leaf", 2, cwd=root, env=env).returncode == 0
     got = json.loads(seen.read_text(encoding="utf-8"))
-    assert got["argv"] == ["run", "skills/harvest/scripts/assets.py", "detect", f"{leaf['dir']}/page.html", "--base-url", L2,
+    assert got["argv"] == ["run", "scripts/assets.py", "detect", f"{leaf['dir']}/page.html", "--base-url", L2,
                            "--network-log", f"{leaf['dir']}/net.json", "--out", f"{leaf['dir']}/assets.json"]
     assert got["inherited"] == [] and Path(got["cwd"]) == root.resolve()  # the harness's project dir is dropped; the call binds by cwd
     assert cli(PLAN, "detect", rel, "--leaf", 9, cwd=root, env=env).returncode == 1  # not a leaf of this plan

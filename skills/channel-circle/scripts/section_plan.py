@@ -962,7 +962,7 @@ def front_door() -> list:
 # root: the `cwd=<root>` this script was handed is what binds the nested call
 # to THIS wiki.
 NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
-ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
+ASSETS_SCRIPT = "scripts/assets.py"
 
 
 def _started(argv, env=None) -> int:

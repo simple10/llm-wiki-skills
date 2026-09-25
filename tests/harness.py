@@ -175,44 +175,45 @@ class Job:
 
 def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
     """A real job for `unit` in the session wiki, declared the way
-    references/enable.md says to — `pipeline extract` reads the job a capture
-    belongs to, so a
+    references/enable.md says to (A-11: `jobs add`/`jobs show`) — `pipeline
+    extract` reads the job a capture belongs to, so a
     capture with no job behind it is refused. Idempotent for one
     (slug, target) pair; a wiki holds ONE job per target and a slug names one
     source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
     slug = slug or f"port-{unit}"
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
     assert r.returncode == 0, r.stdout + r.stderr
-    record = run(ops, rooted(env, wiki), "--json", "pipeline", "show", slug).data["job"]
+    record = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "show", slug).data["job"]
     return Job(slug, record["dest"], record)
 
 
-def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) -> Path:
-    """A capture directory holding the `ticket.json` a harvest worker is
-    started beside — every key `pipeline/dispatch.py` writes, the job's own
-    sections riding along. Returns the directory; `leaf` is `<page>--<hash8>`
-    for an item with an address, `<YYYY-MM-DD>` for a channel's pull."""
-    rel = f"_raw/{job.slug}/{leaf}"
-    directory = wiki / rel
-    directory.mkdir(parents=True, exist_ok=True)
-    ticket = {
-        "v": 1, "ticket": "0123456789ab", "unit": unit, "slug": job.slug, "item": item, "target": item,
-        "capture_dir": rel, "dest": None, "hosts": [], "harvest": job.record["harvest"],
-        "options": job.record.get("options") or {}, "credential": None, "min_date": None, "known": [],
-    }
-    ticket.update(over)
-    (directory / "ticket.json").write_text(json.dumps(ticket, indent=1), encoding="utf-8")
-    return directory
-
-
-def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
-    """The REAL extractor over one capture — the pages it wrote, as paths. The
-    whole point of a unit's harvest is that this works on what it left."""
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)))
+def live_ticket(ops: list, env: dict, wiki: Path, job: Job) -> tuple[str, Path]:
+    """A real ticket, minted and moved to `active/` by the CLI — never a hand
+    fixture (side note; A-8, A-9). `jobs claim <slug>` leases the job and
+    mints its harvest ticket, pending; `tickets run <id> spawn=self` moves it
+    to `active/` under THIS SESSION's own worker id, matched against
+    `LLM_WIKI_SESSION_ID` (`conftest.py`'s `env` fixture) the way `open`
+    checks it against `env.current().session`. Returns the id and its
+    capture directory, the latter read back through `open` (A-1) rather than
+    guessed off `run`'s own answer shape."""
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "claim", job.slug)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert r.data["pages"] or r.data["ledgers"], r.data
-    return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]
+    claimed = next(c for c in r.data["claimed"] if c["slug"] == job.slug)
+    ticket_id = claimed["tickets"][0]["id"]
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "run", ticket_id, "spawn=self")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", ticket_id)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return ticket_id, wiki / r.data["capture_dir"]
+
+
+def landed(ops: list, env: dict, wiki: Path, ticket: str) -> dict:
+    """The ticket, closed by the host (A-10) — the real `close`, reading
+    whatever `update` the worker last posted and routing it."""
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "close", ticket)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.data
 
 
 

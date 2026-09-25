@@ -193,7 +193,7 @@ Say the post, the page it landed as, and stop.
   JSON-LD `datePublished` — all a single-post or refresh ticket has. Never
   guess a date; a post declaring none is a capture problem (wrong content
   root, a paywall shell) before it is a missing field, and
-  `llm-wiki-ops run skills/harvest/scripts/published_date.py <page.html>`
+  `llm-wiki-ops run scripts/published_date.py <page.html>`
   reads the same ladder for a second opinion.
 
 ### Access / paywall
@@ -253,9 +253,9 @@ Say the post, the page it landed as, and stop.
 - `harvest.assets` is `reference` by default: the page links to the source and
   nothing is downloaded. On `download` (or `download-audio`), per leaf and
   BEFORE the report:
-  `llm-wiki-ops run skills/harvest/scripts/assets.py detect <leaf dir>/page.html --base-url <post url>`
+  `llm-wiki-ops run scripts/assets.py detect <leaf dir>/page.html --base-url <post url>`
   then
-  `llm-wiki-ops run skills/harvest/scripts/assets.py download <assets.json> --dest _raw/<slug>/assets`.
+  `llm-wiki-ops run scripts/assets.py download <assets.json> --dest _raw/<slug>/assets`.
   An asset on any other host is outside the slice's egress: it goes in
   `missing[]` as `denied` — widening is the foreman's call.
 

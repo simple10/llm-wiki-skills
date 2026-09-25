@@ -65,7 +65,7 @@ the report step keeps the verdict: an entity already in `known[]` is
 Assets next, **before** the report — a slice that ends has no second chance:
 
 ```
-llm-wiki-ops run skills/harvest/scripts/assets.py download <capture_dir>/assets.json \
+llm-wiki-ops run scripts/assets.py download <capture_dir>/assets.json \
     --dest _raw/<slug>/assets --referer '<item>' <assets_args…>
 ```
 

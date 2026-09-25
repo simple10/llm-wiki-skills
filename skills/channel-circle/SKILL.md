@@ -68,7 +68,7 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py plan <capture
 ```
 llm-wiki-ops run ops/skills/channel-circle/scripts/capture_lesson.py . --plan <capture_dir>/plan.json --leaf <n> [--headed] [--timeout-ms 45000]
 llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py detect <capture_dir> --leaf <n>
-llm-wiki-ops run skills/harvest/scripts/assets.py download <leaf.dir>/assets.json --dest _raw/<slug>/assets
+llm-wiki-ops run scripts/assets.py download <leaf.dir>/assets.json --dest _raw/<slug>/assets
 llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py record <capture_dir> --leaf <n>
 llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <capture_dir>
 ```
@@ -125,7 +125,7 @@ written.
 
 ```
 llm-wiki-ops run ops/skills/channel-circle/scripts/to_markdown.py <capture_dir>/page.html --out <capture_dir>/page.md
-llm-wiki-ops run skills/process/scripts/format_transcript.py <capture_dir>/captions/<srclang>.vtt --out <capture_dir>/transcript.md
+llm-wiki-ops run scripts/format_transcript.py <capture_dir>/captions/<srclang>.vtt --out <capture_dir>/transcript.md
 ```
 
 2. Edit `page.md` in place — never a shell one-liner — into its own `# H1`

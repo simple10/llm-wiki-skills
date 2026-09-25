@@ -47,7 +47,7 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py plan <captur
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py next <capture_dir>
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/capture_hubspot_video.py render --capture-dir <capture_dir> --leaf <n>
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py assets <capture_dir> --leaf <n>
-llm-wiki-ops run skills/harvest/scripts/published_date.py <dir>/page.html > <dir>/published.txt
+llm-wiki-ops run scripts/published_date.py <dir>/page.html > <dir>/published.txt
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py record <capture_dir> --leaf <n>
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir>
 ```

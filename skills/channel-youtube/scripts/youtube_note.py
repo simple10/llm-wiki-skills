@@ -77,7 +77,7 @@ rolling-caption dedup and chapter bucketing are generic across video venues, so
 they stay ABI machinery in the plugin. This script reaches them through the
 front door, by its bare name on PATH, run from the wiki root —
 
-    llm-wiki-ops run skills/process/scripts/format_transcript.py <captions> \
+    llm-wiki-ops run scripts/format_transcript.py <captions> \
         --chapters <metadata.json> --interval 60
 
 whose stdout is the markdown. `--format-transcript <path>` skips the front door
@@ -125,7 +125,7 @@ def front_door() -> list:
 NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 # An address `run` serves out of the plugin, not a path in this wiki.
-FORMATTER = "skills/process/scripts/format_transcript.py"
+FORMATTER = "scripts/format_transcript.py"
 
 
 def _front_door_env():

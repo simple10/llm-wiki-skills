@@ -42,6 +42,10 @@ def env(tmp_path_factory, ops) -> dict:
         GIT_AUTHOR_EMAIL="harness@example.invalid",
         GIT_COMMITTER_NAME="harness",
         GIT_COMMITTER_EMAIL="harness@example.invalid",
+        # `live_ticket`'s `spawn=self` sets a ticket's `worker` to the calling
+        # session's id, and `open` refuses a ticket whose `worker` is not the
+        # caller's own — so the harness session needs one of its own to match.
+        LLM_WIKI_SESSION_ID="harness-session",
     )
     return e
 

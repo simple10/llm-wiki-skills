@@ -183,7 +183,7 @@ def front_door() -> list:
 # to THIS wiki.
 NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 # Addresses `run` serves out of the plugin, not paths in this wiki.
-ASSETS_SCRIPT = "skills/harvest/scripts/assets.py"
+ASSETS_SCRIPT = "scripts/assets.py"
 
 # Always stripped: HubSpot appends `?hsLang=<lang>` to internal nav links, so
 # one page is otherwise two urls. A site adds its own under `strip_params`.
