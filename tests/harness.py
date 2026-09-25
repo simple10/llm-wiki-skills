@@ -205,7 +205,7 @@ def live_ticket(ops: list, env: dict, wiki: Path, job: Job) -> tuple[str, Path]:
     assert r.returncode == 0, r.stdout + r.stderr
     r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", ticket_id)
     assert r.returncode == 0, r.stdout + r.stderr
-    return ticket_id, wiki / r.data["capture_dir"]
+    return ticket_id, wiki / r.data["ticket"]["capture_dir"]
 
 
 def landed(ops: list, env: dict, wiki: Path, ticket: str) -> dict:
