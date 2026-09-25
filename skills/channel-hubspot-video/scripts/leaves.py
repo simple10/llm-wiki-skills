@@ -9,15 +9,18 @@ directories, when to stop, and the report.
 Harvest is BYTES. This script never renders a page: it applies
 `harvest.scope`, `harvest.exclude_urls`, `min_date` and `known[]` to the
 enumerated URLs, names one capture directory per page, records what the venue
-served in a flat `capture.json`, and writes `report.json`. The venue's own
+served in a flat `capture.json`, and posts `tickets update`. The venue's own
 rendering — the site's selectors, the facts, the video reference — is the
 PROCESS step's, which SKILL.md walks.
 
-Everything it needs comes from `ticket.json` in the ticket's capture
-directory (the spawner wrote it). With no `ticket.json` — `whereami` says
-`spawn: none` and the foreman read the facts off `pipeline queue show` — pass
-them to `plan` as flags; every other command then reads them back off
-`plan.json`.
+`plan` opens the ticket through `tickets open`, given `--ticket` — the one
+command that needs THIS pull's own fields (`slug`, `target`, `harvest.*`,
+`min_date`, `known[]`, `refresh`, `resource`). It writes them into
+`plan.json`'s own `job` object, and every other command (`next`, `assets`,
+`record`, `report`) reads that copy back rather than opening the ticket
+again — no ticket lookup on every per-leaf command. A hand run with no
+`--ticket` at all passes them as flags instead; every other command then
+reads them back off `plan.json`.
 
 **No command takes a venue's url on its command line.** A sitemap is the
 venue's text, and a `<loc>` ending `;$(touch${IFS}PWNED)` typed onto a shell
@@ -31,18 +34,18 @@ dropped: name the one that does not change the page in the site's
 `strip_params`.)
 
   plan   <capture_dir> --urls <file> [--urls <file> ...] [--limit N]
-         [--budget-minutes M]
+         [--budget-minutes M] --ticket <id>
          FIRST removes what an earlier run left in the ticket's capture
-         directory — `report.json`, `plan.json` — because that directory is
-         stable across pulls and a respawn that fails must not be read as the
-         success the run before it had. Then reads the enumeration (a saved
+         directory — `plan.json` — because that directory is stable across
+         pulls and a respawn that fails must not be read as the success the
+         run before it had. Then reads the enumeration (a saved
          sitemap.xml, a JSON list of urls or of {url, lastmod} objects, or one
          url per line), normalizes each url (fragment and `hsLang` stripped,
          plus the site's own `strip_params`), filters, orders newest-first,
          and writes `<capture_dir>/plan.json`:
            {"leaves": [{"item", "dir", "lastmod"[, "landed"]}],
             "skipped": [{"url", "why"}], "deadline", "deadline_epoch",
-            "hard_stop_epoch", "limit", ...}
+            "hard_stop_epoch", "limit", "job", ...}
          The ticket's own item keeps the ticket's own `capture_dir`; every
          other page gets `_raw/<slug>/<page-slug>--<hash8>`. The host has no
          verb for that name, so it is composed here in the host's own shape
@@ -54,10 +57,9 @@ dropped: name the one that does not change the page in the site's
          `--limit`, and `report` lists it.
          `--limit` caps the pages ONE run attempts (default 6 where the job
          downloads, none where `harvest.assets` is `reference`; `0` is none).
-         The deadline is the SPAWN's — `ticket.json`'s mtime, which the
-         spawner rewrites on every dispatch (`pipeline/dispatch.py::
-         start_slice` -> `write_ticket`), plus `--budget-minutes` (default 20
-         of the slice's 30) — because the ticket id is the same on every pull.
+         The deadline is keyed to THIS run's own first write — there is no
+         per-run timestamp on disk to anchor it on any more — plus
+         `--budget-minutes` (default 20 of the slice's 30).
          A REFRESH ticket (`refresh: true`) plans exactly its `resource`, into
          the ticket's own `capture_dir`, whatever `known[]` says, and removes
          the capture an earlier pull left there: `apply` hashes the body in
@@ -94,31 +96,32 @@ dropped: name the one that does not change the page in the site's
          from rather than reading `meta.json` raw.
          Exit 5 = written, and the deadline has passed: report and stop.
 
-  report <capture_dir> [--missing-leaf <why> <n>] [--missing-host <why> <host>]
-         [--reason TEXT] [--failed | --gone]
-         [--written <wiki-relative page>]... [--skipped]
-         A HARVEST report reads `plan.json`, lists every leaf that really
-         holds a capture in `captured[]`, and writes
-         `<capture_dir>/report.json`. Cheap — it reads one small JSON file per
-         leaf — so run it after EVERY leaf, not only last: the report on disk
-         is then true whenever the worker stops. First it settles the titles:
-         a page is filed under its TITLE and overwrites what is there, so a
-         later leaf whose title makes the filename an earlier one made is
-         retitled `<title> (<the url path segment that tells them apart>)` in
-         its own `capture.json` (see "page names" below).
-         Given `--written`, it is a PROCESS report instead: `written[]` is
-         those pages, `captured[]` is empty, and nothing is settled — the
-         pages are already on disk. `--skipped` is the process report for a
-         capture that earned no page, with `--reason` saying why.
+  report <capture_dir> --ticket <id> [--missing-leaf <why> <n>]
+         [--missing-host <why> <host>] [--reason TEXT] [--failed | --gone]
+         [--written-from <file>] [--skipped]
+         Posts `tickets update` — run it after EVERY leaf, not only last: the
+         posted status is then true whenever the worker stops. A HARVEST
+         report (no `--written-from`, no `--skipped`) reads `plan.json`,
+         lists every leaf that really holds a capture in `captured=`. Before
+         that it settles the titles: a page is filed under its TITLE and
+         overwrites what is there, so a later leaf whose title makes the
+         filename an earlier one made is retitled `<title> (<the url path
+         segment that tells them apart>)` in its own `capture.json` (see
+         "page names" below).
+         Given `--written-from <file>`, it is a PROCESS report instead:
+         `<file>`, inside the capture dir, is a JSON list of the pages this
+         run wrote; `written_from=` is posted and no capture is claimed.
+         `--skipped` is the process report for a capture that earned no page
+         (P-4: `ok`, named in `--reason`).
 
 Usage (`<capture_dir>` is the ticket's `capture_dir`, verbatim — it is
 WIKI-RELATIVE, and `run` starts every script at the wiki root; every other
 relative path here is wiki-relative too):
-  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py plan <capture_dir> --urls <capture_dir>/sitemap.xml
+  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py plan <capture_dir> --urls <capture_dir>/sitemap.xml --ticket <id>
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py next <capture_dir>
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py assets <capture_dir> --leaf <n>
   llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py record <capture_dir> --leaf <n>
-  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir>
+  llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir> --ticket <id>
 
 (The leading `ops/` is the run verb's frozen argument grammar, resolved by
 the front door to wherever this wiki's machinery tree lives.)
@@ -149,10 +152,8 @@ HERE = Path(__file__).resolve().parent
 SITES = HERE.parent / "references" / "sites.json"
 CAPTURER = HERE / "capture_hubspot_video.py"
 
-TICKET_NAME = "ticket.json"
 PLAN_NAME = "plan.json"
 CAPTURE_NAME = "capture.json"
-REPORT_NAME = "report.json"
 HTML_NAME = "page.html"
 MEDIA_STEM = "media"
 PUBLISHED_NAME = "published.txt"
@@ -177,13 +178,70 @@ def front_door() -> list:
     return [found] if found else []
 
 
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
+
+
 # What a nested front-door call must NOT inherit from the one that ran this
 # script. `CLAUDE_PROJECT_DIR` is the harness's project directory, never a wiki
 # root: the `cwd=<root>` this script was handed is what binds the nested call
 # to THIS wiki.
 NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 # Addresses `run` serves out of the plugin, not paths in this wiki.
-ASSETS_SCRIPT = "scripts/assets.py"
+ASSETS_SCRIPT = "scripts/assets.py"  # G3: the plugin's address after PR 4; this unit types no other
 
 # Always stripped: HubSpot appends `?hsLang=<lang>` to internal nav links, so
 # one page is otherwise two urls. A site adds its own under `strip_params`.
@@ -209,9 +267,10 @@ HARD_STOP_SECONDS = SLICE_CAP_SECONDS - 180
 DOWNLOAD_LIMIT = 6
 STOP = 5  # exit code: the deadline has passed — report, and stop
 
-# What a skipped row must say for "nothing new" to be a true `skipped`: the
-# job already holds the page, or it is too old, or this run left it for the
-# next. Rows that are ALL `scope`/`excluded`/`unsafe_url` are a mis-rooted job.
+# What a skipped row must say for "nothing new" to be a true, lasting `ok`:
+# the job already holds the page, or it is too old, or this run left it for
+# the next. Rows that are ALL `scope`/`excluded`/`unsafe_url` are a
+# mis-rooted job.
 CLOSES = ("known", "older_than_min_date", "over_limit")
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -244,7 +303,7 @@ class Problem(Exception):
 # The page's FILE is named from this title, and the host refuses a title its filename rule
 # cannot hold (llm_wiki_ops/commands/page/note.py::filename_for — ILLEGAL, control chars, a
 # leading dot) — failing the process ticket after harvest said ok. keep-in-sync: every unit's safe_title.
-_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "\u2019", "'": "\u2019", "<": "(", ">": ")"}
+_TITLE_SWAPS = {":": " -", "/": "-", "\\": "-", "|": "-", "?": "", "*": "", '"': "’", "'": "’", "<": "(", ">": ")"}
 TITLE_MAX = 120        # characters
 TITLE_MAX_BYTES = 200  # UTF-8 bytes: the host checks no length, and a filename is capped in BYTES (255 on
                        # ext4/APFS) with `.md` appended — 100 CJK characters is 300 bytes and the REAL extractor
@@ -269,8 +328,8 @@ def safe_title(text, fallback="Untitled"):
 
 def fold(text) -> str:
     """Venue text as ONE line: newlines, tabs and control characters become a
-    space. What every title and fact value passes through before it reaches a
-    page or `capture.json`, so none of them can start a line of its own."""
+    space. What every title and fact value passes through before it reaches
+    a page or `capture.json`, so none of them can start a line of its own."""
     return " ".join("".join(ch if ch.isprintable() else " " for ch in str(text or "")).split())
 
 
@@ -513,78 +572,69 @@ def capture_record(*, slug: str, item: str, title: str | None, body: str, conten
     }
 
 
-# ------------------------------------------------------------ pure: the report
+# ------------------------------------------------------------ pure: the update
 
 
 def how_to_continue(job: dict) -> str:
-    """What an operator does after a `partial`. `apply` records `partial` as
-    `ok` (`pipeline/apply.py::_record_progress`), and `pipeline/dueness.py::
+    """What an operator does after a `partial`. `pipeline/dueness.py::
     _harvest` never finds an `every: once` job due again once an `ok` exists —
-    this unit's manifest default. `ticket.json` does not say which cadence the
-    job has, so the reason says both."""
+    this unit's manifest default. `ticket.json` no longer exists to say which
+    cadence the job has, so the reason says both."""
     ticket, slug = job.get("ticket") or "<ticket>", job.get("slug") or "<slug>"
     return (
         f"a periodic job is pulled again on its own; an `every: once` job is NOT (a partial lands as ok) — "
-        f"`llm-wiki-ops pipeline queue retry {ticket}` re-runs this ticket (three attempts a ticket), or "
-        f"`llm-wiki-ops pipeline edit {slug} every=1h` until a run reports `skipped`, then `every=once`"
+        f"`llm-wiki-ops pipeline tickets retry {ticket}` re-runs this ticket (three attempts a ticket), or "
+        f"`llm-wiki-ops pipeline jobs edit {slug} every=1h` until a run reports `ok` with nothing new, then `every=once`"
     )
 
 
-def process_report(*, ticket: str | None, written: list[str], reason: str | None = None,
-                   failed: bool = False, skipped: bool = False) -> dict:
-    """The PROCESS step's report: the pages this unit wrote under `dest`.
-
-    `captured[]` is empty — a process ticket captures nothing — and the
-    harvest freshness rule does not apply: the spawner rewrites `ticket.json`
-    long after harvest wrote `capture.json`, so any check that the capture is
-    newer than the ticket would refuse every honest process report."""
-    outcome = "failed" if failed else ("skipped" if skipped else ("ok" if written else "failed"))
-    if outcome == "failed" and not reason:
+def process_update(*, written: list[str], reason: str | None = None, failed: bool = False, skipped: bool = False) -> tuple[str, str | None]:
+    """The PROCESS step's status/reason: the pages this unit wrote under
+    `dest`. P-4: a capture excluded by `process.exclude_rules` or `min_date`
+    earns no page and is `ok`, named in `reason` — `skipped` is no unit's
+    word any more."""
+    status = "failed" if failed else ("ok" if (skipped or written) else "failed")
+    if status == "failed" and not reason:
         reason = "no page was written"
-    return {
-        "v": 1,
-        "ticket": ticket,
-        "outcome": outcome,
-        "reason": reason,
-        "captured": [],
-        "written": written if outcome != "failed" else [],
-        "missing": [],
-        "discovered": [],
-    }
+    return status, reason
 
 
-def build_report(*, ticket: str | None, planned: list[dict], captured: list[dict], skipped: list[dict],
-                 missing: list[dict], reason: str | None = None, failed: bool = False, gone: bool = False,
+def build_update(*, planned: list[dict], captured: list[dict], skipped: list[dict],
+                 missing: list[tuple], reason: str | None = None, failed: bool = False, gone: bool = False,
                  job: dict | None = None) -> dict:
     """`ok` when every page of the job's that is not already held landed,
     `partial` when some did — or all the PLANNED ones did and the limit left
-    others — `skipped` when there was truly nothing new to get, `gone` on a
-    refresh whose source answered 404/410, `failed` otherwise.
+    others — `ok` (nothing new, named in the reason) when there was truly
+    nothing new to get, `gone` on a refresh whose source answered 404/410,
+    `failed` otherwise.
 
     "Nothing new" is only true when some row says the job already HOLDS a page
     (`known`), or it is too old, or it was left for the next run. Rows that
     are all `scope`/`excluded` mean the job is rooted where the section is
-    not: `apply` lands `skipped` as done, so an `every: once` job would close
-    having captured nothing, and that is reported `failed`."""
+    not: closing having captured nothing is reported `failed`.
+
+    P-5: a `missing[]` entry (a denied host, an asset that never answered) is
+    a LASTING shortfall — it never bumps `ok` to `partial`. `partial` means
+    only "a re-run of this stage in this directory gets more.\""""
     job = job or {}
     pages = list(planned)
-    landed = {row["dir"] for row in captured}
-    got = [leaf for leaf in pages if leaf["dir"] in landed]
+    landed_dirs = {row["dir"] for row in captured}
+    got = [leaf for leaf in pages if leaf["dir"] in landed_dirs]
     over = sum(1 for row in skipped if row.get("why") == "over_limit")
     reasons = [reason] if reason else []
     if failed:
-        outcome = "failed"
+        status = "failed"
         reasons = reasons or ["failed"]
     elif gone:
-        outcome = "gone"
+        status = "gone"
     elif pages and len(got) == len(pages) and not over:
-        outcome = "ok"
+        status = "ok"
     elif got:
-        outcome = "partial"
+        status = "partial"
         total = len(pages) + over
         reasons.append(f"{len(got)} of {total} pages captured, {total - len(got)} left for another run; {how_to_continue(job)}")
     elif pages:
-        outcome = "failed"
+        status = "failed"
         reasons = reasons or [f"none of {len(pages)} pages captured"]
     elif skipped:
         counts: dict = {}
@@ -592,31 +642,21 @@ def build_report(*, ticket: str | None, planned: list[dict], captured: list[dict
             counts[row["why"]] = counts.get(row["why"], 0) + 1
         said = ", ".join(f"{why}: {n}" for why, n in sorted(counts.items()))
         if any(why in counts for why in CLOSES):
-            outcome = "skipped"
+            status = "ok"
             reasons.append(f"nothing new in scope — {said}")
         else:
-            outcome = "failed"
+            status = "failed"
             reasons.append(
                 f"nothing enumerated is inside harvest.scope `{job.get('scope') or 'section'}` of the job's target "
                 f"{job.get('target') or '<target>'} ({said}) — a job rooted at a leaf, or on another host, captures "
                 f"nothing: point it at the section ROOT"
             )
     else:
-        outcome = "failed"
+        status = "failed"
         reasons = reasons or ["no pages enumerated"]
-    if outcome == "ok" and missing:
-        outcome = "partial"
+    if missing:
         reasons.append(f"{len(missing)} url(s) could not be reached")
-    return {
-        "v": 1,
-        "ticket": ticket,
-        "outcome": outcome,
-        "reason": "; ".join(reasons) or None,
-        "captured": captured if outcome not in ("failed", "gone") else [],
-        "written": [],
-        "missing": missing,
-        "discovered": [],
-    }
+    return {"status": status, "reason": "; ".join(reasons) or None, "captured": captured if status not in ("failed", "gone") else []}
 
 
 # ------------------------------------------------------------ the filesystem
@@ -641,12 +681,17 @@ def wiki_root(capture: Path, rel: str) -> Path:
     return capture.parents[2]
 
 
-def job_facts(capture: Path, args=None) -> dict:
-    """The job, off `ticket.json`; off `plan.json` where no spawner wrote one;
-    off the command's own flags the first time."""
+def job_facts(capture: Path, args=None, *, stage: str | None = None, fresh: bool = False) -> dict:
+    """The job. `fresh` (`plan` alone) opens the ticket through `tickets
+    open` (A-1), given `--ticket` — the only command that needs THIS pull's
+    own fields. Every other command reads `plan.json`'s own copy instead,
+    written once by `plan` and carried forward: no ticket lookup on every
+    per-leaf command. Explicit flags override either source, for a hand run
+    (the first time, with no ticket and no `plan.json` yet)."""
     blank = {"ticket": None, "slug": None, "item": None, "target": None, "capture_dir": None, "scope": "section",
              "exclude_urls": [], "min_date": None, "known": [], "assets": "download", "refresh": False, "resource": None}
-    ticket = _read_json(capture / TICKET_NAME)
+    ticket_id = getattr(args, "ticket", None) if args is not None else None
+    ticket = open_ticket(ticket_id, stage) if (fresh and ticket_id) else None
     if isinstance(ticket, dict):
         harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
         facts = {
@@ -667,10 +712,9 @@ def job_facts(capture: Path, args=None) -> dict:
             facts[key] = getattr(args, key)
     if args is not None and getattr(args, "exclude_url", None):
         facts["exclude_urls"] = [*facts["exclude_urls"], *args.exclude_url]
-    if not facts.get("slug") or not facts.get("target"):
-        raise Problem(f"no {TICKET_NAME} in {capture}: pass --slug and --target (read them off `pipeline queue show`)")
     facts["item"] = facts.get("item") or facts["target"]
-    facts["capture_dir"] = facts.get("capture_dir") or f"{RAW}/{facts['slug']}/{capture.name}"
+    if facts.get("slug") and not facts.get("capture_dir"):
+        facts["capture_dir"] = f"{RAW}/{facts['slug']}/{capture.name}"
     return facts
 
 
@@ -682,15 +726,6 @@ def _capture_dir(given: str) -> Path:
             f"wiki-relative, and `run` starts this script at the wiki root"
         )
     return capture
-
-
-def _spawned_at(capture: Path) -> float:
-    """When THIS run began: `ticket.json`'s mtime — the spawner rewrites it on
-    every dispatch, while the ticket id is the same on every pull — else now."""
-    try:
-        return (capture / TICKET_NAME).stat().st_mtime
-    except OSError:
-        return time.time()
 
 
 def _iso(epoch: float) -> str:
@@ -720,11 +755,13 @@ def _urls_text(name: str) -> str:
 
 def cmd_plan(args) -> int:
     capture = _capture_dir(args.capture_dir)
-    job = job_facts(capture, args)
+    job = job_facts(capture, args, stage="harvest", fresh=True)
+    if not job.get("slug") or not job.get("target"):
+        raise Problem(f"no ticket for {capture}: pass --ticket, or --slug and --target for a hand run")
     root = wiki_root(capture, job["capture_dir"])
     # Before anything else: this directory is stable across pulls, so what an
     # earlier run left must not outlive a run that fails.
-    stale = [REPORT_NAME, PLAN_NAME]
+    stale = [PLAN_NAME]
     if job["refresh"]:
         # `apply` hashes the body in THIS directory against the page's stamp:
         # it has to be this run's bytes, or `unchanged` is a claim nobody checked.
@@ -764,7 +801,10 @@ def cmd_plan(args) -> int:
         min_date=job["min_date"], known=job["known"], strip_params=strip, limit=limit or None,
         refresh=refresh, landed=None if job["refresh"] else landed,
     )
-    spawned = _spawned_at(capture)
+    # This run's own first write (P-8): there is no per-run timestamp on disk
+    # to anchor the deadline on any more — the ticket id is the same on
+    # every pull, but `open` answers no timestamp for it.
+    spawned = time.time()
     plan = {
         # The one kind of venue url a worker fetches by hand: only a safe one, on the target's own host.
         "v": 1, "job": {**job, "known": []}, "sitemaps": [url for url in children if safe_url(url) and in_scope(url, job["target"], "domain")],
@@ -1164,23 +1204,32 @@ def fit_titles(root: Path, planned: list[dict], before: dict) -> None:
 
 def cmd_report(args) -> int:
     capture = _capture_dir(args.capture_dir)
-    # FIRST, before anything here can refuse: a refusal that left the run
-    # before's `ok` report in place is a success `apply` would read.
-    (capture / REPORT_NAME).unlink(missing_ok=True)
+    ticket_id = args.ticket
+    if not ticket_id:
+        raise Problem("no --ticket")
     job = job_facts(capture, args)
-    root = wiki_root(capture, job["capture_dir"])
+    job["ticket"] = ticket_id
+    root = wiki_root(capture, job["capture_dir"]) if job.get("capture_dir") else None
     plan = _plan_of(capture)
     planned = plan.get("leaves") or []
-    if args.written or args.skipped:
+
+    if args.written_from or args.skipped:
         # A PROCESS report: the pages are already under `dest`, so there is
         # nothing here to settle and no plan to read.
-        report = process_report(ticket=job["ticket"], written=list(args.written or []),
-                                reason=fold(args.reason) or None, failed=args.failed, skipped=args.skipped)
-        _write_json(capture / REPORT_NAME, report)
-        print(json.dumps({"outcome": report["outcome"], "reason": report["reason"], "written": len(report["written"])}))
-        return 0 if report["outcome"] != "failed" else 1
+        written = []
+        if args.written_from:
+            loaded = _read_json(capture / args.written_from)
+            if not isinstance(loaded, list):
+                raise Problem(f"--written-from {args.written_from}: not a JSON list of pages, in {capture}")
+            written = [str(w) for w in loaded]
+        status, reason = process_update(written=written, reason=fold(args.reason) or None, failed=args.failed, skipped=args.skipped)
+        code = post_update(ticket_id, "process", status, reason=reason, written_from=args.written_from if written else None)
+        print(json.dumps({"status": status, "reason": reason, "written": len(written)}))
+        if code:
+            return 2
+        return 0 if status != "failed" else 1
     if args.gone and not job["refresh"]:
-        raise Problem("--gone is a refresh ticket's answer alone (`ticket.json` carries `refresh: true`)")
+        raise Problem("--gone is a refresh ticket's answer alone (the ticket's own `refresh: true`)")
     missing = []
     for why, n in args.missing_leaf or []:
         if why not in WHY or not n.isdigit():
@@ -1188,24 +1237,27 @@ def cmd_report(args) -> int:
         leaf = _leaf_at(plan, int(n))
         # The page's video where the render resolved one — a Mux host the jail
         # refused is the usual miss — else the page itself.
-        url = clean_meta(_read_json(root / leaf["dir"] / "meta.json") or {})["stream_url"] if why == "denied" else None
+        url = clean_meta(_read_json(root / leaf["dir"] / "meta.json") or {})["stream_url"] if (why == "denied" and root is not None) else None
         url = url or leaf["item"]
-        missing.append({"host": urlsplit(url).netloc.lower(), "url": url, "why": why})
+        missing.append((urlsplit(url).netloc.lower(), url, why))
     for why, host in args.missing_host or []:
         host = host.lower()
         if why not in WHY or not _HOST.match(host):
             raise Problem(f"--missing-host {why} <host>: <why> is one of {', '.join(WHY)}, <host> a bare hostname")
-        missing.append({"host": host, "url": f"https://{host}/", "why": why})
-    if not (args.failed or args.gone):
+        missing.append((host, f"https://{host}/", why))
+    if not (args.failed or args.gone) and root is not None:
         before = titles_on_disk(root, planned)
         settle_titles(root, planned)
         fit_titles(root, planned, before)
-    captured = [row for row in (held(root, leaf) for leaf in planned) if row]
-    report = build_report(ticket=job["ticket"], planned=planned, captured=captured, skipped=plan.get("skipped") or [],
+    captured = [row for row in (held(root, leaf) for leaf in planned) if row] if root is not None else []
+    update = build_update(planned=planned, captured=captured, skipped=plan.get("skipped") or [],
                           missing=missing, reason=fold(args.reason) or None, failed=args.failed, gone=args.gone, job=job)
-    _write_json(capture / REPORT_NAME, report)
-    print(json.dumps({"outcome": report["outcome"], "reason": report["reason"], "captured": len(report["captured"]), **clock(plan)}))
-    return 0 if report["outcome"] != "failed" else 1
+    code = post_update(ticket_id, "harvest", update["status"], reason=update["reason"],
+                       captured=[row["dir"] for row in update["captured"]], missing=missing)
+    print(json.dumps({"status": update["status"], "reason": update["reason"], "captured": len(update["captured"]), **clock(plan)}))
+    if code:
+        return 2
+    return 0 if update["status"] != "failed" else 1
 
 
 def main(argv=None) -> int:
@@ -1213,16 +1265,17 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     capture_help = "the ticket's `capture_dir`, verbatim: WIKI-RELATIVE (`run` starts this script at the wiki root)"
 
-    p = sub.add_parser("plan", help="filter the enumerated urls and name one capture directory per page")
+    p = sub.add_parser("plan", help="open the ticket, filter the enumerated urls and name one capture directory per page")
     p.add_argument("capture_dir", help=capture_help)
+    p.add_argument("--ticket", default=None, help="the ticket id, opened for the rest of these defaults; REQUIRED unless every other flag names a hand run's inputs")
     p.add_argument("--urls", action="append", help="sitemap.xml, a JSON list, or one url per line, wiki-relative; `-` is stdin (repeatable)")
     p.add_argument("--limit", type=int, default=None,
                    help=f"attempt at most N pages this run, newest first (default {DOWNLOAD_LIMIT} where the job downloads, none for `assets: reference`; 0 = none)")
     p.add_argument("--budget-minutes", type=float, default=BUDGET_MINUTES,
                    help=f"no new leaf is started this long after the spawn (default {BUDGET_MINUTES}; the slice is killed at 30)")
     p.add_argument("--sites", type=Path, default=None, help="default: this unit's references/sites.json")
-    for flag in ("--ticket", "--slug", "--target", "--min-date"):
-        p.add_argument(flag, default=None, help="hand run with no ticket.json: the ticket's own value")
+    for flag in ("--slug", "--target", "--min-date"):
+        p.add_argument(flag, default=None, help="hand run with no --ticket: the ticket's own value")
     p.add_argument("--scope", choices=["page", "section", "domain"], default=None, help="hand run: harvest.scope")
     p.add_argument("--assets", choices=["reference", "download", "download-audio"], default=None, help="hand run: harvest.assets")
     p.add_argument("--exclude-url", action="append", default=[], help="hand run: one more harvest.exclude_urls glob")
@@ -1246,18 +1299,19 @@ def main(argv=None) -> int:
     g.add_argument("--no-media", action="store_true", help="record the page's bytes alone, even where the video was downloaded")
     g.set_defaults(fn=cmd_record)
 
-    r = sub.add_parser("report", help="write report.json — after every leaf, and last")
+    r = sub.add_parser("report", help="post `tickets update` — after every leaf, and last")
     r.add_argument("capture_dir", help=capture_help)
+    r.add_argument("--ticket", required=True, help="the ticket id")
     r.add_argument("--missing-leaf", nargs=2, action="append", metavar=("WHY", "N"), help="a planned page (or, for `denied`, its video) that could not be reached")
     r.add_argument("--missing-host", nargs=2, action="append", metavar=("WHY", "HOST"), help="a bare hostname the jail refused or that never answered")
     r.add_argument("--reason", default=None)
     r.add_argument("--failed", action="store_true", help="nothing usable landed; say why with --reason")
     r.add_argument("--gone", action="store_true", help="a refresh ticket whose source answered 404 or 410")
-    r.add_argument("--written", action="append", default=[], metavar="PAGE",
-                   help="a page the PROCESS step wrote, wiki-relative (repeatable): makes this a process report")
+    r.add_argument("--written-from", default=None, metavar="FILE",
+                   help="a JSON list of wiki-relative pages the PROCESS step wrote, inside the capture dir: makes this a process report")
     r.add_argument("--skipped", action="store_true", help="the process report for a capture that earned no page; say why with --reason")
-    for flag in ("--ticket", "--slug", "--target"):
-        r.add_argument(flag, default=None, help="hand run with neither ticket.json nor plan.json: the ticket's own value")
+    for flag in ("--slug", "--target"):
+        r.add_argument(flag, default=None, help="hand run with neither --ticket nor plan.json: the ticket's own value")
     r.set_defaults(fn=cmd_report)
 
     args = ap.parse_args(argv)

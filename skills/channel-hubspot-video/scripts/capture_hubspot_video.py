@@ -21,8 +21,9 @@ rewrites it as the STABLE master playlist
 does not expire.
 
 This is the capture I/O of ONE page — one leaf of a section harvest. Which
-pages, which directories, the flat `capture.json` and the `report.json` are
-the sibling `leaves.py`'s; the PAGE is written at process, per SKILL.md.
+pages, which directories, the flat `capture.json` and the posted `tickets
+update` are the sibling `leaves.py`'s; the PAGE is written at process, per
+SKILL.md.
 
 Inputs / outputs (default mode, `render`):
   <capture-dir>/page.html   rendered DOM (asset-detection ground truth, and
@@ -37,12 +38,15 @@ shell line is a command. `--capture-dir` is then the TICKET's capture
 directory, the url and the leaf's own directory are read off
 `<capture-dir>/plan.json` (`leaves.py plan` wrote it, and dropped every url
 outside a conservative character set), and the three files land in that leaf.
-`<url>` is for a hand run; with neither, the `item` of
-`<capture-dir>/ticket.json` is the page.
+`<url>` is for a hand run; with neither, `--ticket <id>`'s own `item` is the
+page.
 
 `meta.json` also carries `status` (the HTTP status the page answered with —
 404/410 is `gone` on a refresh ticket, never a capture) and `fetched_at` (when
 THIS render read the page, which `leaves.py record` writes into `capture.json`).
+
+With no `--leaf` and no `<url>`, `--ticket <id>` names the ticket whose own
+`item` is the page — read through `tickets open` (A-1), never a file on disk.
 
 Second mode, `patch-assets`, applies the platform's manifest rules to a
 manifest produced by the plugin's `assets.py detect`:
@@ -82,11 +86,51 @@ have not been exercised. A site that needs auth wants the standard
 
 import argparse
 import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+# The front door, by the bare name every SKILL.md runs this script under.
+OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
 
 # The playback id shows up in several shapes; the storyboard request is the
 # most reliable because the player always fetches it, even before play.
@@ -122,12 +166,12 @@ def find_mux_id(requests):
     return None
 
 
-def ticket_item(capture_dir):
-    """The ticket's own page, where the spawner left a `ticket.json` here."""
-    try:
-        ticket = json.loads((Path(capture_dir) / "ticket.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+def ticket_item(ticket_id):
+    """The ticket's own page (A-1), given `--ticket` — or None for a hand
+    run naming neither."""
+    if not ticket_id:
         return None
+    ticket = open_ticket(ticket_id)
     item = ticket.get("item") if isinstance(ticket, dict) else None
     return item if isinstance(item, str) and item.startswith(("http://", "https://")) else None
 
@@ -171,9 +215,9 @@ def render(args):
             print(f"--leaf {args.leaf}: {cap}/plan.json names no page at that index — run `leaves.py plan` first, and pass the ticket's capture_dir", file=sys.stderr)
             return 2
         args.url, cap = found
-    args.url = args.url or ticket_item(cap)
+    args.url = args.url or ticket_item(args.ticket)
     if not args.url or not args.url.startswith(("http://", "https://")):
-        print(f"no http(s) url given and no ticket.json in {cap} names one", file=sys.stderr)
+        print("no http(s) url given and no --ticket names one", file=sys.stderr)
         return 2
     cap.mkdir(parents=True, exist_ok=True)
     reqs = []
@@ -300,9 +344,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("render", help="render a lesson page and resolve its Mux stream")
-    r.add_argument("url", nargs="?", default=None, help="a HAND run only — never a url read off a venue; default: the `item` of <capture-dir>/ticket.json")
+    r.add_argument("url", nargs="?", default=None, help="a HAND run only — never a url read off a venue; default: --ticket's own `item`")
     r.add_argument("--capture-dir", required=True, help="wiki-relative. With --leaf: the TICKET's capture_dir; else the leaf to write into")
     r.add_argument("--leaf", type=int, default=None, help="the page's index in <capture-dir>/plan.json's leaves[] — what `leaves.py next` printed")
+    r.add_argument("--ticket", default=None, help="the ticket id, opened for the page's own `item` — needed only with no --leaf and no <url>")
     r.add_argument("--timeout", type=int, default=90000, help="page.goto timeout (ms)")
     r.add_argument("--settle", type=int, default=9000, help="ms to wait after clicking play, for the manifest request")
     r.add_argument("--headed", action="store_true")

@@ -1,16 +1,18 @@
 """channel-hubspot-video on the rebuilt worker contract, in its two steps.
 
-HARVEST is bytes: `leaves.py plan` filters the enumeration and names one
-capture directory per page, `leaves.py record` writes the flat `capture.json`
-naming the rendered `page.html`, and `leaves.py report` writes the report
-`apply` reads. PROCESS is this unit's own: the worker converts that
+HARVEST is bytes: `leaves.py plan` (given `--ticket`, through `tickets open`)
+filters the enumeration and names one capture directory per page,
+`leaves.py record` writes the flat `capture.json` naming the rendered
+`page.html`, and `leaves.py report --ticket <id>` posts `tickets update` —
+the host's own report. PROCESS is this unit's own: the worker converts that
 `page.html` with the SITE's selectors — which live in the unit's
 `references/sites.json` because nothing reads a manifest `extract` block any
 more — and writes the pages through `llm-wiki-ops page create`.
 
 The pure logic is imported and runs everywhere. The end-to-end cases write
-into a real wiki through the real CLI and skip where none is at hand. Nothing
-here touches the network: the rendered page is a fixture.
+into a real wiki through the real CLI (a stand-in front door for `tickets
+open`/`tickets update`) and skip where none is at hand. Nothing here touches
+the network: the rendered page is a fixture.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -69,6 +72,74 @@ def _documented(root: Path, *args, env=None):
 
 def _hash8(url: str) -> str:
     return hashlib.sha1(url.encode()).hexdigest()[:8]
+
+
+# ------------------------------------------------------------ the ticket stub
+
+
+def _stub_ops(tmp_path: Path, ticket_dict: dict | None) -> str:
+    """A stand-in front door: `pipeline tickets open` answers `ticket_dict`
+    (refused, naming nothing, where it is None); `pipeline tickets update` is
+    recorded to `update-calls.jsonl` and answers a bare 0.
+
+    Written under a dot-directory, never directly in `tmp_path` — several
+    callers use `tmp_path` itself as the fake wiki root, and a stray file
+    there would read as something a run wrote at the wiki root."""
+    home = tmp_path / ".ops-stub"
+    home.mkdir(exist_ok=True)
+    stub = home / "ops_stub.py"
+    updates = home / "update-calls.jsonl"
+    stub.write_text(
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    if TICKET is None:\n"
+        "        sys.exit('ops_stub: no ticket')\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        f"    pathlib.Path({str(updates)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return shlex.join([sys.executable, str(stub)])
+
+
+def _updates(tmp_path: Path) -> list:
+    path = tmp_path / ".ops-stub" / "update-calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def _kv(argv: list) -> dict:
+    return dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("--"))
+
+
+def _cli(*args, tmp_path, ticket_dict=None, cwd=None, extra_env=None):
+    """`leaves.py`, run as the worker runs it, with a stand-in front door
+    always live (`open_ticket`/`post_update` reach it): `ticket_dict` is what
+    `tickets open` answers (a refusal where it is None), and `--ticket <id>`
+    is appended when the call names a subcommand that takes one, carries a
+    `ticket_dict`, and does not already have one."""
+    env = {**os.environ, **(extra_env or {}), "LLM_WIKI_OPS": _stub_ops(tmp_path, ticket_dict)}
+    argv = list(args)
+    if ticket_dict is not None and argv and argv[0] in ("plan", "report") and "--ticket" not in argv:
+        argv += ["--ticket", ticket_dict["ticket"]]
+    return _run(*argv, cwd=cwd, env=env)
+
+
+def ticket(cap: Path, root: Path, **over) -> dict:
+    """The ticket `open_ticket` would answer, shaped like `tickets open`'s A-1
+    object — `capture_dir` is `cap`'s own wiki-relative name."""
+    body = {
+        "ticket": "0123456789ab", "slug": "site-learn", "item": SECTION, "target": SECTION,
+        "capture_dir": str(cap.relative_to(root)), "dest": None, "hosts": ["www.example-hubspot.invalid"],
+        "harvest": {"scope": "section", "exclude_urls": [], "assets": "download"},
+        "options": {}, "credential": None, "min_date": "2026-01-01", "known": [], "refresh": False, "resource": None,
+    }
+    body.update(over)
+    cap.mkdir(parents=True, exist_ok=True)
+    return body
 
 
 # ------------------------------------------------------------ pure logic
@@ -182,38 +253,36 @@ def test_harvest_records_bytes_and_nothing_a_host_verb_owns():
         assert owned not in record, owned
 
 
-def test_the_report_names_its_outcome_from_what_landed():
+def test_the_update_names_its_status_from_what_landed():
     planned = [{"item": "u1", "dir": "_raw/s/a--1"}, {"item": "u2", "dir": "_raw/s/b--2"}]
     got = [{"item": "u1", "dir": "_raw/s/a--1", "title": "A"}]
     both = [*got, {"item": "u2", "dir": "_raw/s/b--2", "title": None}]
-    report = leaves.build_report(ticket="t1", planned=planned, captured=both, skipped=[], missing=[])
-    assert (report["outcome"], report["reason"], report["captured"]) == ("ok", None, both)
-    assert set(report) == {"v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"}
-    assert report["discovered"] == [] and report["written"] == []  # `discovered[]` does nothing for pages now
-    partial = leaves.build_report(ticket="t1", planned=planned, captured=got, skipped=[], missing=[])
-    assert partial["outcome"] == "partial" and "1 of 2" in partial["reason"]
-    denied = [{"host": "stream.mux.com", "url": STREAM, "why": "denied"}]
-    assert leaves.build_report(ticket="t1", planned=planned, captured=both, skipped=[], missing=denied)["outcome"] == "partial"
-    known = leaves.build_report(ticket="t1", planned=[], captured=[], skipped=[{"url": "u1", "why": "known"}], missing=[])
-    assert known["outcome"] == "skipped" and "known: 1" in known["reason"]
-    assert leaves.build_report(ticket="t1", planned=planned, captured=[], skipped=[], missing=[])["outcome"] == "failed"
-    assert leaves.build_report(ticket="t1", planned=[], captured=[], skipped=[], missing=[])["outcome"] == "failed"
-    forced = leaves.build_report(ticket="t1", planned=planned, captured=got, skipped=[], missing=[], reason="auth_expired:x", failed=True)
-    assert forced["outcome"] == "failed" and forced["captured"] == [] and forced["reason"] == "auth_expired:x"
+    update = leaves.build_update(planned=planned, captured=both, skipped=[], missing=[])
+    assert (update["status"], update["reason"], update["captured"]) == ("ok", None, both)
+    assert set(update) == {"status", "reason", "captured"}
+    partial = leaves.build_update(planned=planned, captured=got, skipped=[], missing=[])
+    assert partial["status"] == "partial" and "1 of 2" in partial["reason"]
+    # P-5: a missing url is a LASTING shortfall — named, never bumping `ok` to `partial` on its own.
+    denied = [("stream.mux.com", STREAM, "denied")]
+    full = leaves.build_update(planned=planned, captured=both, skipped=[], missing=denied)
+    assert full["status"] == "ok" and "1 url(s)" in full["reason"]
+    known = leaves.build_update(planned=[], captured=[], skipped=[{"url": "u1", "why": "known"}], missing=[])
+    assert known["status"] == "ok" and "known: 1" in known["reason"]  # P-4: nothing new is `ok`, never a worker's `skipped`
+    assert leaves.build_update(planned=planned, captured=[], skipped=[], missing=[])["status"] == "failed"
+    assert leaves.build_update(planned=[], captured=[], skipped=[], missing=[])["status"] == "failed"
+    forced = leaves.build_update(planned=planned, captured=got, skipped=[], missing=[], reason="auth_expired:x", failed=True)
+    assert forced["status"] == "failed" and forced["captured"] == [] and forced["reason"] == "auth_expired:x"
 
 
-def test_a_process_report_names_its_pages_and_captures_nothing():
-    """A process ticket rewrites `ticket.json` long after harvest wrote
-    `capture.json`, so a capture-freshness rule would refuse every honest
-    process report; the report is about `written[]` instead."""
-    pages = ["sources/courses/s/Lesson.md", "sources/courses/s/Lesson (video).md"]
-    report = leaves.process_report(ticket="t1", written=pages)
-    assert (report["outcome"], report["written"], report["captured"]) == ("ok", pages, [])
-    assert set(report) == {"v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"}
-    skipped = leaves.process_report(ticket="t1", written=[], skipped=True, reason="excluded")
-    assert (skipped["outcome"], skipped["reason"]) == ("skipped", "excluded")
-    nothing = leaves.process_report(ticket="t1", written=[])
-    assert nothing["outcome"] == "failed" and nothing["reason"]
+def test_a_process_update_names_its_pages_and_captures_nothing():
+    """A process ticket rewrites nothing a capture-freshness rule could read
+    against; the update is about `written_from=` instead."""
+    status, reason = leaves.process_update(written=["sources/courses/s/Lesson.md", "sources/courses/s/Lesson (video).md"])
+    assert (status, reason) == ("ok", None)
+    skipped_status, skipped_reason = leaves.process_update(written=[], skipped=True, reason="excluded")
+    assert (skipped_status, skipped_reason) == ("ok", "excluded")  # P-4: excluded is `ok`, never a worker's `skipped`
+    nothing_status, nothing_reason = leaves.process_update(written=[])
+    assert nothing_status == "failed" and nothing_reason
 
 
 def test_patch_assets_runs_with_no_browser_installed(tmp_path):
@@ -231,21 +300,7 @@ def test_patch_assets_runs_with_no_browser_installed(tmp_path):
     assert kept[-1]["type"] == "hls" and kept[-1]["embed_url"].startswith("https://play.hubspotvideo.com/")
 
 
-# ------------------------------------------------------------ files only, no CLI
-
-
-def _fake_wiki(tmp_path: Path, *, known=(), exclude=()) -> tuple[Path, Path]:
-    """A capture directory holding the `ticket.json` a spawner would have left, in a tree shaped like a wiki's."""
-    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
-    cap = tmp_path / rel
-    cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps({
-        "v": 1, "ticket": "0123456789ab", "unit": UNIT, "slug": "site-learn", "item": SECTION, "target": SECTION,
-        "capture_dir": rel, "dest": None, "hosts": ["www.example-hubspot.invalid"],
-        "harvest": {"scope": "section", "access": "free", "max_age": None, "refresh": "never", "exclude_urls": list(exclude), "assets": "download"},
-        "options": {}, "credential": None, "min_date": "2026-01-01", "known": list(known),
-    }), encoding="utf-8")
-    return tmp_path, cap
+# ------------------------------------------------------------ files + a ticket stub, no wiki
 
 
 def _fill(leaf: Path) -> None:
@@ -255,8 +310,11 @@ def _fill(leaf: Path) -> None:
 
 
 def test_plan_record_report_from_a_ticket_with_files_only(tmp_path):
-    root, cap = _fake_wiki(tmp_path, known=[{"resource": SECTION, "harvested_at": "2026-08-30T09:12:04Z"}])
-    done = _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--sites", str(FIX / "sites.json"))
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root, known=[{"resource": SECTION, "harvested_at": "2026-08-30T09:12:04Z"}])
+    done = _cli("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--sites", str(FIX / "sites.json"), tmp_path=tmp_path, ticket_dict=t)
     assert done.returncode == 0, done.stderr
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     items = [leaf["item"] for leaf in plan["leaves"]]
@@ -273,25 +331,26 @@ def test_plan_record_report_from_a_ticket_with_files_only(tmp_path):
     assert not (lesson_dir / "page.md").exists()
     assert json.loads((lesson_dir / "capture.json").read_text(encoding="utf-8"))["body"] == "page.html"
 
-    done = _run("report", str(cap))
+    done = _cli("report", str(cap), tmp_path=tmp_path, ticket_dict=t)
     assert done.returncode == 0, done.stderr
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["ticket"] == "0123456789ab" and report["outcome"] == "partial"  # one of two pages was captured
-    # S5: what an operator does next, said where `queue show` prints it — a `once` job is never pulled again.
-    assert "pipeline queue retry 0123456789ab" in report["reason"] and "pipeline edit site-learn every=" in report["reason"]
-    assert report["captured"] == [{"item": LESSON, "dir": plan["leaves"][0]["dir"], "title": "Pricing the offer"}]
-    assert report["discovered"] == []
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "partial"  # one of two pages was captured
+    # S5: what an operator does next, said where the host reports it — a `once` job is never pulled again.
+    assert "pipeline tickets retry 0123456789ab" in kv["reason"] and "pipeline jobs edit site-learn every=" in kv["reason"]
 
 
-def test_everything_known_is_a_skipped_report_not_a_failure(tmp_path):
+def test_everything_known_is_ok_with_nothing_captured_not_a_failure(tmp_path):
+    root = tmp_path
     pages, _ = leaves.parse_urls((FIX / "sitemap.xml").read_text(encoding="utf-8"))
     known = [{"resource": page["url"], "harvested_at": None} for page in pages]
-    _root, cap = _fake_wiki(tmp_path, known=known)
-    assert _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml")).returncode == 0
-    done = _run("report", str(cap))
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root, known=known)
+    assert _cli("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), tmp_path=tmp_path, ticket_dict=t).returncode == 0
+    done = _cli("report", str(cap), tmp_path=tmp_path, ticket_dict=t)
     assert done.returncode == 0, done.stderr
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "skipped" and "known" in report["reason"] and report["captured"] == []
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "ok" and "known" in kv["reason"] and "captured" not in kv
 
 
 def test_a_hand_run_with_no_ticket_takes_the_job_as_flags(tmp_path):
@@ -299,11 +358,14 @@ def test_a_hand_run_with_no_ticket_takes_the_job_as_flags(tmp_path):
     cap.mkdir(parents=True)
     refused = _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"))
     assert refused.returncode == 2 and "--slug" in refused.stderr
-    done = _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--slug", "site-learn", "--target", SECTION, "--ticket", "feedfacecafe")
+    done = _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--slug", "site-learn", "--target", SECTION)
     assert done.returncode == 0, done.stderr
-    assert _run("report", str(cap), "--failed", "--reason", "auth_expired:www.example-hubspot.invalid").returncode == 1
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert (report["ticket"], report["outcome"], report["reason"]) == ("feedfacecafe", "failed", "auth_expired:www.example-hubspot.invalid")
+    # `report` still needs SOME front door to post — a hand run's own stub, with no `tickets open` behind the id.
+    done = _cli("report", str(cap), "--ticket", "feedfacecafe", "--failed", "--reason", "auth_expired:www.example-hubspot.invalid", tmp_path=tmp_path, ticket_dict=None)
+    assert done.returncode == 1, done.stderr
+    call = _updates(tmp_path)[-1]
+    kv = _kv(call)
+    assert (call[3], kv["status"], kv["reason"]) == ("feedfacecafe", "failed", "auth_expired:www.example-hubspot.invalid")
 
 
 def test_no_doc_or_manifest_names_the_extract_block_any_more():
@@ -319,20 +381,24 @@ def test_no_doc_or_manifest_names_the_extract_block_any_more():
 
 def test_the_stages_speak_the_new_contract():
     text = (UNIT_DIR / "SKILL.md").read_text(encoding="utf-8")
-    assert re.search(r'^argument-hint: "ticket=<id> stage=harvest\|process"$', text, re.M)
+    assert re.search(r'^argument-hint: "ticket=<id>"$', text, re.M)
     for gone in ("<job.", "harvest_apply", "out_of_scope`", "scaffold", "intake.py", "job.py", "watch.py", "drain_pending"):
         assert gone not in text, gone
-    for kept in ("ticket.json", "capture.json", "report.json", "data-hsv-src", "stream.mux.com", "verifi.podscribe.com",
-                 "$ARGUMENTS", "stage=harvest|process", "### harvest", "### process", "page create", "to_markdown.py"):
+    for kept in ("capture.json", "data-hsv-src", "stream.mux.com", "verifi.podscribe.com",
+                 "tickets open", "tickets update", "### harvest", "### process", "page create", "to_markdown.py"):
         assert kept in text, kept
+    for stale in ("$ARGUMENTS", "stage=harvest|process", "ticket.json", "report.json"):
+        assert stale not in text, stale
     # Harvest is bytes: no page is rendered there, and no body is one.
     harvest = text.split("### harvest", 1)[1].split("### process", 1)[0]
     assert "page.md" not in harvest and "page create" not in harvest
     # One sentence settles the step, and the reasoning stays in its one home.
     opening = text.split("## Stages", 1)[1].split("### harvest", 1)[0]
     assert " ".join(opening.split()) == (
-        "`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections below are those steps. "
-        "Either step opens with the policy read — the stage's overlay, then this unit's own, folded onto the step: "
+        "```sh llm-wiki-ops --json pipeline tickets open <id> ``` "
+        "The answer's own `stage` — `harvest` or `process` — is the step; the two "
+        "sections below are those steps. Either step opens with the policy read — the "
+        "stage's overlay, then this unit's own, folded onto the step: "
         "```sh llm-wiki-ops policy get <stage> channel-hubspot-video ```"
     )
 
@@ -442,9 +508,12 @@ def test_a_qualifier_never_carries_a_settled_title_past_the_filename_cap(tmp_pat
 def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):
     """No flag needed: the asset `patch-assets` appended, once `assets.py download`
     marks it `downloaded`, is placed in the leaf — and `--no-media` declines it."""
-    root, cap = _fake_wiki(tmp_path)
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root)
     (cap / "urls.json").write_text(json.dumps([LESSON]), encoding="utf-8")  # one page: a `--limit` that left others would be `partial`
-    assert _run("plan", str(cap), "--urls", str(cap / "urls.json"), "--sites", str(FIX / "sites.json")).returncode == 0
+    assert _cli("plan", str(cap), "--urls", str(cap / "urls.json"), "--sites", str(FIX / "sites.json"), tmp_path=tmp_path, ticket_dict=t).returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     store = root / "_raw" / "site-learn" / "assets"
@@ -466,15 +535,19 @@ def test_the_downloaded_video_is_read_off_the_asset_manifest(tmp_path):
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["captured"]["media"] == "media.m4a"
     assert (leaf / "media.m4a").read_bytes() == b"audio, by courtesy"
-    assert _run("report", str(cap)).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok" and len(report["captured"]) == 1
+    done = _cli("report", str(cap), tmp_path=tmp_path, ticket_dict=t)
+    assert done.returncode == 0, done.stderr
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "ok" and kv["captured"] == leaf.relative_to(root).as_posix()
 
 
 @pytest.mark.parametrize("bad", ["notes.txt", "missing.mp4"])
 def test_a_media_file_the_transcriber_could_not_read_is_refused(tmp_path, bad):
-    root, cap = _fake_wiki(tmp_path)
-    assert _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml")).returncode == 0
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root)
+    assert _cli("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), tmp_path=tmp_path, ticket_dict=t).returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
@@ -507,8 +580,11 @@ def test_safe_title_is_a_title_the_hosts_filename_rule_holds():
 
 
 def test_venue_text_cannot_forge_a_heading_a_rule_or_an_attribute(tmp_path):
-    root, cap = _fake_wiki(tmp_path)
-    assert _run("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--limit", "1").returncode == 0
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root)
+    assert _cli("plan", str(cap), "--urls", str(FIX / "sitemap.xml"), "--limit", "1", tmp_path=tmp_path, ticket_dict=t).returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     meta = json.loads((FIX / "meta.json").read_text(encoding="utf-8"))
@@ -550,48 +626,47 @@ def test_the_embed_and_the_stream_are_checked_before_a_worker_can_copy_them():
 
 
 def test_nothing_in_scope_is_a_failure_that_names_the_scope_and_the_target():
-    """`apply` lands `skipped` as done: a job rooted at a leaf (`every: once`, the manifest default)
-    closed silently having captured nothing."""
+    """A job rooted at a leaf (`every: once`, the manifest default) closing
+    silently having captured nothing was the old bug: this is reported `failed`."""
     rows = [{"url": f"https://www.example-hubspot.invalid/p{n}", "why": "scope"} for n in range(9)]
     job = {"scope": "section", "target": LESSON, "slug": "site-learn", "ticket": "t1"}
-    report = leaves.build_report(ticket="t1", planned=[], captured=[], skipped=[*rows, {"url": "u", "why": "excluded"}], missing=[], job=job)
-    assert report["outcome"] == "failed" and "harvest.scope" in report["reason"] and LESSON in report["reason"] and "scope: 9" in report["reason"]
+    update = leaves.build_update(planned=[], captured=[], skipped=[*rows, {"url": "u", "why": "excluded"}], missing=[], job=job)
+    assert update["status"] == "failed" and "harvest.scope" in update["reason"] and LESSON in update["reason"] and "scope: 9" in update["reason"]
     for closes in ("known", "older_than_min_date"):
-        held = leaves.build_report(ticket="t1", planned=[], captured=[], skipped=[*rows, {"url": "u", "why": closes}], missing=[], job=job)
-        assert held["outcome"] == "skipped", closes
+        held = leaves.build_update(planned=[], captured=[], skipped=[*rows, {"url": "u", "why": closes}], missing=[], job=job)
+        assert held["status"] == "ok", closes  # P-4: nothing new is `ok`, never a worker's `skipped`
 
 
 def test_a_job_rooted_at_a_leaf_fails_out_loud(tmp_path):
-    root, cap = _fake_wiki(tmp_path)
-    ticket = json.loads((cap / "ticket.json").read_text(encoding="utf-8"))
-    ticket.update(item=LESSON + "/deeper", target=LESSON + "/deeper")
-    (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    rel = str(cap.relative_to(root))
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/../../../sitemap.xml").returncode == 2  # not there: a clear refusal
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root, item=LESSON + "/deeper", target=LESSON + "/deeper")
     shutil.copy(FIX / "sitemap.xml", cap / "sitemap.xml")
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml").returncode == 0
-    done = _documented(root, "report", rel)
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert done.returncode == 1 and report["outcome"] == "failed" and "harvest.scope" in report["reason"] and LESSON + "/deeper" in report["reason"]
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0, done.stderr
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    kv = _kv(_updates(tmp_path)[-1])
+    assert done.returncode == 1 and kv["status"] == "failed" and "harvest.scope" in kv["reason"] and LESSON + "/deeper" in kv["reason"]
 
 
 # ------------------------------------------------------------ S5: the clock, and what a second run does
 
 
 def _documented_section(tmp_path, **ticket_over):
-    root, cap = _fake_wiki(tmp_path)
-    if ticket_over:
-        ticket = {**json.loads((cap / "ticket.json").read_text(encoding="utf-8")), **ticket_over}
-        (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
+    root = tmp_path
+    rel = f"_raw/site-learn/learn--{_hash8(SECTION)}"
+    cap = root / rel
+    t = ticket(cap, root, **ticket_over)
     shutil.copy(FIX / "sitemap.xml", cap / "sitemap.xml")
     shutil.copy(FIX / "sites.json", cap / "sites.json")
-    return root, cap, str(cap.relative_to(root))
+    return root, cap, rel, t
 
 
 def test_plan_record_and_report_the_documented_way_from_the_wiki_root(tmp_path):
     """Rule 3: `run` starts a script at the WIKI ROOT, so every path is the ticket's wiki-relative `capture_dir`."""
-    root, cap, rel = _documented_section(tmp_path)
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json")
+    root, cap, rel, t = _documented_section(tmp_path)
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 0, done.stderr
     said = json.loads(done.stdout)
     assert [leaf["n"] for leaf in said["leaves"]] == [0, 1, 2] and said["stop"] is False and said["limit"] == leaves.DOWNLOAD_LIMIT
@@ -605,73 +680,80 @@ def test_plan_record_and_report_the_documented_way_from_the_wiki_root(tmp_path):
     record = json.loads((root / said["leaves"][0]["dir"] / "capture.json").read_text(encoding="utf-8"))
     assert record["body"] == "page.html" and record["content_type"] == "text/html"
     assert json.loads(_documented(root, "next", rel).stdout)["n"] == 1  # the captured leaf is not offered again
-    done = _documented(root, "report", rel)
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 0, done.stderr
-    assert json.loads((cap / "report.json").read_text(encoding="utf-8"))["outcome"] == "partial"
-    assert sorted(p.name for p in root.iterdir()) == ["_raw"]  # nothing was written at the wiki root
+    assert _kv(_updates(tmp_path)[-1])["status"] == "partial"
+    assert sorted(p.name for p in root.iterdir() if p.name != ".ops-stub") == ["_raw"]  # nothing was written at the wiki root
     # A mistyped or absolute-elsewhere directory is refused with the reason, not a traceback.
-    wrong = _documented(root, "report", "_raw/site-learn/nope")
+    wrong = _cli("report", "_raw/site-learn/nope", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert wrong.returncode == 2 and "wiki-relative" in wrong.stderr and "Traceback" not in wrong.stderr
 
 
 def test_past_the_deadline_the_worker_is_told_to_stop_and_the_report_says_how_to_go_on(tmp_path):
     """The broker's slice-cap kill fails the ticket WITHOUT reading a report, so the run ends itself first.
-    The deadline is keyed to the SPAWN: `ticket.json`'s mtime — the ticket id is the same on every pull."""
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
+    The deadline is keyed to this run's own first write — `plan`'s own clock at the time it ran."""
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
-    assert plan["deadline_epoch"] == pytest.approx((cap / "ticket.json").stat().st_mtime + 20 * 60)
-    assert plan["hard_stop_epoch"] < (cap / "ticket.json").stat().st_mtime + 30 * 60
+    spawned = time.mktime(time.strptime(plan["spawned_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+    assert plan["deadline_epoch"] == pytest.approx(spawned + 20 * 60, abs=2)
+    assert plan["hard_stop_epoch"] < spawned + 30 * 60
     _fill(root / plan["leaves"][0]["dir"])
 
-    spawned_long_ago = time.time() - 25 * 60
-    os.utime(cap / "ticket.json", (spawned_long_ago, spawned_long_ago))
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
+    # A run planned 25 minutes ago: no file to backdate any more, so the
+    # deadline fields themselves are moved back, as a real spawn 25 minutes
+    # ago would have left them.
+    plan["deadline_epoch"] -= 25 * 60
+    plan["hard_stop_epoch"] -= 25 * 60
+    (cap / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     done = _documented(root, "record", rel, "--leaf", "0")
     assert done.returncode == 5 and json.loads(done.stdout)["stop"] is True  # written, AND told to stop
     assert (root / plan["leaves"][0]["dir"] / "capture.json").is_file()
     nxt = _documented(root, "next", rel)
     assert nxt.returncode == 5 and json.loads(nxt.stdout) == {"stop": True, "why": "deadline", "left": 2, "seconds_left": 0}
-    done = _documented(root, "report", rel)
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert done.returncode == 0 and report["outcome"] == "partial" and "1 of 3 pages captured, 2 left" in report["reason"]
-    assert "every: once" in report["reason"] and "pipeline queue retry 0123456789ab" in report["reason"]
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    kv = _kv(_updates(tmp_path)[-1])
+    assert done.returncode == 0 and kv["status"] == "partial" and "1 of 3 pages captured, 2 left" in kv["reason"]
+    assert "every: once" in kv["reason"] and "pipeline tickets retry 0123456789ab" in kv["reason"]
 
 
 def test_a_second_run_does_not_redo_what_a_killed_run_finished(tmp_path):
     """A killed slice mints no process tickets, so `known[]` never grows: without `landed`, the retry
     re-planned every leaf in the same order and hit the same cap."""
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1").returncode == 0
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     first = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     assert [leaf["item"] for leaf in first["leaves"]] == [LESSON] and first["limit"] == 1
     _fill(root / first["leaves"][0]["dir"])
     video = tmp_path / "v.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
     assert _run("record", rel, "--leaf", "0", "--media-file", str(video), cwd=root).returncode == 0
-    assert _documented(root, "report", rel).returncode == 0
-    limited = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert limited["outcome"] == "partial" and "1 of 3" in limited["reason"]  # every PLANNED page landed, and the limit left two: not `ok`
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0
+    limited = _kv(_updates(tmp_path)[-1])
+    assert limited["status"] == "partial" and "1 of 3" in limited["reason"]  # every PLANNED page landed, and the limit left two: not `ok`
 
-    # …the slice is killed; the report is never applied; the same ticket is dispatched again.
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1")
-    assert done.returncode == 0 and not (cap / "report.json").exists()  # Rule 4: the run before's report is gone first
+    # …the slice is killed; the update is never landed; the same ticket is dispatched again.
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1", tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0
     second = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     assert [(leaf["item"], bool(leaf.get("landed"))) for leaf in second["leaves"]] == [
         (LESSON, True), ("https://www.example-hubspot.invalid/learn/offers/lesson-one", False)]  # landed is outside the limit
     nxt = json.loads(_documented(root, "next", rel).stdout)
     assert nxt["item"].endswith("/lesson-one") and nxt["n"] == 1
-    assert _documented(root, "report", rel).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert [row["item"] for row in report["captured"]] == [LESSON]  # what the killed run finished is reported by this one
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0
+    call = _updates(tmp_path)[-1]
+    captured = [a.split("=", 1)[1] for a in call if a.startswith("captured=")]
+    assert captured == [str(first["leaves"][0]["dir"])]  # what the killed run finished is reported by this one
 
 
 def test_the_limit_defaults_by_what_a_leaf_costs(tmp_path):
-    harvest = {"scope": "section", "access": "free", "exclude_urls": [], "assets": "reference"}
-    root, cap, rel = _documented_section(tmp_path, harvest=harvest)
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml")
+    harvest = {"scope": "section", "exclude_urls": [], "assets": "reference"}
+    root, cap, rel, t = _documented_section(tmp_path, harvest=harvest)
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert json.loads(done.stdout)["limit"] is None
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--limit", "0")
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--limit", "0", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert json.loads(done.stdout)["limit"] is None
 
 
@@ -680,58 +762,56 @@ def test_the_limit_defaults_by_what_a_leaf_costs(tmp_path):
 
 def test_a_refresh_ticket_plans_exactly_its_resource_and_captures_it_again(tmp_path):
     """It used to drop the refreshed page as `known`, walk the rest of the section, and report `failed`."""
+    root = tmp_path
     rel = f"_raw/site-learn/{leaves.leaf_name(LESSON)}"  # `jobs.capture_dir_for(slug, resource)`
-    cap = tmp_path / rel
-    cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps({
-        "v": 1, "ticket": "feedfacecafe", "unit": UNIT, "slug": "site-learn", "item": LESSON, "target": LESSON,
-        "capture_dir": rel, "dest": "sources/courses/site-learn", "hosts": ["www.example-hubspot.invalid"],
-        "harvest": {"scope": "section", "access": "free", "exclude_urls": [], "assets": "download"},
-        "options": {}, "credential": None, "min_date": None,
-        "known": [{"resource": LESSON, "harvested_at": "2026-08-30T09:12:04Z"}, {"resource": SECTION, "harvested_at": None}],
-        "refresh": True, "resource": LESSON, "prev_harvested_at": "2026-08-30T09:12:04Z",
-    }), encoding="utf-8")
-    for stale in ("capture.json", "page.html", "report.json"):  # the first pull's, in the SAME directory
-        (cap / stale).write_text('{"outcome": "ok", "body": "page.html"}', encoding="utf-8")
-    done = _documented(tmp_path, "plan", rel)  # no --urls: there is nothing to enumerate
+    cap = root / rel
+    t = ticket(
+        cap, root, item=LESSON, target=LESSON, dest="sources/courses/site-learn",
+        known=[{"resource": LESSON, "harvested_at": "2026-08-30T09:12:04Z"}, {"resource": SECTION, "harvested_at": None}],
+        refresh=True, resource=LESSON,
+    )
+    for stale in ("capture.json", "page.html"):  # the first pull's, in the SAME directory
+        (cap / stale).write_text('{"body": "page.html"}', encoding="utf-8")
+    done = _cli("plan", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)  # no --urls: there is nothing to enumerate
     assert done.returncode == 0, done.stderr
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     assert plan["leaves"] == [{"item": LESSON, "dir": rel, "lastmod": None}] and plan["skipped"] == []
-    assert not any((cap / stale).exists() for stale in ("capture.json", "page.html", "report.json"))  # forced: `apply` hashes THIS run's body
+    assert not any((cap / stale).exists() for stale in ("capture.json", "page.html"))  # forced: a later read hashes THIS run's body
     _fill(cap)
     video = tmp_path / "v.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
-    done = _run("record", rel, "--leaf", "0", "--media-file", str(video), cwd=tmp_path)
+    done = _run("record", rel, "--leaf", "0", "--media-file", str(video), cwd=root)
     assert done.returncode == 0, done.stderr
     # No second transcript stub over a video the wiki already transcribed.
     assert json.loads(done.stdout)["captured"]["media"] is None and not list(cap.glob("media.*"))
-    assert _documented(tmp_path, "report", rel).returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert report["outcome"] == "ok" and report["captured"] == [{"item": LESSON, "dir": rel, "title": "Pricing the offer"}]
+    done = _cli("report", rel, tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "ok" and kv["captured"] == rel
     # 404/410: the render's status refuses the capture, and `--gone` is the answer.
     meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), "status": 410}
     (cap / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-    gone = _documented(tmp_path, "record", rel, "--leaf", "0")
+    gone = _documented(root, "record", rel, "--leaf", "0")
     assert gone.returncode == 2 and "--gone" in gone.stderr
-    assert _documented(tmp_path, "report", rel, "--gone").returncode == 0
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert (report["outcome"], report["captured"]) == ("gone", [])
+    done = _cli("report", rel, "--gone", tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert done.returncode == 0
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "gone" and "captured" not in kv
 
 
 def test_gone_is_a_refresh_tickets_alone_and_a_media_stub_is_not_refreshed_alone(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml").returncode == 0
-    (cap / "report.json").write_text('{"outcome": "ok"}', encoding="utf-8")
-    refused = _documented(root, "report", rel, "--gone")
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
+    refused = _cli("report", rel, "--gone", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert refused.returncode == 2 and "refresh" in refused.stderr
-    assert not (cap / "report.json").exists()  # a refusal never leaves the run before's `ok` for `apply` to read
+    assert not _updates(tmp_path)  # a refusal posts nothing
 
-    ticket = {**json.loads((cap / "ticket.json").read_text(encoding="utf-8")), "refresh": True, "resource": STREAM, "item": STREAM, "target": STREAM}
-    (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    refused = _documented(root, "plan", rel)
+    stream_t = ticket(cap, root, refresh=True, resource=STREAM, item=STREAM, target=STREAM)
+    refused = _cli("plan", rel, tmp_path=tmp_path, ticket_dict=stream_t, cwd=root)
     assert refused.returncode == 2 and "media" in refused.stderr
-    assert _documented(root, "report", rel, "--failed", "--reason", "refresh_unsupported:media").returncode == 1
-    assert json.loads((cap / "report.json").read_text(encoding="utf-8"))["outcome"] == "failed"
+    done = _cli("report", rel, "--failed", "--reason", "refresh_unsupported:media", tmp_path=tmp_path, ticket_dict=stream_t, cwd=root)
+    assert done.returncode == 1
+    assert _kv(_updates(tmp_path)[-1])["status"] == "failed"
 
 
 # ------------------------------------------------------------ S11: no venue url ever reaches a shell
@@ -766,8 +846,8 @@ def _stub_front_door(tmp_path: Path) -> tuple[dict, Path]:
 
 
 def test_the_asset_steps_carry_the_pages_url_as_argv_and_never_through_a_shell(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     leaf = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]
     _fill(root / leaf["dir"])
     (root / leaf["dir"] / "net.json").write_text("[]", encoding="utf-8")
@@ -792,25 +872,28 @@ def test_the_asset_steps_carry_the_pages_url_as_argv_and_never_through_a_shell(t
 
 
 def test_a_missing_url_is_named_by_leaf_or_by_bare_host_never_typed(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json").returncode == 0
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     _fill(root / plan["leaves"][0]["dir"])
     assert _documented(root, "record", rel, "--leaf", "0").returncode == 0
-    done = _documented(root, "report", rel, "--missing-leaf", "denied", "0", "--missing-leaf", "timeout", "1", "--missing-host", "denied", "Chunk.Mux.com")
+    done = _cli("report", rel, "--missing-leaf", "denied", "0", "--missing-leaf", "timeout", "1",
+                "--missing-host", "denied", "Chunk.Mux.com", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 0, done.stderr
-    assert json.loads((cap / "report.json").read_text(encoding="utf-8"))["missing"] == [
-        {"host": "stream.mux.com", "url": STREAM, "why": "denied"},
-        {"host": "www.example-hubspot.invalid", "url": plan["leaves"][1]["item"], "why": "timeout"},
-        {"host": "chunk.mux.com", "url": "https://chunk.mux.com/", "why": "denied"},
+    call = _updates(tmp_path)[-1]
+    missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
+    assert missing == [
+        f"stream.mux.com,{STREAM},denied",
+        f"www.example-hubspot.invalid,{plan['leaves'][1]['item']},timeout",
+        "chunk.mux.com,https://chunk.mux.com/,denied",
     ]
-    assert _documented(root, "report", rel, "--missing-host", "denied", "x;$(touch${IFS}PWNED)").returncode == 2
-    assert _documented(root, "report", rel, "--missing", "denied", STREAM).returncode == 2  # the url-taking flag is gone
+    refused = _cli("report", rel, "--missing-host", "denied", "x;$(touch${IFS}PWNED)", tmp_path=tmp_path, ticket_dict=t, cwd=root)
+    assert refused.returncode == 2
 
 
 def test_render_reads_its_url_off_the_plan(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--limit", "1").returncode == 0
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--limit", "1", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     (leaf,) = json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"]
     assert capturer.planned_leaf(cap, 0) == (leaf["item"], root.resolve() / leaf["dir"])
     assert capturer.planned_leaf(cap, 1) is None and capturer.planned_leaf(cap, -1) is None and capturer.planned_leaf(tmp_path, 0) is None
@@ -843,23 +926,23 @@ def test_venue_text_on_a_command_line_is_quoted_verbatim_and_never_retyped():
 
 @pytest.mark.parametrize("served", ["<urlset><url><loc>https://x.example/a</loc>", "[not json", "<!DOCTYPE html><html><body>Sign in</body></html"])
 def test_a_malformed_enumeration_is_a_clear_refusal_and_the_failure_can_still_be_reported(tmp_path, served):
-    root, cap, rel = _documented_section(tmp_path)
+    root, cap, rel, t = _documented_section(tmp_path)
     (cap / "sitemap.xml").write_text(served, encoding="utf-8")
-    (cap / "report.json").write_text('{"outcome": "ok"}', encoding="utf-8")
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml")
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 2 and "Traceback" not in done.stderr and "--urls" in done.stderr and "report --failed" in done.stderr
-    assert not (cap / "report.json").exists() and not (cap / "plan.json").exists()
-    missing = _documented(root, "plan", rel, "--urls", f"{rel}/never-saved.xml")
+    assert not (cap / "plan.json").exists()
+    missing = _cli("plan", rel, "--urls", f"{rel}/never-saved.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert missing.returncode == 2 and "Traceback" not in missing.stderr and "never-saved.xml" in missing.stderr
-    done = _documented(root, "report", rel, "--failed", "--reason", "sitemap_unreadable")
+    done = _cli("report", rel, "--failed", "--reason", "sitemap_unreadable", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 1
-    report = json.loads((cap / "report.json").read_text(encoding="utf-8"))
-    assert (report["ticket"], report["outcome"], report["reason"], report["captured"]) == ("0123456789ab", "failed", "sitemap_unreadable", [])
+    kv = _kv(_updates(tmp_path)[-1])
+    call = _updates(tmp_path)[-1]
+    assert (call[3], kv["status"], kv["reason"]) == ("0123456789ab", "failed", "sitemap_unreadable")
 
 
 def test_fetched_at_is_the_renders_time_not_the_time_record_ran(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
-    assert _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1").returncode == 0
+    root, cap, rel, t = _documented_section(tmp_path)
+    assert _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", "--sites", f"{rel}/sites.json", "--limit", "1", tmp_path=tmp_path, ticket_dict=t, cwd=root).returncode == 0
     leaf = root / json.loads((cap / "plan.json").read_text(encoding="utf-8"))["leaves"][0]["dir"]
     _fill(leaf)
     meta = {**json.loads((FIX / "meta.json").read_text(encoding="utf-8")), "fetched_at": "2026-09-01T08:00:00Z"}
@@ -870,14 +953,12 @@ def test_fetched_at_is_the_renders_time_not_the_time_record_ran(tmp_path):
 
 
 def test_a_sitemap_index_offers_only_children_that_are_safe_and_on_the_targets_host(tmp_path):
-    root, cap, rel = _documented_section(tmp_path)
+    root, cap, rel, t = _documented_section(tmp_path)
     (cap / "sitemap.xml").write_text(
         '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         "<sitemap><loc>https://www.example-hubspot.invalid/sitemap-1.xml</loc></sitemap>"
         "<sitemap><loc>https://www.example-hubspot.invalid/s.xml;$(touch${IFS}PWNED)</loc></sitemap>"
         "<sitemap><loc>https://elsewhere.example/sitemap.xml</loc></sitemap></sitemapindex>", encoding="utf-8")
-    done = _documented(root, "plan", rel, "--urls", f"{rel}/sitemap.xml")
+    done = _cli("plan", rel, "--urls", f"{rel}/sitemap.xml", tmp_path=tmp_path, ticket_dict=t, cwd=root)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["sitemaps"] == ["https://www.example-hubspot.invalid/sitemap-1.xml"]
-
-
