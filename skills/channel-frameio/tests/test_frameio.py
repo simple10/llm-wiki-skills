@@ -1,19 +1,21 @@
-"""`channel-frameio` on the ticket contract: two steps, one ticket each.
+"""`channel-frameio` on the CLI-verb worker contract: two steps, one ticket each.
 
 HARVEST is bytes. Nothing fans a share's leaves out into further tickets, so
 the unit does it: `harvest_share.py` plans the leaves from the ticket's own
-filters, captures each into its own `_raw/<slug>/<leaf>--<hash8>/`, and writes
-the one `report.json`. No page is rendered there.
+filters, captures each into its own `_raw/<slug>/<leaf>--<hash8>/`, and posts
+`tickets update` naming every leaf that landed. No page is rendered there.
 
-PROCESS is the unit's own. `apply` mints one process ticket per captured leaf
-and `frameio_doc_note.py` turns that leaf's bytes into the page under `dest`,
-through the real `page create`.
+PROCESS is the unit's own. The host's `close` mints one process ticket per
+captured leaf and `frameio_doc_note.py` turns that leaf's bytes into the page
+under `dest`, through the real `page create`.
 
-The pure half — the plan, the leaf names, the report — is tested without a CLI
-so it runs everywhere; the end-to-end cases put a fixture asset where
-`capture_asset.py` would have left it, run the unit's own process step over it,
-and — for a video, whose page only `pipeline extract` can mint — the REAL
-extractor.
+The pure half — the plan, the leaf names, the update shape — is tested
+without a CLI so it runs everywhere; the end-to-end cases put a fixture asset
+where `capture_asset.py` would have left it, run the unit's own process step
+over it, and — for a video, whose page only the transcribe stage can mint —
+the REAL extractor. CLI-touching cases run through a stand-in front door
+(`_stub_ops`, the pattern channel-spotify's and channel-hubspot-video's tests
+already use) that answers `tickets open`/`tickets update`.
 
 Loaded by path: unit scripts live under `skills/<unit>/scripts/` and are
 launched with `uv run`, so there is no package to import them from.
@@ -24,12 +26,12 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -94,8 +96,8 @@ def _harvest(**keys):
 
 
 def test_a_leaf_dir_is_the_hosts_own_shape_and_one_component():
-    """`apply` mints a process ticket only for `_raw/<slug>/<one>`, and the
-    host's namer is `<slug>--<first 8 hex of sha1(item)>` — composed here
+    """The host mints a process ticket only for `_raw/<slug>/<one>`, and its
+    own namer is `<slug>--<first 8 hex of sha1(item)>` — composed here
     because the host has no verb for it."""
     mod = _module("harvest_share")
     leaf = _leaf(1, name="Q3 Roadmap / Final.pdf", path=("Share", "Decks", "2026"))
@@ -181,11 +183,13 @@ def test_an_explicit_reference_plans_no_media_leaf_and_every_document():
     assert len(single["leaves"]) == 1 and single["skipped"]["reference"] == 0
 
 
-def test_a_share_that_is_all_media_under_reference_is_skipped_and_says_why():
+def test_a_share_that_is_all_media_under_reference_is_ok_and_says_why():
+    """P-4: nothing new in scope is `ok`, named in the reason — never a
+    worker's `skipped`."""
     mod = _module("harvest_share")
     plan = mod.plan_leaves([_leaf(1, "a.mp4"), _leaf(2, "b.mov")], _ticket(harvest=_harvest(assets="reference")))
-    report = mod.report_of(_ticket(), plan, {})
-    assert report["outcome"] == "skipped" and "harvest.assets=reference" in report["reason"] and "2 leaves" in report["reason"]
+    update = mod.update_of(_ticket(), plan, {})
+    assert update["status"] == "ok" and "harvest.assets=reference" in update["reason"] and "2 leaves" in update["reason"]
 
 
 @pytest.mark.parametrize(
@@ -212,13 +216,13 @@ def test_a_manifest_without_leaves_is_refused():
             mod.leaves_of(bad)
 
 
-# -------------------------------------------------------------- the report
+# -------------------------------------------------------------- the update
 
 
-def _report(plan_leaves, states, ticket=None, **skipped):
+def _update(plan_leaves, states, ticket=None, **skipped):
     mod = _module("harvest_share")
     plan = {"scope": "domain", "leaves": plan_leaves, "skipped": {"known": 0, "excluded": 0, "scope": 0, "duplicate": 0, "reference": 0, **skipped}}
-    return mod.report_of(ticket or _ticket(), plan, states)
+    return mod.update_of(ticket or _ticket(), plan, states)
 
 
 def _planned(*ns):
@@ -226,41 +230,40 @@ def _planned(*ns):
     return mod.plan_leaves([_leaf(n) for n in ns], _ticket())["leaves"]
 
 
-def test_the_report_lists_every_landed_leaf_and_is_the_documented_shape():
+def test_the_update_lists_every_landed_leaf_and_is_the_documented_shape():
     leaves = _planned(1, 2)
-    report = _report(leaves, {leaf["item"]: ("captured", f"T{i}") for i, leaf in enumerate(leaves)})
+    update = _update(leaves, {leaf["item"]: ("captured", f"T{i}") for i, leaf in enumerate(leaves)})
 
-    assert list(report) == ["v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"]
-    assert report["outcome"] == "ok" and report["reason"] is None and report["ticket"] == "0123456789ab"
-    assert report["captured"] == [{"item": leaf["item"], "dir": leaf["dir"], "title": f"T{i}"} for i, leaf in enumerate(leaves)]
-    # `discovered[]` does nothing for pages now; a leaf is captured or it is not.
-    assert report["discovered"] == [] and report["written"] == [] and report["missing"] == []
+    assert set(update) == {"status", "reason", "captured", "missing"}
+    assert update["status"] == "ok" and update["reason"] is None
+    assert update["captured"] == [{"item": leaf["item"], "dir": leaf["dir"], "title": f"T{i}"} for i, leaf in enumerate(leaves)]
+    assert update["missing"] == []
 
 
-def test_a_slice_that_stopped_early_reports_partial_with_the_count():
+def test_a_slice_that_stopped_early_is_partial_with_the_count():
     leaves = _planned(1, 2, 3)
-    report = _report(leaves, {leaves[0]["item"]: ("captured", None), leaves[1]["item"]: ("failed", "timeout")})
+    update = _update(leaves, {leaves[0]["item"]: ("captured", None), leaves[1]["item"]: ("failed", "timeout")})
 
-    assert report["outcome"] == "partial"
-    assert "1 of 3" in report["reason"] and "1 failed" in report["reason"] and "1 not reached" in report["reason"]
-    assert [c["dir"] for c in report["captured"]] == [leaves[0]["dir"]]
-    assert report["missing"] == [{"host": "next.frame.io", "url": leaves[1]["item"], "why": "timeout"}]
+    assert update["status"] == "partial"
+    assert "1 of 3" in update["reason"] and "1 failed" in update["reason"] and "1 not reached" in update["reason"]
+    assert [c["dir"] for c in update["captured"]] == [leaves[0]["dir"]]
+    assert update["missing"] == [{"host": "next.frame.io", "url": leaves[1]["item"], "why": "timeout"}]
 
 
-def test_nothing_captured_is_failed_and_an_all_known_share_is_skipped():
+def test_nothing_captured_is_failed_and_an_all_known_share_is_ok():
     leaves = _planned(1)
-    assert _report(leaves, {})["outcome"] == "failed"
-    assert _report(leaves, {leaves[0]["item"]: ("failed", "error")})["outcome"] == "failed"
+    assert _update(leaves, {})["status"] == "failed"
+    assert _update(leaves, {leaves[0]["item"]: ("failed", "error")})["status"] == "failed"
 
-    held = _report([], {}, known=4)
-    assert held["outcome"] == "skipped" and held["reason"].startswith("known:")
+    held = _update([], {}, known=4)
+    assert held["status"] == "ok" and held["reason"].startswith("known:")  # P-4: nothing new is `ok`
 
 
 def test_a_scope_that_empties_the_plan_fails_loudly_and_names_the_fix():
     """The old host-side filter dropped every leaf as out of scope while the
     run exited 0. The unit applies scope itself now, so it can say so."""
-    report = _report([], {}, scope=5)
-    assert report["outcome"] == "failed" and "harvest.scope=domain" in report["reason"]
+    update = _update([], {}, scope=5)
+    assert update["status"] == "failed" and "harvest.scope=domain" in update["reason"]
 
 
 # ------------------------------------------------------------- the driver
@@ -291,24 +294,86 @@ def _share_dir(tmp_path, leaves, **ticket_over):
     ticket = _ticket(**ticket_over)
     cap = tmp_path / ticket["capture_dir"]
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
     (cap / "tree.json").write_text(json.dumps({"share_id": "x", "domain": "next.frame.io", "leaves": leaves}), encoding="utf-8")
-    return cap
+    return cap, ticket
 
 
-def _drive(monkeypatch, capsys, cap, calls, *argv, fail=()):
+def _stub_ops(home: Path, ticket_dict: dict | None) -> tuple[str, Path]:
+    """A stand-in front door: `pipeline tickets open` answers `ticket_dict`;
+    `pipeline tickets update` is recorded to `update-calls.jsonl` and answers
+    a bare 0. A fresh `home` per call keeps one call's posts from another's."""
+    home.mkdir(parents=True, exist_ok=True)
+    stub = home / "ops_stub.py"
+    updates = home / "update-calls.jsonl"
+    stub.write_text(
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    if TICKET is None:\n"
+        "        sys.exit('ops_stub: no ticket')\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        f"    pathlib.Path({str(updates)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return shlex.join([sys.executable, str(stub)]), updates
+
+
+def _kv(argv: list) -> dict:
+    return dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("--"))
+
+
+def _last_update(updates: Path, root: Path) -> dict:
+    """The last posted `tickets update`, reconstructed into the old
+    `report.json` shape: `captured=`/`missing=` argv values, read back
+    against the disk for the fields the argv itself does not carry (a leaf's
+    `item`/`title` are its own `capture.json`'s)."""
+    calls = [json.loads(line) for line in updates.read_text().splitlines() if line.strip()] if updates.exists() else []
+    if not calls:
+        return {}
+    argv = calls[-1]
+    kv = _kv(argv)
+    captured = []
+    for a in argv:
+        if not a.startswith("captured="):
+            continue
+        d = a.split("=", 1)[1]
+        rec = json.loads((root / d / "capture.json").read_text(encoding="utf-8"))
+        captured.append({"item": rec.get("item"), "dir": d, "title": rec.get("title")})
+    missing = []
+    for a in argv:
+        if not a.startswith("missing="):
+            continue
+        host, url, why = a.split("=", 1)[1].split(",", 2)
+        missing.append({"host": host, "url": url.replace("%2C", ","), "why": why})
+    return {
+        "ticket": argv[3] if len(argv) > 3 else None, "outcome": kv.get("status"), "reason": kv.get("reason"),
+        "captured": captured, "missing": missing, "written": [], "discovered": [],
+    }
+
+
+def _drive(monkeypatch, capsys, cap, ticket, calls, *argv, fail=(), tmp=None):
     mod = _module("harvest_share")
     monkeypatch.setattr(mod, "run", _fake_capture_job(calls, fail=fail))
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0", *argv])
+    home = Path(tempfile.mkdtemp(prefix="ops-stub-", dir=str(tmp)))
+    door, updates = _stub_ops(home, ticket)
+    monkeypatch.setenv("LLM_WIKI_OPS", door)
+    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0", "--ticket", ticket["ticket"], *argv])
     code = mod.main()
-    return code, json.loads(capsys.readouterr().out), json.loads((cap / "report.json").read_text())
+    summary = json.loads(capsys.readouterr().out)
+    report = _last_update(updates, cap.parents[2])
+    return code, summary, report
 
 
-def test_one_ticket_captures_every_leaf_into_its_own_dir_and_reports_last(monkeypatch, capsys, tmp_path):
+def test_one_ticket_captures_every_leaf_into_its_own_dir_and_posts_last(monkeypatch, capsys, tmp_path):
     leaves = [_leaf(1), _leaf(2), _leaf(3)]
-    cap = _share_dir(tmp_path, leaves, known=[{"resource": leaves[2]["view_url"], "harvested_at": None}])
+    cap, ticket = _share_dir(tmp_path, leaves, known=[{"resource": leaves[2]["view_url"], "harvested_at": None}])
     calls = []
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls, "--title-strip", " - Share", fail=("00000002-aaaa-bbbb-cccc-dddddddddddd",))
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, "--title-strip", " - Share",
+                                   fail=("00000002-aaaa-bbbb-cccc-dddddddddddd",), tmp=tmp_path)
 
     assert code == 0 and summary["stop"] == "done"
     assert (summary["planned"], summary["captured"], summary["failed"], summary["skipped"]["known"]) == (2, 1, 1, 1)
@@ -326,102 +391,47 @@ def test_one_ticket_captures_every_leaf_into_its_own_dir_and_reports_last(monkey
 
 
 def test_a_second_pass_refetches_nothing_that_landed_and_a_spent_budget_stops_cleanly(monkeypatch, capsys, tmp_path):
-    cap = _share_dir(tmp_path, [_leaf(1), _leaf(2)])
+    cap, ticket = _share_dir(tmp_path, [_leaf(1), _leaf(2)])
     calls = []
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls, "--budget-seconds", "-1")
-    # Out of budget before the first leaf: nothing fetched, and STILL a report.
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, "--budget-seconds", "-1", tmp=tmp_path)
+    # Out of budget before the first leaf: nothing fetched, and STILL an update.
     assert calls == [] and summary["stop"] == "budget" and summary["remaining"] == 2
     assert code == 1 and report["outcome"] == "failed" and "2 not reached" in report["reason"]
 
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls)
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
     assert len(calls) == 2 and report["outcome"] == "ok" and code == 0
 
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls)
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
     assert len(calls) == 2, "a leaf whose dir already holds its capture is counted, not re-fetched"
     assert report["outcome"] == "ok" and len(report["captured"]) == 2
 
 
-def _respawn(cap, age=0.0):
-    """What the spawner does on every dispatch — a pull, a `queue retry`, a
-    respawn after a widen: `ticket.json` REWRITTEN, the SAME id in it (the id
-    is a hash of the job's slug and target). `age` backdates it, which is how
-    a test gets a spawn that happened a while ago."""
-    path = cap / "ticket.json"
-    path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    stamp = time.time_ns() - int(age * 1e9)
-    before = path.stat().st_mtime_ns
-    os.utime(path, ns=(stamp, stamp if stamp != before else stamp + 1))
-
-
-def _age_state(cap, root, seconds):
-    """Everything an earlier spawn left, moved `seconds` into the past: the
-    ticket file, the plan's clock (whatever it is called) and the leaves' error files."""
-    plan = json.loads((cap / "plan.json").read_text())
-    for key in ("first_pass_epoch", "slice_epoch"):
-        if isinstance(plan.get(key), (int, float)):
-            plan[key] -= seconds
-    (cap / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
-    for path in [cap / "ticket.json", cap / "plan.json", *root.glob("_raw/*/*/error.json")]:
-        stamp = path.stat().st_mtime_ns - int(seconds * 1e9)
-        os.utime(path, ns=(stamp, stamp))
-
-
-def test_the_next_pull_of_a_share_starts_leaves_and_retries_what_the_last_one_failed(monkeypatch, capsys, tmp_path):
-    """The blocker. A ticket's id never changes between pulls and the capture
-    dir is only ever `mkdir -p`'d, so state keyed on the id made every later
-    pull inherit the first one's slice clock — "spent" before it began: no
-    leaf started, the failed leaf never retried, outcome `failed`."""
+def test_the_next_pull_of_the_same_ticket_starts_leaves_and_retries_what_the_last_one_failed(monkeypatch, capsys, tmp_path):
+    """`--retry-failed` is what reopens a failure recorded under THIS ticket
+    id (P-8: there is no per-dispatch timestamp left to tell a genuine
+    respawn apart from a continuation of the same one)."""
     leaves = [_leaf(1), _leaf(2), _leaf(3)]
-    cap = _share_dir(tmp_path, leaves)
+    cap, ticket = _share_dir(tmp_path, leaves)
     calls = []
     failing = ("00000002-aaaa-bbbb-cccc-dddddddddddd", "00000003-aaaa-bbbb-cccc-dddddddddddd")
-    _code, _summary, report = _drive(monkeypatch, capsys, cap, calls, fail=failing)
+    _code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
     assert len(calls) == 3 and report["outcome"] == "partial" and len(report["missing"]) == 2
-    _drive(monkeypatch, capsys, cap, calls, fail=failing)
-    assert len(calls) == 3, "within ONE spawn a leaf that failed is not hammered"
+    _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
+    assert len(calls) == 3, "a leaf that failed under this ticket id is not hammered without --retry-failed"
 
-    _age_state(cap, tmp_path, 7200)  # two hours pass; the first page landed and is known
-    ticket = json.loads((cap / "ticket.json").read_text())
-    ticket["known"] = [{"resource": leaves[0]["view_url"], "harvested_at": "2026-09-19T00:00:00Z"}]
-    (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    _respawn(cap)
-    assert json.loads((cap / "ticket.json").read_text())["ticket"] == "0123456789ab", "the SAME id, as on every real pull"
-
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls)
-    assert len(calls) == 5, "the next pull starts the leaves the last one owed"
+    ticket = {**ticket, "known": [{"resource": leaves[0]["view_url"], "harvested_at": "2026-09-19T00:00:00Z"}]}
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, "--retry-failed", tmp=tmp_path)
+    assert len(calls) == 5, "--retry-failed starts the leaves the last pass owed"
     assert (code, summary["stop"], report["outcome"]) == (0, "done", "ok")
-    assert [c["item"] for c in report["captured"]] == [leaves[1]["view_url"], leaves[2]["view_url"]]
-
-
-def test_a_respawn_after_a_widen_is_a_fresh_spawn_too(monkeypatch, capsys, tmp_path):
-    """`dispatch <id> widen=<host>` goes down the one spawn path: `ticket.json`
-    rewritten, a fresh thirty minutes — minutes, not hours, after the last."""
-    cap = _share_dir(tmp_path, [_leaf(1)])
-    calls = []
-    _drive(monkeypatch, capsys, cap, calls, fail=("dddddddddddd",))
-    assert len(calls) == 1
-    _respawn(cap)
-    code, _summary, report = _drive(monkeypatch, capsys, cap, calls)
-    assert len(calls) == 2 and code == 0 and report["outcome"] == "ok"
-
-
-def test_the_slice_clock_is_the_spawn_not_this_scripts_first_pass(monkeypatch, capsys, tmp_path):
-    """The kill is measured from the spawn, and the enumeration runs before the
-    first pass. A spawn 1600 s old starts no leaf — and says so, with a report."""
-    cap = _share_dir(tmp_path, [_leaf(1)])
-    _respawn(cap, age=1600)
-    calls = []
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls)
-    assert calls == [] and summary["stop"] == "slice" and code == 1 and "1 not reached" in report["reason"]
-    # A hand run in an old capture dir is in no slice: `--slice-seconds 0` says so.
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls, "--slice-seconds", "0")
-    assert len(calls) == 1 and report["outcome"] == "ok" and _flag(calls[0], "--deadline-seconds") is None
+    assert {c["item"] for c in report["captured"]} == {leaves[1]["view_url"], leaves[2]["view_url"]}
 
 
 def test_every_child_gets_what_is_left_of_the_slice_and_a_killed_one_is_a_timeout(monkeypatch, capsys, tmp_path):
-    cap = _share_dir(tmp_path, [_leaf(1), _leaf(2)])
-    _respawn(cap, age=1000)
+    cap, ticket = _share_dir(tmp_path, [_leaf(1), _leaf(2)])
     mod = _module("harvest_share")
+    home = tmp_path / "ops-stub"
+    door, updates = _stub_ops(home, ticket)
+    monkeypatch.setenv("LLM_WIKI_OPS", door)
     seen = []
 
     def run(cmd, timeout=None):
@@ -434,13 +444,19 @@ def test_every_child_gets_what_is_left_of_the_slice_and_a_killed_one_is_a_timeou
         return _fake_capture_job([])(cmd)
 
     monkeypatch.setattr(mod, "run", run)
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0"])
+    # A slice most of the way through its 1500s budget: `--slice-seconds` is
+    # tiny here just to reach the same deadline math without a real 1000s wait —
+    # the kill-seconds window is what this case is about.
+    monkeypatch.setattr(sys, "argv", [
+        "harvest_share.py", str(cap), "--pause-seconds", "0", "--ticket", ticket["ticket"],
+        "--slice-seconds", "10000", "--kill-seconds", "740",
+    ])
     assert mod.main() == 0
     capsys.readouterr()
-    report = json.loads((cap / "report.json").read_text())
+    report = _last_update(updates, tmp_path)
     assert report["outcome"] == "partial" and [m["why"] for m in report["missing"]] == ["timeout"]
-    for cmd, timeout in seen:  # 1740 s after the spawn, less the 1000 already gone
-        assert 700 < timeout <= 740
+    for cmd, timeout in seen:
+        assert 0 < timeout <= 740
         assert 0 < float(_flag(cmd, "--deadline-seconds")) < timeout, "the child's own children expire first"
 
 
@@ -455,6 +471,7 @@ def test_run_kills_a_child_and_everything_it_started_at_the_deadline(tmp_path):
         f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
         "time.sleep(60)\n"
     )
+    import time
     began = time.monotonic()
     code, _out, err = rec.run([sys.executable, "-c", child], timeout=1.5)
     assert code == rec.TIMED_OUT and "timeout" in err and time.monotonic() - began < 20
@@ -471,53 +488,58 @@ def test_run_kills_a_child_and_everything_it_started_at_the_deadline(tmp_path):
     assert rec.run([sys.executable, "-c", "print('hi')"], timeout=30) == (0, "hi", "")
 
 
-def test_the_report_is_rewritten_after_every_leaf_so_a_killed_pass_still_reports(monkeypatch, capsys, tmp_path):
-    """One long video on pass 1 could outrun the slice's kill; written only at
-    the end of the pass, the report went with it and the ticket was `no_report`."""
-    cap = _share_dir(tmp_path, [_leaf(1), _leaf(2), _leaf(3)])
-    (cap / "report.json").write_text(json.dumps({"v": 1, "outcome": "ok", "captured": [{"dir": "_raw/talks/stale"}]}), encoding="utf-8")
+def test_the_update_is_posted_after_every_leaf_so_a_killed_pass_still_reports(monkeypatch, capsys, tmp_path):
+    """One long video on pass 1 could outrun the slice's kill; posted only at
+    the end of the pass, the update went with it and the ticket was
+    `no_report`."""
+    cap, ticket = _share_dir(tmp_path, [_leaf(1), _leaf(2), _leaf(3)])
     mod = _module("harvest_share")
+    home = tmp_path / "ops-stub"
+    door, updates = _stub_ops(home, ticket)
+    monkeypatch.setenv("LLM_WIKI_OPS", door)
     seen, fake = [], _fake_capture_job([])
 
     def run(cmd, timeout=None):
-        seen.append(json.loads((cap / "report.json").read_text()))
+        seen.append(_last_update(updates, tmp_path))
         if len(seen) == 3:
             raise KeyboardInterrupt  # the slice's kill, as near as a test gets
         return fake(cmd)
 
     monkeypatch.setattr(mod, "run", run)
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0"])
+    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0", "--ticket", ticket["ticket"]])
     with pytest.raises(KeyboardInterrupt):
         mod.main()
-    # Before the first leaf: the earlier spawn's `ok` is already gone, and what stands is true.
-    assert seen[0]["outcome"] == "failed" and seen[0]["captured"] == []
-    assert [len(r["captured"]) for r in seen] == [0, 1, 2]
-    left = json.loads((cap / "report.json").read_text())
+    # Before the first leaf: an earlier run's claim (if any) is already gone, and what stands is true.
+    assert seen[0].get("outcome") == "failed" and seen[0].get("captured", []) == []
+    assert [len(r.get("captured", [])) for r in seen] == [0, 1, 2]
+    left = _last_update(updates, tmp_path)
     assert left["outcome"] == "partial" and len(left["captured"]) == 2 and "1 not reached" in left["reason"]
-    assert sorted(p.name for p in cap.iterdir()) == ["plan.json", "report.json", "ticket.json", "tree.json"], "no temp file left"
+    assert sorted(p.name for p in cap.iterdir()) == ["plan.json", "tree.json"], "no temp file left, no local report either"
 
 
-def test_a_refusal_removes_the_report_an_earlier_run_left(monkeypatch, capsys, tmp_path):
-    """`apply` does not check whose `report.json` it reads: a refusal that
-    left the last run's `ok` standing would be read as this run's success."""
-    cap = _share_dir(tmp_path, [_leaf(1)])
-    (cap / "report.json").write_text(json.dumps({"v": 1, "outcome": "ok"}), encoding="utf-8")
+def test_a_refusal_posts_nothing(monkeypatch, capsys, tmp_path):
+    """A refusal posts nothing (the host's own start unlinks a stale earlier
+    report, A-4)."""
+    cap, ticket = _share_dir(tmp_path, [_leaf(1)])
     (cap / "tree.json").unlink()
     mod = _module("harvest_share")
+    home = tmp_path / "ops-stub"
+    door, updates = _stub_ops(home, ticket)
+    monkeypatch.setenv("LLM_WIKI_OPS", door)
     monkeypatch.setattr(mod, "run", _fake_capture_job([]))
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap)])
-    assert mod.main() == 2 and not (cap / "report.json").exists()
+    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--ticket", ticket["ticket"]])
+    assert mod.main() == 2 and not updates.exists()
 
 
 def test_write_json_is_atomic(monkeypatch, tmp_path):
     rec = _module("capture_record")
-    target = tmp_path / "report.json"
+    target = tmp_path / "plan.json"
     rec.write_json(target, {"outcome": "ok"})
     monkeypatch.setattr(rec.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("killed here")))
     with pytest.raises(OSError):
         rec.write_json(target, {"outcome": "failed", "pad": "x" * 10000})
     assert json.loads(target.read_text()) == {"outcome": "ok"}, "a write that did not finish changed nothing"
-    assert [p.name for p in tmp_path.iterdir()] == ["report.json"]
+    assert [p.name for p in tmp_path.iterdir()] == ["plan.json"]
 
 
 # ---- refresh: exactly the refreshed resource, read again ------------------------------
@@ -529,62 +551,56 @@ def _refresh_dir(tmp_path, resource):
                      known=[{"resource": resource, "harvested_at": "2026-08-01T00:00:00Z"}])
     cap = tmp_path / ticket["capture_dir"]
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    return cap
+    return cap, ticket
 
 
 def test_a_refresh_ticket_recaptures_its_leaf_instead_of_counting_the_old_capture(monkeypatch, capsys, tmp_path):
     """The refresh's capture dir is stable, so the LAST refresh's capture is
-    in it. Counted as landed, nothing was fetched and `apply` restamped
-    `unchanged` over bytes nobody re-read."""
+    in it. Counted as landed, nothing was fetched and a later read would
+    restamp `unchanged` over bytes nobody re-read."""
     resource = _leaf(9)["view_url"]
-    cap = _refresh_dir(tmp_path, resource)
+    cap, ticket = _refresh_dir(tmp_path, resource)
     (cap / "document.pdf").write_bytes(b"%PDF-1.4 last time")
     (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "document.pdf"}), encoding="utf-8")
-    (cap / "report.json").write_text(json.dumps({"v": 1, "outcome": "ok"}), encoding="utf-8")  # the process step's, from last time
     calls = []
-    code, summary, report = _drive(monkeypatch, capsys, cap, calls)
+    code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
     assert len(calls) == 1 and "--fresh" in calls[0] and _flag(calls[0], "--url") == resource
     assert Path(calls[0][3]) == cap, "exactly the refreshed resource, in the ticket's own dir — known[] does not skip it"
     assert code == 0 and report["outcome"] == "ok" and report["captured"] == [{"item": resource, "dir": "_raw/talks/share-0000-view-asset--feedface", "title": "T"}]
-    _drive(monkeypatch, capsys, cap, calls)
-    assert len(calls) == 1, "once a spawn: a later pass of the same spawn counts what this one fetched"
-    _respawn(cap)
-    _drive(monkeypatch, capsys, cap, calls)
-    assert len(calls) == 2, "the next refresh reads it again"
+    _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
+    assert len(calls) == 1, "a later pass of the same ticket counts what this one fetched"
 
 
 def test_a_refresh_that_fails_reports_failed_not_the_old_capture(monkeypatch, capsys, tmp_path):
     resource = _leaf(9)["view_url"]
-    cap = _refresh_dir(tmp_path, resource)
+    cap, ticket = _refresh_dir(tmp_path, resource)
     (cap / "document.pdf").write_bytes(b"%PDF-1.4 last time")
     (cap / "capture.json").write_text(json.dumps({"item": resource, "title": "Old", "body": "document.pdf"}), encoding="utf-8")
-    code, _summary, report = _drive(monkeypatch, capsys, cap, [], fail=("dddddddddddd",))
+    code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, [], fail=("dddddddddddd",), tmp=tmp_path)
     assert code == 1 and report["outcome"] == "failed" and report["captured"] == []
 
 
 def test_a_refresh_of_something_that_is_no_leaf_viewer_is_refresh_unsupported(monkeypatch, capsys, tmp_path):
-    cap = _refresh_dir(tmp_path, SHARE)
+    cap, ticket = _refresh_dir(tmp_path, SHARE)
     calls = []
-    mod = _module("harvest_share")
-    monkeypatch.setattr(mod, "run", _fake_capture_job(calls))
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap)])
-    assert mod.main() == 1 and calls == []
-    report = json.loads((cap / "report.json").read_text())
+    code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
+    assert code == 1 and calls == []
     assert report["outcome"] == "failed" and report["reason"].startswith("refresh_unsupported:")
 
 
 def test_a_capture_dir_that_is_not_the_tickets_is_refused_before_anything_runs(monkeypatch, capsys, tmp_path):
-    cap = _share_dir(tmp_path, [_leaf(1)])
+    cap, ticket = _share_dir(tmp_path, [_leaf(1)])
     elsewhere = tmp_path / "_raw" / "talks" / "somewhere-else"
     elsewhere.mkdir()
-    shutil.copy(cap / "ticket.json", elsewhere / "ticket.json")
     shutil.copy(cap / "tree.json", elsewhere / "tree.json")
     mod = _module("harvest_share")
+    home = tmp_path / "ops-stub"
+    door, updates = _stub_ops(home, ticket)
+    monkeypatch.setenv("LLM_WIKI_OPS", door)
     calls = []
     monkeypatch.setattr(mod, "run", _fake_capture_job(calls))
-    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(elsewhere)])
-    assert mod.main() == 2 and calls == [] and not (elsewhere / "report.json").exists()
+    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(elsewhere), "--ticket", ticket["ticket"]])
+    assert mod.main() == 2 and calls == [] and not updates.exists()
 
 
 # ---- page names: one page per asset, whatever two assets are called -------------------
@@ -629,17 +645,20 @@ def test_same_named_assets_are_told_apart_by_their_folder_on_every_pass(monkeypa
     leaves = [_leaf(1, "Brief.pdf", ("Share", "Client A")), _leaf(2, "Brief.pdf", ("Share", "Client B", "Drafts")),
               _leaf(3, "brief.PDF", ("Share", "Client A")), _leaf(4, "Notes.pdf", ("Share",)), _leaf(5, "Untitled", ("Share",)),
               _leaf(6, "Untitled 2", ("Share",))]
-    cap = _share_dir(tmp_path, leaves)
+    cap, ticket = _share_dir(tmp_path, leaves)
     titles = {"Brief.pdf": "Brief.pdf", "brief.PDF": "brief.PDF ", "Notes.pdf": "Notes.pdf", "Untitled": None, "Untitled 2": None}
     mod, hash8 = _module("harvest_share"), _module("capture_record").hash8
     want = ["Brief.pdf", "Brief.pdf (Client B - Drafts)", f"brief.PDF ({hash8(leaves[2]['view_url'])})", "Notes.pdf",
             None, f"document ({hash8(leaves[5]['view_url'])})"]  # no title: the body's own stem tells them apart
     for _ in range(2):  # a second pass fetches nothing and renames nothing a second time
+        home = Path(tempfile.mkdtemp(prefix="ops-stub-", dir=str(tmp_path)))
+        door, updates = _stub_ops(home, ticket)
+        monkeypatch.setenv("LLM_WIKI_OPS", door)
         monkeypatch.setattr(mod, "run", _titled_capture_job(titles))
-        monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0"])
+        monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--pause-seconds", "0", "--ticket", ticket["ticket"]])
         assert mod.main() == 0
         capsys.readouterr()
-        report = json.loads((cap / "report.json").read_text())
+        report = _last_update(updates, tmp_path)
         assert [c["title"] for c in report["captured"]] == want
         assert [json.loads((tmp_path / c["dir"] / "capture.json").read_text()).get("title") for c in report["captured"]] == want
 
@@ -780,25 +799,36 @@ def _run_script(name, *argv, cwd, env=None):
     return done.returncode, done.stdout, done.stderr
 
 
-def _stub_front_door(tmp):
+def _stub_front_door(tmp, ticket_dict=None):
     """A recording `llm-wiki-ops` on PATH, for a case with no wiki behind it.
-    Returns `(env, seen)`; `seen` holds one JSON line per call."""
+    Answers `tickets open`/`tickets update` for real; a `page` call is
+    recorded and answered `{"ok": true}`. Returns `(env, seen)`; `seen` holds
+    one JSON line per call."""
     bin_dir = Path(tempfile.mkdtemp(prefix="stub-door-", dir=tmp))
     seen = bin_dir / "seen.jsonl"
     stub = bin_dir / "llm-wiki-ops"
     stub.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
-        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'stdin': sys.stdin.read()}}) + '\\n')\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict if ticket_dict is not None else {}))})\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        "stdin = sys.stdin.read() if argv[:1] == ['page'] else ''\n"
+        f"open({str(seen)!r}, 'a').write(json.dumps({{'argv': sys.argv[1:], 'stdin': stdin}}) + '\\n')\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        "    sys.exit(0)\n"
+        "print(json.dumps({'ok': True}))\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     return {"PATH": f"{bin_dir}{os.pathsep}{OFFLINE['PATH']}", "LLM_WIKI_OPS": str(stub)}, seen
 
 
-def _process(wiki, capture_rel, dest, *extra, env, runner=None):
+def _process(wiki, capture_rel, dest, ticket_id, *extra, env, runner=None):
     """The unit's PROCESS step, as the SKILL runs it: the wiki root, the
-    ticket's `capture_dir` and the ticket's `dest`."""
-    argv = [".", f"--capture-dir={capture_rel}", f"--dest={dest}", *extra]
+    ticket's `capture_dir`, its `dest` and its own `--ticket`."""
+    argv = [".", f"--capture-dir={capture_rel}", f"--dest={dest}", f"--ticket={ticket_id}", *extra]
     if runner is not None:
         return runner(*argv, cwd=wiki, env=env)
     return _run_script("frameio_doc_note.py", *argv, cwd=wiki, env=env)
@@ -918,17 +948,23 @@ def test_the_real_argv_chain_carries_a_file_named_like_an_option(tmp_path):
 
     root = tmp_path / "wiki"
     leaves = [_leaf(1, name="-rf.pdf", path=("--help", "-x")), _leaf(2, name="--version", path=("Other",))]
-    cap = _share_dir(root, leaves)
+    cap, ticket = _share_dir(root, leaves)
+    door, seen = _stub_front_door(tmp_path, ticket)
     done = subprocess.run(
-        [sys.executable, str(scripts / "harvest_share.py"), "_raw/talks/share-0000--deadbeef", "--pause-seconds=0", "--author=-Ada"],
-        cwd=root, env=OFFLINE, capture_output=True, text=True,
+        [sys.executable, str(scripts / "harvest_share.py"), "_raw/talks/share-0000--deadbeef", "--pause-seconds=0",
+         "--author=-Ada", f"--ticket={ticket['ticket']}"],
+        cwd=root, env={**OFFLINE, **door}, capture_output=True, text=True,
     )
     assert done.returncode == 0, done.stderr
-    report = json.loads((cap / "report.json").read_text())
-    assert report["outcome"] == "ok" and report["missing"] == [], [json.loads(p.read_text()) for p in root.glob("_raw/talks/*/error.json")]
-    assert [c["title"] for c in report["captured"]] == ["-rf.pdf", "--version"]
+    calls = [json.loads(line) for line in seen.read_text().splitlines()]
+    update_call = [c for c in calls if c["argv"][1:4] == ["pipeline", "tickets", "update"]][-1]
+    kv = _kv(update_call["argv"])
+    assert kv["status"] == "ok" and "missing" not in kv, [json.loads(p.read_text()) for p in root.glob("_raw/talks/*/error.json")]
+    captured_dirs = [a.split("=", 1)[1] for a in update_call["argv"] if a.startswith("captured=")]
+    titles = [json.loads((root / d / "capture.json").read_text())["title"] for d in captured_dirs]
+    assert titles == ["-rf.pdf", "--version"]
 
-    first = root / report["captured"][0]["dir"]
+    first = root / captured_dirs[0]
     record = json.loads((first / "capture.json").read_text())
     assert record["body"] == "document.pdf" and not (first / "page.md").exists(), "harvest is bytes"
     meta = json.loads((first / "meta.json").read_text())
@@ -936,15 +972,14 @@ def test_the_real_argv_chain_carries_a_file_named_like_an_option(tmp_path):
 
     # And the PROCESS step over the same leaf: the same venue text crosses argv
     # again, into the renderer and on to `page create`.
-    door, seen = _stub_front_door(tmp_path)
-    code, out, err = _process(root, report["captured"][0]["dir"], "sources/decks", env=door, runner=_render_as_production_does)
+    door2, seen2 = _stub_front_door(tmp_path, ticket)
+    code, out, err = _process(root, captured_dirs[0], "sources/decks", ticket["ticket"], env=door2, runner=_render_as_production_does)
     assert code == 0, err
     body = (first / "page.md").read_text(encoding="utf-8")
     assert body.startswith("# -rf.pdf\n") and "*--help / -x*" in body and "- **File:** `-rf.pdf` (pdf, 614 bytes)" in body
     assert "- **Author:** -Ada" in body
     assert "Quarterly roadmap for the fixture share" in body, "and the PDF's text is inlined, run as production runs it"
-    (call,) = [json.loads(line) for line in seen.read_text().splitlines()]
+    page_calls = [json.loads(line) for line in seen2.read_text().splitlines() if json.loads(line)["argv"][1:2] == ["page"]]
+    (call,) = page_calls
     assert call["argv"][:4] == ["--json", "page", "create", "title=-rf.pdf"], "a title opening with `-` is no option"
     assert "dest=sources/decks" in call["argv"] and call["stdin"] == body
-
-
