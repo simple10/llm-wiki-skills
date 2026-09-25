@@ -37,6 +37,7 @@
       },
       "transcribe": {
         "options": {
+          "diarize": false,
           "when": "if-no-captions"
         }
       }
