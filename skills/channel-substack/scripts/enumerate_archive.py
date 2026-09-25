@@ -10,7 +10,7 @@ scope: platform-general (no hardcoded domain/slugs)
 
 ONE ticket captures the whole archive. Nothing fans a listing out into child
 jobs any more, and nothing filters for this script after it: the worker's
-report lists every post it captured, and `pipeline apply` mints one process
+report lists every post it captured, and the host's `close` mints one process
 ticket per capture directory. So this script is where the job's own rules are
 applied, all of them, before a single post page is fetched.
 
@@ -47,7 +47,7 @@ Each survivor becomes a leaf: `{"item", "dir", "title", "published",
 non-alphanumeric runs to one hyphen, 60 chars) and the first 8 hex of
 sha1(item URL). That is the host's own shape for an addressed item
 (`pipeline/jobs.py::capture_dir_for`), which has no verb to ask — so it is
-composed here, and `apply` accepts exactly `_raw/<slug>/<one-component>`.
+composed here, and the host accepts exactly `_raw/<slug>/<one-component>`.
 
 **Resuming is `known[]`, not a date.** A slice is killed at thirty minutes and
 a killed slice leaves no report, so the plan is bounded (`--max-leaves`) and
@@ -70,22 +70,21 @@ own `capture_dir`, with no API call:
 That directory is STABLE across pulls, and the extractor writes into it too.
 So for such a plan the old `page.html`, `leaf.json`, `capture.json` and
 `results.json` are removed here, before anything is fetched: a refresh that
-found yesterday's `page.html` would never fetch, and `apply` would stamp the
-page `unchanged` on bytes nobody re-read. And on EVERY ticket the first thing
-this does is remove a stale `report.json` — `apply` does not check whose
-report it reads, so a respawn must not be read as a success it did not have.
+found yesterday's `page.html` would never fetch, and the host's `close`
+would land the page `unchanged` on bytes nobody re-read.
 
 `--capture-dir` is REQUIRED and is the ticket's `capture_dir` VERBATIM —
 wiki-relative, because `llm-wiki-ops run` starts a script at the WIKI ROOT,
-not in the directory the worker stands in. Inputs come from `ticket.json` in
-it. Every other flag is an override for a hand run; with no `ticket.json` give
+not in the directory the worker stands in. Inputs come from `tickets open`,
+given `--ticket`. Every other flag is an override for a hand run; with no `--ticket` give
 the domain or archive URL positionally, and `--slug`. A relative `--out` is
 resolved INSIDE the capture directory, never against the wiki root.
 
 Output: one JSON object on stdout, `{"v", "ticket", "slug", "newsletter",
 "capture_dir", "refresh", "leaves": [...], "summary": {...}}`, and — when
-there is a `ticket.json`, or `--out` names a file — the same object written as
-`leaves.json`, which `capture_posts.py` and `write_report.py` read. `summary`:
+there is a `--ticket`, or `--out` names a file — the same object written as
+`leaves.json`, which `capture_posts.py` reads (`--report` as well as the
+capture arm). `summary`:
 {"total_posts", "by_audience", "skipped_paywalled", "skipped_known",
 "skipped_excluded", "skipped_by_scope", "skipped_newer",
 "stopped_at_min_date", "planned", "on_disk", "truncated", "fetch_failed"}.
@@ -95,7 +94,11 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -105,10 +108,8 @@ from urllib.parse import urlsplit
 
 USER_AGENT = "Mozilla/5.0 (compatible; llm-wiki-harvest/1.0)"
 
-TICKET_NAME = "ticket.json"
 PLAN_NAME = "leaves.json"
 CAPTURE_NAME = "capture.json"
-REPORT_NAME = "report.json"
 # What one leaf's capture is made of. Cleared from the ticket's own directory
 # when the plan is that one leaf: see "STABLE across pulls" above.
 OWN_LEAF_FILES = ("page.html", "leaf.json", CAPTURE_NAME, "results.json")
@@ -212,16 +213,6 @@ def known_resources(ticket):
     return {e["resource"] for e in entries if isinstance(e, dict) and isinstance(e.get("resource"), str)}
 
 
-def load_ticket(directory):
-    """`ticket.json` beside the worker, or {} on a hand run. Never raises:
-    a ticket this cannot read is a hand run that must name its own inputs."""
-    try:
-        doc = json.loads((Path(directory) / TICKET_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return doc if isinstance(doc, dict) else {}
-
-
 def holds_capture(directory):
     """Is there a COMPLETE capture here — a record, and the body it names?"""
     try:
@@ -232,25 +223,67 @@ def holds_capture(directory):
     return isinstance(body, str) and bool(body) and (Path(directory) / body).is_file()
 
 
+# --------------------------------------------------------------- the front door
+
+
+OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "domain",
         nargs="?",
         default=None,
-        help="Substack domain (e.g. example.substack.com) or full archive URL. Default: ticket.json's `target`",
+        help="Substack domain (e.g. example.substack.com) or full archive URL. Default: the ticket's `target`",
     )
     ap.add_argument(
         "--capture-dir",
         required=True,
-        help="REQUIRED: ticket.json's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
-        "this script at the wiki root — and is where ticket.json is read and leaves.json is written",
+        help="REQUIRED: the ticket's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
+        "this script at the wiki root, and is where leaves.json is written",
     )
-    ap.add_argument("--slug", default=None, help="the job's slug, which names the leaf dirs. Default: ticket.json's `slug`")
+    ap.add_argument(
+        "--ticket", default=None, help="the ticket id (`tickets open`'s own); REQUIRED unless every other flag names a hand run's inputs",
+    )
+    ap.add_argument("--slug", default=None, help="the job's slug, which names the leaf dirs. Default: the ticket's `slug`")
     ap.add_argument(
         "--min-date",
         default=None,
-        help="ISO date floor (YYYY-MM-DD); stop paginating once posts fall below it. Default: ticket.json's `min_date`",
+        help="ISO date floor (YYYY-MM-DD); stop paginating once posts fall below it. Default: the ticket's `min_date`",
     )
     ap.add_argument(
         "--max-date",
@@ -262,20 +295,20 @@ def main():
         "--access",
         choices=["licensed", "free"],
         default=None,
-        help="licensed: every post reachable; free: only audience=everyone. Default: ticket.json's harvest.access, else free",
+        help="licensed: every post reachable; free: only audience=everyone. Default: the ticket's harvest.access, else free",
     )
     ap.add_argument(
         "--scope",
         choices=SCOPES,
         default=None,
-        help="Default: ticket.json's harvest.scope, else domain. On an archive target only `domain` keeps any post",
+        help="Default: the ticket's harvest.scope, else domain. On an archive target only `domain` keeps any post",
     )
     ap.add_argument(
         "--exclude-url",
         action="append",
         default=None,
         metavar="URL|PREFIX|GLOB",
-        help="repeatable; REPLACES ticket.json's harvest.exclude_urls when given",
+        help="repeatable; REPLACES the ticket's harvest.exclude_urls when given",
     )
     ap.add_argument("--limit", type=int, default=50, help="page size for the archive API (default 50)")
     ap.add_argument(
@@ -290,29 +323,26 @@ def main():
         "--out",
         default=None,
         help="write the plan here as well as stdout; a relative path is resolved INSIDE --capture-dir. "
-        "Default: <capture-dir>/leaves.json when a ticket.json is there",
+        "Default: <capture-dir>/leaves.json when a --ticket is given",
     )
     args = ap.parse_args()
 
     capture_dir = Path(args.capture_dir)
     if not capture_dir.is_dir():
         ap.error(
-            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give ticket.json's "
+            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give the ticket's "
             f"`capture_dir` verbatim: it is wiki-relative, and `llm-wiki-ops run` starts a script at the wiki root"
         )
     capture_dir = capture_dir.resolve()
-    # First, before anything can fail: a report left by an earlier spawn (or
-    # by the extractor, which writes its own here) is not THIS run's answer.
-    (capture_dir / REPORT_NAME).unlink(missing_ok=True)
-    ticket = load_ticket(capture_dir)
+    ticket = open_ticket(args.ticket, "harvest") if args.ticket else {}
     harvest = ticket.get("harvest") if isinstance(ticket.get("harvest"), dict) else {}
 
     target = args.domain or ticket.get("target") or ticket.get("item")
     if not target:
-        ap.error(f"no domain given and no {TICKET_NAME} with a `target` in {capture_dir}")
+        ap.error(f"no domain given and no --ticket with a `target` in {capture_dir}")
     slug = args.slug or ticket.get("slug")
     if not slug:
-        ap.error(f"no --slug given and no {TICKET_NAME} with a `slug` in {capture_dir}")
+        ap.error(f"no --slug given and no --ticket with a `slug` in {capture_dir}")
     min_date = args.min_date or ticket.get("min_date")
     access = args.access or harvest.get("access") or "free"
     scope = args.scope or harvest.get("scope") or "domain"
@@ -346,7 +376,7 @@ def main():
         # Exactly the page the ticket names — never the archive its job walks.
         single = next((ticket[key] for key in ("resource", "item") if isinstance(ticket.get(key), str) and ticket[key]), None)
         if single is None:
-            ap.error(f"{TICKET_NAME} is a refresh ticket and names no `resource`")
+            ap.error("the ticket is a refresh ticket and names no `resource`")
         known = set()
     elif "://" in target and _POST_PATH.match(urlsplit(target).path):
         single = target

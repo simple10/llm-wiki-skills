@@ -20,10 +20,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-substack ticket=<id> stage=harvest|process",
+  "usage": "/channel-substack ticket=<id>",
   "v": 2,
   "venue": "substack",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "watch": {
     "defaults": {
       "every": "1d",

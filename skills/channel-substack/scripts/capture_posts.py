@@ -59,8 +59,9 @@ per leaf: `{"item", "dir", "state", "why", "title"}`, `state` one of
 `captured`, `on_disk`, `paywalled`, `pending` (no `page.html`, and no
 `--fetch`), `unreached` (the deadline came first), `gone` (404/410 — a
 refresh ticket's answer), `error`.
-`write_report.py` turns the plan, these rows and what is actually on disk
-into `report.json`.
+`--report --ticket <id>` turns the plan, these rows and what is actually on
+disk into a `tickets update` post — see `build_update` and its call in
+`main`, the arm SKILL.md's step 3 runs, last.
 
 `--only <post url>` re-captures that one leaf — with `--fetch`, re-fetching it
 — even if it was already captured, and leaves every other row of
@@ -68,12 +69,18 @@ into `report.json`.
 """
 
 import argparse
+import hashlib
 import html as htmllib
 import json
+import os
 import random
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
@@ -82,11 +89,9 @@ from urllib.parse import urlsplit
 
 USER_AGENT = "Mozilla/5.0 (compatible; llm-wiki-harvest/1.0)"
 
-TICKET_NAME = "ticket.json"
 PLAN_NAME = "leaves.json"
 RESULTS_NAME = "results.json"
 CAPTURE_NAME = "capture.json"
-REPORT_NAME = "report.json"
 HTML_NAME = "page.html"
 REFUSED_NAME = "page.refused.html"
 LEAF_NAME = "leaf.json"
@@ -389,6 +394,276 @@ def holds_capture(directory):
     return isinstance(body, str) and bool(body) and (directory / body).is_file()
 
 
+# --------------------------------------------------------------- the front door
+
+
+OPS = "llm-wiki-ops"
+
+
+def front_door() -> list:
+    """The front door, as an argv prefix.
+
+    A hosted run exports `LLM_WIKI_OPS`, naming the CLI it was itself reached
+    by — a command LINE, not a path — and that is the one spelling a jail is
+    sure to carry. Otherwise the bare name on PATH. Empty when there is
+    neither."""
+    named = os.environ.get("LLM_WIKI_OPS")
+    if named:
+        return shlex.split(named)
+    found = shutil.which(OPS)
+    return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
+
+
+# ------------------------------------------------------ the report (post-capture)
+#
+# What `write_report.py` did, ported whole: `captured[]` is not what a worker
+# remembers doing, it is every planned leaf whose directory holds a COMPLETE
+# capture (`capture.json` naming a body that is there), read at the moment
+# this runs — so a leaf a previous, killed slice captured is counted too.
+
+
+TITLE_ILLEGAL = '/\\:*?"<>|'  # `page/note.py::ILLEGAL`
+QUALIFIER_MAX = 60
+WHYS = ("denied", "timeout", "auth", "error")
+
+
+def captured_record(directory):
+    """The capture record here, if the capture is COMPLETE; else None."""
+    record = _load(Path(directory) / CAPTURE_NAME)
+    body = record.get("body") if record else None
+    if not isinstance(body, str) or not body or not (Path(directory) / body).is_file():
+        return None
+    return record
+
+
+def page_key(title: str) -> str:
+    """What two titles share when they make one page file: the host strips, a
+    case-insensitive filesystem folds case, and APFS folds Unicode form too —
+    `é` composed and `e` + combining accent are one name there."""
+    return unicodedata.normalize("NFC", title.strip()).casefold()
+
+
+def qualifier(text) -> str:
+    """Venue text made safe inside a title: one line, capped, and none of the
+    characters the host refuses a title for."""
+    if not isinstance(text, str):
+        return ""
+    safe = "".join("-" if (char in TITLE_ILLEGAL or ord(char) < 32) else char for char in text)
+    return " ".join(safe.split())[:QUALIFIER_MAX].strip(" -.")
+
+
+def unique_title(title: str, qualifiers, taken: dict) -> str:
+    """`title`, untouched, when no leaf before this one makes its filename;
+    else `title (<qualifier>)` with the first qualifier that tells it apart.
+
+    `taken` maps a `page_key` to the qualifiers of the leaf holding it, and the
+    answer is claimed in it. A qualifier the holder shares distinguishes
+    nothing and is passed over; callers end the list with the leaf's hash8,
+    which no other leaf has, and a counter closes it, so the answer is always
+    free. A title this already qualified is free on the next pass and comes
+    back as it is — re-running never renames a leaf a second time.
+    """
+    given = list(dict.fromkeys(q for q in map(qualifier, qualifiers) if q))
+    chosen = title
+    holder = taken.get(page_key(title))
+    if holder is not None:
+        shared = {page_key(q) for q in holder}
+        options = [q for q in given if page_key(q) not in shared]
+        base = title.strip()
+        chosen = next((f"{base} ({q})" for q in options if page_key(f"{base} ({q})") not in taken), None)
+        stem, n = (f"{base} ({options[-1]})" if options else base), 2
+        while chosen is None:
+            if page_key(f"{stem} ({n})") not in taken:
+                chosen = f"{stem} ({n})"
+            n += 1
+    taken[page_key(chosen)] = given
+    return chosen
+
+
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def leaf_qualifiers(leaf):
+    """What tells this post from a namesake: the day it was published — the one
+    thing a newsletter re-using a title always changes — then its URL's hash."""
+    published = leaf.get("published")
+    day = _DAY.match(published) if isinstance(published, str) else None
+    return [day.group(0) if day else None, hashlib.sha1(leaf["item"].encode("utf-8")).hexdigest()[:8]]
+
+
+def settle_titles(leaves, leaf_root):
+    """One page per post: in plan order the first leaf to make a filename keeps
+    its title, and a later one is retitled in its own `capture.json`.
+
+    Here and not earlier, because a post's final title is only settled once it
+    is captured (the plan's, else `og:title`, else a hand `--only --title`),
+    one `--only` pass sees one leaf, and this runs last, over all of them,
+    before anything is extracted. A planned post that did not land still holds
+    the title the archive gave it, so what landed is titled the same whether
+    or not its namesake did.
+    """
+    taken = {}
+    for leaf in leaves:
+        directory = Path(leaf_root) / leaf["dir"].rsplit("/", 1)[-1]
+        record = captured_record(directory)
+        if record is None:
+            if isinstance(leaf.get("title"), str) and leaf["title"].strip():
+                unique_title(leaf["title"], leaf_qualifiers(leaf), taken)
+            continue
+        title = record.get("title") if isinstance(record.get("title"), str) and record["title"].strip() else None
+        held = title or Path(record["body"]).stem
+        final = unique_title(held, leaf_qualifiers(leaf), taken)
+        if final != held:
+            record["title"] = final
+            (directory / CAPTURE_NAME).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def build_update(plan, rows, leaf_root, *, extra_missing=()):
+    """The `tickets update` arguments, as a dict of `post_update` kwargs.
+    Pure but for reading the leaf directories — and for settling the titles in
+    them, which is what makes `captured[]` true."""
+    leaves = [leaf for leaf in plan.get("leaves") or [] if isinstance(leaf, dict) and leaf.get("item") and leaf.get("dir")]
+    settle_titles(leaves, leaf_root)
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    by_item = {row.get("item"): row for row in rows if isinstance(row, dict)}
+
+    captured, missing, not_landed = [], [], 0
+    for leaf in leaves:
+        record = captured_record(Path(leaf_root) / leaf["dir"].rsplit("/", 1)[-1])
+        if record is not None:
+            title = record.get("title")
+            captured.append({"item": leaf["item"], "dir": leaf["dir"], "title": title if isinstance(title, str) else None})
+            continue
+        not_landed += 1
+        row = by_item.get(leaf["item"]) or {}
+        if row.get("state") in ("paywalled", "error", "gone"):
+            why = row.get("why") if row.get("why") in WHYS else "error"
+            missing.append({"host": urlsplit(leaf["item"]).netloc, "url": leaf["item"], "why": why})
+    for url, why in extra_missing:
+        if not any(entry["url"] == url for entry in missing):
+            missing.append({"host": urlsplit(url).netloc, "url": url, "why": why})
+
+    why_partial = []
+    paywalled = sum(1 for leaf in leaves if (by_item.get(leaf["item"]) or {}).get("state") == "paywalled")
+    unreached = sum(1 for leaf in leaves if (by_item.get(leaf["item"]) or {}).get("state") == "unreached")
+    if not_landed:
+        why_partial.append(f"{len(captured)} of {len(leaves)} planned posts captured")
+    if paywalled:
+        why_partial.append(f"{paywalled} paywalled")
+    if unreached:
+        why_partial.append(f"{unreached} not reached before the deadline")
+    halted = sorted({str(row["detail"]).split(" ", 1)[0] for row in by_item.values()
+                     if str(row.get("detail") or "").startswith("auth_expired:")})
+    if halted:
+        why_partial.append(f"{', '.join(halted)} — fetching stopped there")
+    if summary.get("truncated"):
+        why_partial.append("the archive goes on past this plan's cap; the job's next pull continues through known[]")
+    if summary.get("fetch_failed"):
+        why_partial.append(f"the archive walk stopped early ({summary['fetch_failed']})")
+
+    refresh = plan.get("refresh")
+    if captured:
+        # P-5: `partial` means a re-run of THIS stage in THIS directory gets
+        # more — the deadline or an archive-page cap, both re-runnable. A
+        # paywall or a fetch error is a lasting fact about that one post:
+        # `ok`, with the shortfall named in `reason` and the post in `missing[]`.
+        status = "partial" if (unreached or summary.get("truncated")) else "ok"
+        reason = "; ".join(why_partial) if why_partial else None
+    elif refresh and leaves and all((by_item.get(leaf["item"]) or {}).get("state") == "gone" for leaf in leaves):
+        # `gone` is a refresh ticket's alone — the source answered 404 or 410.
+        status = "gone"
+        reason = "; ".join(str((by_item[leaf["item"]]).get("detail") or "404/410") for leaf in leaves)
+    elif leaves:
+        status = "failed"
+        if missing and all(entry["why"] == "auth" for entry in missing):
+            reason = f"auth_expired:{plan.get('newsletter')}"
+        else:
+            reason = "; ".join(why_partial) or "nothing captured"
+    elif summary.get("fetch_failed"):
+        status, reason = "failed", f"the archive would not load ({summary['fetch_failed']})"
+    elif summary.get("skipped_by_scope") and not summary.get("skipped_known"):
+        status = "failed"
+        reason = (
+            f"harvest.scope kept none of {summary['skipped_by_scope']} posts — an archive job needs "
+            f"harvest.scope=domain, on the host its posts are served from"
+        )
+    else:
+        # Nothing was owed — and WHY is the truth, not always `known:`.
+        status = "ok"
+        held, paid, dropped = (summary.get(key) or 0 for key in ("skipped_known", "skipped_paywalled", "skipped_excluded"))
+        where = plan.get("newsletter")
+        if held:
+            reason = f"known: nothing new on {where} ({held} already held" + (f", {paid} paid-tier not fetched)" if paid else ")")
+        elif paid:
+            reason = (
+                f"paywalled: every post in range on {where} is paid-tier ({paid}) and harvest.access is "
+                f"{plan.get('access') or 'free'} — nothing to capture"
+            )
+        elif dropped:
+            reason = f"excluded: harvest.exclude_urls dropped every post in range on {where} ({dropped})"
+        else:
+            reason = f"nothing in range on {where}"
+
+    return {"status": status, "reason": reason, "captured": captured, "missing": missing}
+
+
 def _load(path):
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -421,7 +696,7 @@ def main(argv=None, *, sleep=time.sleep, clock=time.monotonic, fetch=None):
     ap.add_argument(
         "--capture-dir",
         required=True,
-        help="REQUIRED: ticket.json's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
+        help="REQUIRED: the ticket's `capture_dir`, verbatim. It is WIKI-RELATIVE — `llm-wiki-ops run` starts "
         "this script at the wiki root — and holds leaves.json",
     )
     ap.add_argument(
@@ -442,21 +717,71 @@ def main(argv=None, *, sleep=time.sleep, clock=time.monotonic, fetch=None):
         help="stop starting new leaves after this long (default 20): a slice is killed at 30 with no report behind it",
     )
     ap.add_argument("--only", default=None, metavar="URL", help="(re)capture this one leaf, even if it is already captured")
+    ap.add_argument(
+        "--report", action="store_true",
+        help="post progress instead of capturing: read the plan, the leaf directories and results.json on disk, "
+        "and post `tickets update` — the arm SKILL.md's step 3 runs, last. With --written-from, it is the "
+        "PROCESS ticket's report instead: the pages a build wrote, and no capture",
+    )
+    ap.add_argument("--ticket", default=None, help="REQUIRED with --report: the ticket id (`tickets open`'s own)")
+    ap.add_argument(
+        "--missing", action="append", default=[], metavar="URL=WHY",
+        help=f"--report, harvest only: a url you could not get yourself (repeatable); WHY is one of {', '.join(WHYS)}",
+    )
+    ap.add_argument(
+        "--written-from", default=None, metavar="FILE",
+        help="--report, process only: a JSON list of wiki-relative pages, relative to --capture-dir — the PROCESS "
+        "ticket's report: `written_from=` is posted and no capture is claimed",
+    )
+    ap.add_argument(
+        "--process", action="store_true",
+        help="--report, with no --written-from: a capture that earned no page — post --outcome/--reason instead",
+    )
+    ap.add_argument("--outcome", choices=("ok", "failed"), default="ok", help="--report --process only")
+    ap.add_argument("--reason", default=None, help="--report --process only, paired with --outcome")
     args = ap.parse_args(argv)
 
     if not Path(args.capture_dir).is_dir():
         ap.error(
-            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give ticket.json's "
+            f"--capture-dir {args.capture_dir!r} is no directory under {Path.cwd()} — give the ticket's "
             f"`capture_dir` verbatim: it is wiki-relative, and `llm-wiki-ops run` starts a script at the wiki root"
         )
     capture_dir = Path(args.capture_dir).resolve()
+
+    if args.report and args.written_from:
+        if not args.ticket:
+            ap.error("--report needs --ticket")
+        return post_update(args.ticket, "process", "ok", written_from=args.written_from)
+
+    if args.report and args.process:
+        if not args.ticket:
+            ap.error("--report needs --ticket")
+        return post_update(args.ticket, "process", args.outcome, reason=args.reason)
+
+    if args.report:
+        if not args.ticket:
+            ap.error("--report needs --ticket")
+        extra = []
+        for spec in args.missing:
+            url, _, why = spec.rpartition("=")
+            if not url or why not in WHYS:
+                ap.error(f"--missing {spec!r}: want URL=WHY, WHY one of {', '.join(WHYS)}")
+            extra.append((url, why))
+        plan_path = capture_dir / (args.plan or PLAN_NAME)
+        plan = _load(plan_path) or {"leaves": [], "summary": {"fetch_failed": f"no {PLAN_NAME}"}}
+        rows = (_load(capture_dir / RESULTS_NAME) or {}).get("rows") or []
+        update = build_update(plan, rows, capture_dir.parent, extra_missing=extra)
+        return post_update(
+            args.ticket, "harvest", update["status"], reason=update["reason"],
+            captured=[entry["dir"] for entry in update["captured"]],
+            missing=[(m["host"], m["url"], m["why"]) for m in update["missing"]],
+        )
+
     plan_path = capture_dir / (args.plan or PLAN_NAME)  # an absolute --plan stays what it is
     plan = _load(plan_path)
     if plan is None or not isinstance(plan.get("leaves"), list):
         print(f"no readable plan at {plan_path} — run enumerate_archive.py --capture-dir {args.capture_dir} first", file=sys.stderr)
         return 2
-    # Whatever is captured from here on, a report already standing is not its report.
-    (capture_dir / REPORT_NAME).unlink(missing_ok=True)
 
     results_path = capture_dir / RESULTS_NAME
     previous = _load(results_path) or {}

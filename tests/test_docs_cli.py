@@ -190,10 +190,12 @@ def _wrong(cli, job_record, text: str, unit: str | None) -> list:
 
 
 # Verbs the docs already name ahead of plugins PR 2 (#2486) landing them —
-# `run`/`close` under `pipeline tickets`. A doc's ONLY wrongness being one of
-# these is that PR's, not this one's; anything else in the same doc still
-# fails normally.
-_PR2_PENDING = ("`pipeline tickets` has no `run`", "`pipeline tickets` has no `close`")
+# `run`/`close`/`retry`/`drop`/`hold`/`wait` under `pipeline tickets`, and
+# `pass` under `pipeline`. A doc's ONLY wrongness being one of these is that
+# PR's, not this one's; anything else in the same doc still fails normally.
+_PR2_PENDING = tuple(
+    f"`pipeline tickets` has no `{verb}`" for verb in ("run", "close", "retry", "drop", "hold", "wait")
+) + ("`pipeline` has no `pass`",)
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(ROOT)))
@@ -205,7 +207,7 @@ def test_every_command_the_doc_names_is_one_the_cli_has(cli, job_record, doc):
     other = [line for line in wrong if not any(p in line for p in _PR2_PENDING)]
     assert not other, f"{doc.relative_to(ROOT)}:\n  " + "\n  ".join(other)
     if wrong:
-        pytest.skip(f"{len(wrong)} command(s) are plugins PR 2 (#2486): `pipeline tickets run`/`close`")
+        pytest.skip(f"{len(wrong)} command(s) are plugins PR 2 (#2486): {', '.join(sorted(set(wrong)))}")
 
 
 @pytest.mark.parametrize(
