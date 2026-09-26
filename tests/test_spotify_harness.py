@@ -14,7 +14,7 @@ import pytest
 
 from pathlib import Path
 
-from harness import ROOT, declared_job, jsonc, landed, live_ticket, rooted, run, snippet, unit_tests
+from harness import ROOT, advanced, declared_job, jsonc, landed, live_ticket, rooted, run, snippet, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-spotify", "test_spotify"))
@@ -63,6 +63,20 @@ def processed(spotify, monkeypatch, ops, env, wiki: Path, cap: Path, ticket_id: 
     return json.loads(capsys.readouterr().out)
 
 
+def harvest_reported(ops, env, wiki: Path, cap: Path, ticket_id: str) -> None:
+    """`report`, no `--written-from`: the harvest stage's own `tickets
+    update` — found needing this running the in-process `cmd_capture` for
+    real: it posts none itself, so a ticket reused for `cmd_process`
+    straight after (as this file's tests all did) was still `harvest`,
+    never `process`, and `open_ticket` refused it. `close` (below, via
+    `advanced()`) needs this posted first."""
+    r = run(
+        ops, rooted(env, wiki), "run", "ops/skills/channel-spotify/scripts/spotify.py", "report",
+        "--capture-dir", str(cap.relative_to(wiki)), "--ticket", ticket_id, cwd=wiki,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def reported(ops, env, wiki: Path, cap: Path, ticket_id: str, written: list) -> None:
     """`report --written-from`, the REAL CLI: the CLI's `tickets update`
     reads the named file INSIDE the capture directory, never wiki-relative."""
@@ -81,10 +95,12 @@ def test_a_spotify_capture_becomes_a_staged_page(ops, env, wiki, spotify, monkey
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id)
     assert not (cap / "page.md").exists() and read(cap, "capture.json")["body"] == "meta.json"
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    out = processed(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, capsys)
-    reported(ops, env, wiki, cap, ticket_id, out["written"])
-    closed = landed(ops, env, wiki, ticket_id)
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
+    reported(ops, env, wiki, process_cap, process_id, out["written"])
+    closed = landed(ops, env, wiki, process_id)
     assert closed.get("status") in ("ok", None), closed
 
     page = wiki / out["written"][0]
@@ -114,14 +130,17 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, spot
     ent = {**entity("episode"), "id": "ep0000000000000000009", "url": url, "name": name, "description": HOSTILE_DESCRIPTION}
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, ent)
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    out = processed(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, capsys)
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
     page = wiki / out["written"][0]
     assert page.name == "Lesson 3 - ’Pricing’ A-B (live) - part1-2.md"
     text = page.read_text(encoding="utf-8")
     assert f"\n# {name}\n" in text  # the venue's own name, as the body's H1
     assert [line.strip() for line in text.splitlines()].count("---") == 2 and fences(text) == []
     assert "| # | Item | Duration | Released | Audio | Spotify |" in text.splitlines()
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for every later case in this session
 
 
 def test_a_hundred_cjk_characters_still_land_as_a_page(ops, env, wiki, spotify, monkeypatch, capsys):
@@ -135,13 +154,16 @@ def test_a_hundred_cjk_characters_still_land_as_a_page(ops, env, wiki, spotify, 
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, ent)
     assert read(cap, "capture.json")["title"] == "語" * 66 + "…"
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    out = processed(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, capsys)
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
     page = wiki / out["written"][0]
     assert page.name == "語" * 66 + "….md"
     text = page.read_text(encoding="utf-8")
     assert f"\n# {name}\n" in text
     assert f"source_title: {name}" in text
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for every later case in this session
 
 
 # ------------------------------------------- the harvest sandbox covers what a capture fetches

@@ -84,3 +84,4 @@ def test_an_explicit_reference_on_the_job_reaches_the_plan(ops, env, wiki):
     plan = json.loads((cap / "plan.json").read_text(encoding="utf-8"))
     assert [leaf["item"] for leaf in plan["leaves"]] == [deck["view_url"]]
     assert plan["unplanned"] == [{"item": video["view_url"], "name": "Keynote.mov", "why": "reference"}]
+    landed(ops, env, wiki, ticket_id)  # frees the harvest cap slot for every later case in this session

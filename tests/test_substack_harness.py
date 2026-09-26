@@ -15,7 +15,7 @@ import subprocess
 
 from pathlib import Path
 
-from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
+from harness import declared_job, landed, live_ticket, outbound_ip, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-substack", "test_substack"))
@@ -86,11 +86,19 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     if shutil.which("uv") is None:
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
-    job = declared_job(ops, env, wiki, UNIT, ARCHIVE)
+    # `spawn=self` refuses a ticket whose target host does not resolve to a
+    # public address (plugins main, post-#2487); `ARCHIVE`'s own
+    # (`example-newsletter.invalid`) never does. The job's OWN target (for
+    # the live dispatch) is this box's own outbound address instead; `_plan`
+    # below is a SEPARATE in-process call (`ticket=None`, no `--ticket`) that
+    # never reads the live ticket back, so its own `domain` argument keeps
+    # naming `ARCHIVE` — the host the fixture archive's posts are actually
+    # canonicalized under, which is what `in_scope` matches against.
+    job = declared_job(ops, env, wiki, UNIT, f"https://{outbound_ip()}/archive")
     assert job.record["harvest"]["scope"] == "domain"  # the manifest's default, which the unit applies itself
     ticket_id, cap = live_ticket(ops, env, wiki, job)
 
-    plan = _plan(monkeypatch, capsys, cap)
+    plan = _plan(monkeypatch, capsys, cap, None, ARCHIVE, "--slug", job.slug, "--out", "leaves.json")
     assert set(_slugs(plan)) <= {"the-newest-one", "a-podcast-episode", "sponsored-roundup", "already-held", "ancient-history"}
 
     # What the worker's fetch leaves: each post's rendered DOM in ITS leaf dir.
@@ -134,8 +142,15 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
     if shutil.which("uv") is None:
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
-    host = "https://second-newsletter.invalid"
-    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-names")
+    # `spawn=self` refuses a ticket whose target host does not resolve to a
+    # public address (plugins main, post-#2487); nothing here ever fetches
+    # `host` for real — `capture_posts.py` reads the pre-seeded `leaves.json`
+    # and `page.html` fixtures below directly — so it only needs to be
+    # RESOLVABLE, not reachable, and this box's own outbound address stands
+    # in for the old `.invalid` one, consistently, everywhere it was named.
+    bare_host = outbound_ip()
+    host = f"https://{bare_host}"
+    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-names", slug="port-channel-substack-names")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     leaves = []
     for name, published, fixture in (("open-thread-2", "2026-09-10", "the-newest-one"), ("open-thread", "2026-08-13", "a-podcast-episode")):
@@ -144,7 +159,7 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
         (wiki / rel).mkdir(parents=True, exist_ok=True)
         shutil.copy(FIX / f"post-{fixture}.html", wiki / rel / "page.html")
         leaves.append({"item": item, "dir": rel, "title": "Open Thread", "published": published, "audience": "everyone", "on_disk": False})
-    _write_leaves(cap, wiki, "second-newsletter.invalid", job.slug, leaves)
+    _write_leaves(cap, wiki, bare_host, job.slug, leaves)
 
     rel = str(cap.relative_to(wiki))
     done = run(ops, env, "run", "ops/skills/channel-substack/scripts/capture_posts.py", "--capture-dir", rel, cwd=wiki)
@@ -170,8 +185,10 @@ def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, 
     if shutil.which("uv") is None:
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
-    host = "https://third-newsletter.invalid"
-    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-titles")
+    # See test_two_posts_with_one_title_land_as_two_pages: resolvable, not reachable.
+    bare_host = outbound_ip()
+    host = f"https://{bare_host}"
+    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-titles", slug="port-channel-substack-titles")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     leaves = []
     # The second differs from the first ONLY in characters the host refuses:
@@ -183,13 +200,15 @@ def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, 
         (wiki / rel / "page.html").write_text(_hostile_page(), encoding="utf-8")
         leaves.append({"item": item, "dir": rel, "title": title, "published": published, "audience": "everyone", "on_disk": False})
     rel_cap = str(cap.relative_to(wiki))
-    _write_leaves(cap, wiki, "third-newsletter.invalid", job.slug, leaves)
+    _write_leaves(cap, wiki, bare_host, job.slug, leaves)
 
     done = run(ops, env, "run", "ops/skills/channel-substack/scripts/capture_posts.py", "--capture-dir", rel_cap, cwd=wiki)
     assert done.returncode == 0, done.stdout + done.stderr
     wrote = run(ops, env, "run", "ops/skills/channel-substack/scripts/capture_posts.py",
                 "--capture-dir", rel_cap, "--report", "--ticket", ticket_id, cwd=wiki)
     assert wrote.returncode == 0, wrote.stdout + wrote.stderr
+    closed = landed(ops, env, wiki, ticket_id)  # frees the harvest cap slot for every later case in this session
+    assert closed.get("status") in ("ok", None), closed
 
     record0 = json.loads((wiki / leaves[0]["dir"] / "capture.json").read_text(encoding="utf-8"))
     assert record0["title"] == "Lesson 3 - What is ’A-B’ testing # Forged heading ---"
@@ -217,8 +236,10 @@ def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki
     if shutil.which("uv") is None:
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
-    host = "https://fourth-newsletter.invalid"
-    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive", slug="port-channel-substack-cjk")
+    # See test_two_posts_with_one_title_land_as_two_pages: resolvable, not reachable.
+    bare_host = outbound_ip()
+    host = f"https://{bare_host}"
+    job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-cjk", slug="port-channel-substack-cjk")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     leaves = []
     for name, published in (("cjk-2", "2026-09-10"), ("cjk-1", "2026-09-03")):
@@ -228,12 +249,14 @@ def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki
         shutil.copy(FIX / "post-the-newest-one.html", wiki / rel / "page.html")
         leaves.append({"item": item, "dir": rel, "title": "語" * 100, "published": published, "audience": "everyone", "on_disk": False})
     rel_cap = str(cap.relative_to(wiki))
-    _write_leaves(cap, wiki, "fourth-newsletter.invalid", job.slug, leaves)
+    _write_leaves(cap, wiki, bare_host, job.slug, leaves)
     done = run(ops, env, "run", "ops/skills/channel-substack/scripts/capture_posts.py", "--capture-dir", rel_cap, cwd=wiki)
     assert done.returncode == 0, done.stdout + done.stderr
     wrote = run(ops, env, "run", "ops/skills/channel-substack/scripts/capture_posts.py",
                 "--capture-dir", rel_cap, "--report", "--ticket", ticket_id, cwd=wiki)
     assert wrote.returncode == 0, wrote.stdout + wrote.stderr
+    closed = landed(ops, env, wiki, ticket_id)  # frees the harvest cap slot for every later case in this session
+    assert closed.get("status") in ("ok", None), closed
 
     record0 = json.loads((wiki / leaves[0]["dir"] / "capture.json").read_text(encoding="utf-8"))
     record1 = json.loads((wiki / leaves[1]["dir"] / "capture.json").read_text(encoding="utf-8"))
