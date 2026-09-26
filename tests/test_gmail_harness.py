@@ -212,3 +212,4 @@ def test_the_items_are_still_a_ledger_the_hosts_own_extractor_can_make(ops, env,
     body = _body(page.read_text(encoding="utf-8"))
     assert _bullets(body) == ["- paid - gmail:forged ∗∗now∗∗ — gmail:m11"]
     assert "discarded: 0 (junk rules)" in body
+    landed(ops, env, wiki, ticket_id)  # frees the harvest cap slot for every later case in this session

@@ -22,6 +22,7 @@ def test_a_live_ticket_is_minted_and_moved_to_active_by_the_cli(ops, env, wiki):
     shown = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "show", ticket_id).data["tickets"][0]
     assert shown["state"] == "active" and shown["worker"] == "harness-session"
     assert capture_dir.relative_to(wiki)
+    landed(ops, env, wiki, ticket_id)  # frees the harvest cap slot for every later case in this session
 
 
 def test_the_machine_cli_is_found_beside_a_path_spelled_ops():
