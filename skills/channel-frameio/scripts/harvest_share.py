@@ -428,9 +428,16 @@ def update_of(ticket: dict, plan: dict, states: dict) -> dict:
             status, reason = "failed", "the share enumerated no leaves"
     elif len(captured) == planned:
         status, reason = "ok", None
-    elif captured:
+    elif captured and pending:
+        # P-5: a re-run of this spawn gets more — a leaf is still un-attempted.
         status = "partial"
         reason = f"{len(captured)} of {planned} leaves captured; {len(missing)} failed, {pending} not reached"
+    elif captured:
+        # Every leaf was attempted: what did not land is a LASTING shortfall,
+        # named in `missing[]` and the reason, never `partial` — a re-run of
+        # this spawn gets nothing more (P-5).
+        status = "ok"
+        reason = f"{len(captured)} of {planned} leaves captured; {len(missing)} failed"
     else:
         status = "failed"
         reason = f"0 of {planned} leaves captured; {len(missing)} failed, {pending} not reached"

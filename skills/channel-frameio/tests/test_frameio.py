@@ -377,7 +377,9 @@ def test_one_ticket_captures_every_leaf_into_its_own_dir_and_posts_last(monkeypa
 
     assert code == 0 and summary["stop"] == "done"
     assert (summary["planned"], summary["captured"], summary["failed"], summary["skipped"]["known"]) == (2, 1, 1, 1)
-    assert report["outcome"] == "partial" and report["ticket"] == "0123456789ab"
+    # P-5: both planned leaves were ATTEMPTED (1 captured + 1 failed == planned),
+    # so nothing is left un-attempted — a LASTING shortfall is `ok`, not `partial`.
+    assert report["outcome"] == "ok" and report["ticket"] == "0123456789ab"
     (landed,) = report["captured"]
     assert landed["item"] == leaves[0]["view_url"] and (tmp_path / landed["dir"] / "capture.json").is_file()
     assert Path(landed["dir"]).parent == Path("_raw/talks") and landed["dir"] != "_raw/talks/share-0000--deadbeef"
@@ -416,7 +418,9 @@ def test_the_next_pull_of_the_same_ticket_starts_leaves_and_retries_what_the_las
     calls = []
     failing = ("00000002-aaaa-bbbb-cccc-dddddddddddd", "00000003-aaaa-bbbb-cccc-dddddddddddd")
     _code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
-    assert len(calls) == 3 and report["outcome"] == "partial" and len(report["missing"]) == 2
+    # P-5: every leaf was ATTEMPTED (1 captured + 2 failed == planned), so
+    # nothing is un-attempted — a LASTING shortfall is `ok`, not `partial`.
+    assert len(calls) == 3 and report["outcome"] == "ok" and len(report["missing"]) == 2
     _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
     assert len(calls) == 3, "a leaf that failed under this spawn is not hammered without --retry-failed"
 
@@ -438,7 +442,10 @@ def test_a_genuine_respawn_retries_a_failed_leaf_with_no_retry_failed_flag(monke
     calls = []
     failing = ("00000002-aaaa-bbbb-cccc-dddddddddddd",)
     _code, _summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, fail=failing, tmp=tmp_path)
-    assert len(calls) == 2 and report["outcome"] == "partial" and len(report["missing"]) == 1
+    # P-5: both leaves were ATTEMPTED (1 captured + 1 failed == planned), so
+    # this is a LASTING shortfall, `ok`, not `partial` — the respawn below
+    # is what gets the failed leaf a fresh attempt, not a re-run's own retry.
+    assert len(calls) == 2 and report["outcome"] == "ok" and len(report["missing"]) == 1
 
     ticket = {**ticket, "worker": "spawn-2"}  # a fresh dispatch: a new slice, the same ticket id
     code, summary, report = _drive(monkeypatch, capsys, cap, ticket, calls, tmp=tmp_path)
@@ -475,7 +482,9 @@ def test_every_child_gets_what_is_left_of_the_slice_and_a_killed_one_is_a_timeou
     assert mod.main() == 0
     capsys.readouterr()
     report = _last_update(updates, tmp_path)
-    assert report["outcome"] == "partial" and [m["why"] for m in report["missing"]] == ["timeout"]
+    # P-5: both leaves were ATTEMPTED (1 captured + 1 timed out == planned),
+    # so the timeout is a LASTING shortfall, `ok`, not `partial`.
+    assert report["outcome"] == "ok" and [m["why"] for m in report["missing"]] == ["timeout"]
     for cmd, timeout in seen:
         assert 0 < timeout <= 740
         assert 0 < float(_flag(cmd, "--deadline-seconds")) < timeout, "the child's own children expire first"

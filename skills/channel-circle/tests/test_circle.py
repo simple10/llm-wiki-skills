@@ -962,7 +962,9 @@ def test_missing_is_named_by_leaf_number_or_by_host_never_by_a_typed_url(wiki_ro
               cwd=root, tmp_path=door2, ticket_dict=t)
     call = _updates(door2)[-1]
     kv = _kv(call)
-    assert done.returncode == 0 and kv["status"] == "partial"
+    # P-5: lesson 2 is accounted for (named by --missing-leaf), so nothing
+    # is left un-attempted — a LASTING shortfall is `ok`, not `partial`.
+    assert done.returncode == 0 and kv["status"] == "ok"
     missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
     assert missing == [f"community.example.invalid,{L2},error", "fast.wistia.com,https://fast.wistia.com/,denied"]
     assert "not reached" not in kv["reason"]  # lesson 2 is accounted for: it is missing, not unreached

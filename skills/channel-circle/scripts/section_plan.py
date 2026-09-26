@@ -812,14 +812,19 @@ def build_update(
         # it is a LASTING shortfall, named in the reason, never `partial`: a
         # re-run gets nothing more.
         status, derived = "ok", (f"{len(missing)} url(s) could not be reached" if missing else None)
-    elif captured:
+    elif captured and unreached:
+        # P-5: a lesson remains un-attempted — a re-run of this spawn gets more.
         status = "partial"
-        derived = f"{len(captured)} of {planned} lessons captured"
-        if unreached:
-            late = "the slice's deadline passed; " if past_deadline(plan, now) else ""
-            derived += f"; {len(unreached)} not reached — {late}" + RESUME.format(
-                ticket=ticket.get("ticket") or plan.get("ticket") or "<ticket-id>", slug=plan.get("slug") or "<slug>"
-            )
+        late = "the slice's deadline passed; " if past_deadline(plan, now) else ""
+        derived = f"{len(captured)} of {planned} lessons captured; {len(unreached)} not reached — {late}" + RESUME.format(
+            ticket=ticket.get("ticket") or plan.get("ticket") or "<ticket-id>", slug=plan.get("slug") or "<slug>"
+        )
+    elif captured:
+        # Every lesson was attempted: what did not land is a LASTING
+        # shortfall, named in `missing[]` and the reason, never `partial` —
+        # a re-run of this spawn gets nothing more (P-5).
+        status = "ok"
+        derived = f"{len(captured)} of {planned} lessons captured" + (f"; {len(missing)} url(s) could not be reached" if missing else "")
     elif plan and not planned and any(d.get("why") == "known" for d in plan.get("dropped") or []):
         # P-4: nothing new is `ok`, never a worker's `skipped`.
         status, derived = "ok", "known: every lesson in scope is already held"

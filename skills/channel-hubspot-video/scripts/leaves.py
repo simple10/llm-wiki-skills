@@ -629,10 +629,17 @@ def build_update(*, planned: list[dict], captured: list[dict], skipped: list[dic
         status = "gone"
     elif pages and len(got) == len(pages) and not over:
         status = "ok"
-    elif got:
+    elif got and (over or len(pages) - len(got) > len(missing)):
+        # P-5: a page remains un-attempted (over_limit, or neither captured
+        # nor named in `missing`) — a re-run of this stage gets more.
         status = "partial"
         total = len(pages) + over
         reasons.append(f"{len(got)} of {total} pages captured, {total - len(got)} left for another run; {how_to_continue(job)}")
+    elif got:
+        # Every page was attempted: what did not land is a LASTING shortfall,
+        # named in `missing[]` and the reason below, never `partial` — a
+        # re-run of this stage gets nothing more (P-5).
+        status = "ok"
     elif pages:
         status = "failed"
         reasons = reasons or [f"none of {len(pages)} pages captured"]
