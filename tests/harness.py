@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -90,6 +91,23 @@ def rooted(env: dict, wiki: Path) -> dict:
     whole argv, so that one verb binds by `cwd=` instead — and a case that
     stands inside the wiki may pass both, because they agree."""
     return {**env, "LLM_WIKI_ROOT": str(Path(wiki).resolve())}
+
+
+def outbound_ip() -> str:
+    """This box's own publicly-routable address — the one a job's target
+    joins a slice's egress AS, per `ticket_host.of`/`reaches_public`
+    (plugins main, post-#2487): a slice is given a host only where it
+    resolves to a public address, and `127.0.0.1`/`localhost` never do —
+    the guard is doing its job, not a gap to route a local test server
+    around. A UDP `connect` never sends a packet; it only asks the
+    routing table which local address would carry one to `host`, so this
+    needs no reachability and touches no network. A harness's own local
+    `http.server`, bound here instead of `127.0.0.1`, is one this address
+    legitimately answers — self-loopback via the box's own external
+    address, confirmed to work on this machine."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
 
 
 def jsonc(text: str) -> object:

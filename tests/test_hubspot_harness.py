@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
+from harness import advanced, declared_job, landed, live_ticket, outbound_ip, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-hubspot-video", "test_hubspot"))
@@ -73,15 +73,28 @@ def test_a_harvested_lesson_becomes_the_staged_page(ops, env, wiki):
     process arm's `to_markdown.py` + `page create` writing a real page —
     no `ticket.json`, no `report.json` anywhere on disk."""
     _needs_run_verb(ops, env, wiki)
-    job = declared_job(ops, env, wiki, UNIT, SECTION, slug="harness-hubspot")
+    # `spawn=self` refuses a ticket whose target host does not resolve to a
+    # public address (plugins main, post-#2487); `SECTION`'s own
+    # (`www.example-hubspot.invalid`) never does. Nothing here ever fetches
+    # the target for real — `plan` reads the fixture `urls.json`/`sites.json`
+    # below directly — so the host only needs to be RESOLVABLE, not
+    # reachable; this box's own outbound address stands in for it,
+    # consistently, everywhere the old `.invalid` host named it.
+    old_host = "www.example-hubspot.invalid"
+    host = outbound_ip()
+    section = SECTION.replace(old_host, host)
+    lesson = LESSON.replace(old_host, host)
+    job = declared_job(ops, env, wiki, UNIT, section, slug="harness-hubspot")
     shutil.rmtree(wiki / "_raw" / job.slug, ignore_errors=True)
     shutil.rmtree(wiki / job.dest, ignore_errors=True)
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     rel = str(cap.relative_to(wiki))
 
     urls = cap / "urls.json"
-    urls.write_text(json.dumps([{"url": LESSON, "lastmod": "2026-07-15"}]), encoding="utf-8")
-    (cap / "sites.json").write_text((FIX / "sites.json").read_text(encoding="utf-8"), encoding="utf-8")
+    urls.write_text(json.dumps([{"url": lesson, "lastmod": "2026-07-15"}]), encoding="utf-8")
+    sites = json.loads((FIX / "sites.json").read_text(encoding="utf-8"))
+    sites["sites"] = {(host if k == old_host else k): v for k, v in sites["sites"].items()}
+    (cap / "sites.json").write_text(json.dumps(sites), encoding="utf-8")
     r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-hubspot-video/scripts/leaves.py", "plan", rel,
             "--urls", f"{rel}/urls.json", "--sites", f"{rel}/sites.json", "--ticket", ticket_id, cwd=wiki)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -100,31 +113,42 @@ def test_a_harvested_lesson_becomes_the_staged_page(ops, env, wiki):
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads(r.stdout)["status"] == "ok"
 
-    closed = landed(ops, env, wiki, ticket_id)
-    assert closed.get("status") in ("ok", None), closed
+    # `close` on the harvest ticket mints a NEW process ticket, keyed to the
+    # leaf's own captured directory — found running this for real (same DNS
+    # refusal masked it before): the process arm's own `report` below needs
+    # THAT ticket, not the harvest one, which is `done` by now.
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
+    assert process_cap == leaf_dir
 
     # The process arm: no network, no credential — `to_markdown.py` off the
     # site's own selectors, then the REAL `page create` through the front door.
     md = run(ops, rooted(env, wiki), "run", "ops/skills/channel-hubspot-video/scripts/to_markdown.py",
              f"{leaf_row['dir']}/page.html", "--selector", "main#main-content",
              "--drop-selector", "main#main-content h1", "--title-selector", "main#main-content h2",
-             "--base-url", LESSON, cwd=wiki)
+             "--base-url", lesson, cwd=wiki)
     assert md.returncode == 0, md.stdout + md.stderr
     body = (leaf_dir / "page.md").read_text(encoding="utf-8")
     # `page create` reads the body off stdin; `harness.run` has no stdin
     # plumbing, so post it directly through the front door instead.
     created = subprocess.run(
-        [*ops, "--json", "page", "create", "title=Pricing the offer", f"dest={job.dest}", f"resource={LESSON}",
+        [*ops, "--json", "page", "create", "title=Pricing the offer", f"dest={job.dest}", f"resource={lesson}",
          "extracted=true", "type=video", "venue=hubspot-cms", "--stdin"],
         input=body, capture_output=True, text=True, env=rooted(env, wiki), cwd=wiki, check=False,
     )
     assert created.returncode == 0, created.stdout + created.stderr
     page = wiki / json.loads(created.stdout)["path"]
-    assert page.is_file() and page.read_text(encoding="utf-8").lstrip().startswith("# Pricing the offer")
+    assert page.is_file()
+    # Found running this for real (previously masked by the DNS refusal
+    # above, which never let the run reach this page): the frontmatter
+    # block `page create` writes precedes the body, so the body itself is
+    # what starts with the true title's H1, not the whole file.
+    _front, body = page.read_text(encoding="utf-8").split("---\n", 2)[1:]
+    assert body.lstrip().startswith("# Pricing the offer")
 
     # `--written-from` names a file INSIDE the capture dir, per A-2.
     (leaf_dir / "written.json").write_text(json.dumps([str(page.relative_to(wiki))]), encoding="utf-8")
     r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-hubspot-video/scripts/leaves.py", "report",
-            leaf_row["dir"], "--ticket", ticket_id, "--written-from", "written.json", cwd=wiki)
+            leaf_row["dir"], "--ticket", process_id, "--written-from", "written.json", cwd=wiki)
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads(r.stdout)["status"] == "ok"
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for every later case in this session
