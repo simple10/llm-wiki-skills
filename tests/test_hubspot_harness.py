@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import advanced, declared_job, landed, live_ticket, outbound_ip, rooted, run, unit_tests
+from harness import RESOLVABLE_TEST_HOST, advanced, declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-hubspot-video", "test_hubspot"))
@@ -78,10 +78,11 @@ def test_a_harvested_lesson_becomes_the_staged_page(ops, env, wiki):
     # (`www.example-hubspot.invalid`) never does. Nothing here ever fetches
     # the target for real — `plan` reads the fixture `urls.json`/`sites.json`
     # below directly — so the host only needs to be RESOLVABLE, not
-    # reachable; this box's own outbound address stands in for it,
-    # consistently, everywhere the old `.invalid` host named it.
+    # reachable: `RESOLVABLE_TEST_HOST`, not this box's own address (found
+    # failing on a NAT'd CI runner, whose own address is private), stands
+    # in for it, consistently, everywhere the old `.invalid` host named it.
     old_host = "www.example-hubspot.invalid"
-    host = outbound_ip()
+    host = RESOLVABLE_TEST_HOST
     section = SECTION.replace(old_host, host)
     lesson = LESSON.replace(old_host, host)
     job = declared_job(ops, env, wiki, UNIT, section, slug="harness-hubspot")

@@ -15,7 +15,7 @@ import subprocess
 
 from pathlib import Path
 
-from harness import declared_job, landed, live_ticket, outbound_ip, rooted, run, unit_tests
+from harness import RESOLVABLE_TEST_HOST, declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-substack", "test_substack"))
@@ -89,12 +89,14 @@ def test_one_ticket_lands_every_free_post_as_a_staged_page(ops, env, wiki, monke
     # `spawn=self` refuses a ticket whose target host does not resolve to a
     # public address (plugins main, post-#2487); `ARCHIVE`'s own
     # (`example-newsletter.invalid`) never does. The job's OWN target (for
-    # the live dispatch) is this box's own outbound address instead; `_plan`
-    # below is a SEPARATE in-process call (`ticket=None`, no `--ticket`) that
-    # never reads the live ticket back, so its own `domain` argument keeps
-    # naming `ARCHIVE` — the host the fixture archive's posts are actually
-    # canonicalized under, which is what `in_scope` matches against.
-    job = declared_job(ops, env, wiki, UNIT, f"https://{outbound_ip()}/archive")
+    # the live dispatch) is `RESOLVABLE_TEST_HOST` instead — a real DNS name,
+    # not this box's own address (found failing on a NAT'd CI runner, whose
+    # own address is private); `_plan` below is a SEPARATE in-process call
+    # (`ticket=None`, no `--ticket`) that never reads the live ticket back,
+    # so its own `domain` argument keeps naming `ARCHIVE` — the host the
+    # fixture archive's posts are actually canonicalized under, which is
+    # what `in_scope` matches against.
+    job = declared_job(ops, env, wiki, UNIT, f"https://{RESOLVABLE_TEST_HOST}/archive")
     assert job.record["harvest"]["scope"] == "domain"  # the manifest's default, which the unit applies itself
     ticket_id, cap = live_ticket(ops, env, wiki, job)
 
@@ -146,9 +148,10 @@ def test_two_posts_with_one_title_land_as_two_pages(ops, env, wiki):
     # public address (plugins main, post-#2487); nothing here ever fetches
     # `host` for real — `capture_posts.py` reads the pre-seeded `leaves.json`
     # and `page.html` fixtures below directly — so it only needs to be
-    # RESOLVABLE, not reachable, and this box's own outbound address stands
-    # in for the old `.invalid` one, consistently, everywhere it was named.
-    bare_host = outbound_ip()
+    # RESOLVABLE, not reachable: `RESOLVABLE_TEST_HOST`, a real DNS name,
+    # stands in for the old `.invalid` one, consistently, everywhere it was
+    # named (not this box's own address — found failing on a NAT'd CI runner).
+    bare_host = RESOLVABLE_TEST_HOST
     host = f"https://{bare_host}"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-names", slug="port-channel-substack-names")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
@@ -186,7 +189,7 @@ def test_a_title_the_host_would_refuse_still_lands_and_forges_nothing(ops, env, 
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
     # See test_two_posts_with_one_title_land_as_two_pages: resolvable, not reachable.
-    bare_host = outbound_ip()
+    bare_host = RESOLVABLE_TEST_HOST
     host = f"https://{bare_host}"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-titles", slug="port-channel-substack-titles")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
@@ -237,7 +240,7 @@ def test_a_hundred_cjk_characters_land_and_so_does_their_namesake(ops, env, wiki
         pytest.skip("no uv: to_markdown.py carries PEP 723 dependencies")
     _needs_run_verb(ops, env, wiki)
     # See test_two_posts_with_one_title_land_as_two_pages: resolvable, not reachable.
-    bare_host = outbound_ip()
+    bare_host = RESOLVABLE_TEST_HOST
     host = f"https://{bare_host}"
     job = declared_job(ops, env, wiki, UNIT, f"{host}/archive-cjk", slug="port-channel-substack-cjk")
     ticket_id, cap = live_ticket(ops, env, wiki, job)

@@ -94,20 +94,44 @@ def rooted(env: dict, wiki: Path) -> dict:
 
 
 def outbound_ip() -> str:
-    """This box's own publicly-routable address — the one a job's target
-    joins a slice's egress AS, per `ticket_host.of`/`reaches_public`
-    (plugins main, post-#2487): a slice is given a host only where it
-    resolves to a public address, and `127.0.0.1`/`localhost` never do —
-    the guard is doing its job, not a gap to route a local test server
-    around. A UDP `connect` never sends a packet; it only asks the
+    """This box's own outbound-routable address — NOT necessarily a public
+    one (found the hard way: on a NAT'd CI runner it is a private 10.x/
+    172.16.x/192.168.x address, and `ticket_host.of` refuses that as a job
+    target exactly as it should: "names this machine or a private
+    network"). A UDP `connect` never sends a packet; it only asks the
     routing table which local address would carry one to `host`, so this
-    needs no reachability and touches no network. A harness's own local
-    `http.server`, bound here instead of `127.0.0.1`, is one this address
-    legitimately answers — self-loopback via the box's own external
-    address, confirmed to work on this machine."""
+    needs no reachability and touches no network. Useful only for binding
+    a harness's own local `http.server` somewhere this box's own traffic
+    can reach — callers that also need the RESULT to pass `ticket_host`'s
+    guard must check `is_globally_routable` themselves, or use
+    `RESOLVABLE_TEST_HOST` instead where no real reachability is needed."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.connect(("8.8.8.8", 80))
         return probe.getsockname()[0]
+
+
+def is_globally_routable(ip: str) -> bool:
+    """Whether `ticket_host.of`/`reaches_public` would accept `ip` as a job's
+    target — the same `ipaddress.is_global` test the plugin itself runs."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
+
+
+# A real, IANA-reserved public domain (RFC 2606): `ticket_host.of` accepts any
+# DNS name that is not `localhost`/`*.localhost`, unconditionally — WHAT it
+# resolves to is `reaches_public`'s question, asked through the box's own
+# system resolver, with no override seam in the plugin (`common/resolver.py`
+# imports no network module beyond `socket.getaddrinfo` and reads no env var).
+# This name resolves to a real, stable, globally-routable address wherever
+# there is DNS/internet egress at all — unlike `outbound_ip()`, it does not
+# depend on THIS box's own address being public, so it is what a case uses
+# when it only needs the dispatch GATE to pass (a fixture-only capture that
+# never actually fetches the target) rather than a real, reachable server.
+RESOLVABLE_TEST_HOST = "example.com"
 
 
 def jsonc(text: str) -> object:
