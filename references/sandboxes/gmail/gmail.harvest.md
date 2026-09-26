@@ -36,7 +36,7 @@ no step.
 ```jsonc
 // gmail.harvest: the jail of channel-gmail's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-gmail-harvest",

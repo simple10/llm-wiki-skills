@@ -41,7 +41,7 @@ back as `denied` and is the foreman's call.
 ```jsonc
 // frameio.harvest: the jail of channel-frameio's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-frameio-harvest",

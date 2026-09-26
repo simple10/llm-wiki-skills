@@ -39,7 +39,7 @@ Add no host a post did not name in a report's `missing[]`.
 ```jsonc
 // substack.harvest: the jail of channel-substack's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-substack-harvest",

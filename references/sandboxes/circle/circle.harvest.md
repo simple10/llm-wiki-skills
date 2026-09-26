@@ -49,7 +49,7 @@ a report's `missing[]`.
 ```jsonc
 // circle.harvest: the jail of channel-circle's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-circle-harvest",

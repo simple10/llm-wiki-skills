@@ -47,7 +47,7 @@ def test_the_reference_is_the_units_venue_and_its_snippet_is_one_policy(name):
     rel, doc = _reference(name)
     venue = unit_manifest(name)["venue"]
     assert rel == f"{venue}/{venue}.harvest", rel
-    assert set(doc) == {"v", "profile"} and doc["v"] == 2, doc
+    assert set(doc) == {"v", "profile"} and doc["v"] == 1, doc
     allow = doc["profile"]["network"]["allow_domain"]
     assert MODEL <= set(allow), f"{name}: the snippet lacks a model endpoint"
 
