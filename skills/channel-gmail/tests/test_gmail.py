@@ -577,6 +577,16 @@ def test_a_ticketed_job_with_no_mailbox_is_refused(tmp_path, monkeypatch, capsys
     assert W.since(directory, args) == 1 and "options.mailbox" in capsys.readouterr().err
 
 
+def test_a_capture_dir_naming_a_different_day_than_the_ticket_is_refused(tmp_path):
+    """F3: a wrong path that still looks like a day directory must not be
+    written into on the ticket's say-so — it would put items, `capture.json`
+    and the cursor where the ticket never granted."""
+    directory, ticket = day_dir(tmp_path)
+    other, _ = day_dir(tmp_path, day="2026-09-19")
+    r = script("since", other, ticket)
+    assert r.returncode != 0 and "capture_dir" in r.stderr and ticket["capture_dir"] in r.stderr
+
+
 def test_only_a_day_directory_is_written_into(tmp_path):
     leaf = tmp_path / "_raw" / "mail" / "inbox--0a1b2c3d"
     leaf.mkdir(parents=True)

@@ -390,6 +390,16 @@ def test_write_failed_the_documented_way_and_the_refusals(tmp_path):
     assert hand.returncode == 0 and json.loads(hand.stdout)["since_day"] >= "2026-09-10"
 
 
+def test_a_capture_dir_naming_a_different_day_than_the_ticket_is_refused(tmp_path):
+    """F3: a wrong path that still looks like a day directory must not be
+    written into on the ticket's say-so — it would put items, `capture.json`
+    and the cursor where the ticket never granted."""
+    directory, ticket = day_dir(tmp_path)
+    other, _ = day_dir(tmp_path, day="2026-09-19")
+    r = since(other, ticket)
+    assert r.returncode != 0 and "capture_dir" in r.stderr and ticket["capture_dir"] in r.stderr
+
+
 # ------------------------------------------------------------------ the ledger, in this unit's words
 
 

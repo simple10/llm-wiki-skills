@@ -551,8 +551,31 @@ def misplaced(directory):
     return nested if nested != directory / PULL_NAME and nested.is_file() else None
 
 
+def _opened(directory, args, stage):
+    """`open_ticket`, then refuse a `capture_dir` that does not match the
+    positional `directory` — a wrong path that still looks like a day
+    directory would otherwise put items, `capture.json` and the cursor
+    where the ticket never granted, while the report lands on the ticket
+    the caller named."""
+    if not args.ticket:
+        return {}
+    ticket = open_ticket(args.ticket, stage)
+    named = ticket.get("capture_dir")
+    # Wiki-relative on a real run, cwd is the wiki root (the doc's own
+    # words); a unit test calling this directly hands an absolute
+    # `tmp_path`-rooted one instead, ending in the SAME relative
+    # `_raw/<slug>/<day>` a fixture ticket answers — a suffix match holds
+    # for both, and still catches a directory naming a different slug or day.
+    if not isinstance(named, str) or not str(directory).replace("\\", "/").endswith(named):
+        sys.exit(
+            f"write_items: --ticket {args.ticket} names capture_dir {named!r}, not {str(directory)!r} "
+            "— give the ticket's own, wiki-relative"
+        )
+    return ticket
+
+
 def since(directory, args, *, now=None):
-    ticket = open_ticket(args.ticket, "harvest") if args.ticket else {}
+    ticket = _opened(directory, args, "harvest")
     job = job_from(ticket, args)
     if job[INPUT_KEY] is None:
         print(f"write_items: the job names no {INPUT_KEY} — `options.{INPUT_KEY}` is this unit's one input", file=sys.stderr)
@@ -579,7 +602,7 @@ def since(directory, args, *, now=None):
 
 
 def write(directory, args, *, now=None):
-    ticket = open_ticket(args.ticket, "harvest") if args.ticket else {}
+    ticket = _opened(directory, args, "harvest")
     job = job_from(ticket, args)
     now = _ms(now or datetime.now(timezone.utc))
     missing = [{"host": host, "url": url, "why": why} for host, url, why in args.missing]
@@ -766,7 +789,7 @@ def write_page(dest, day, keys, body):
 
 
 def ledger(directory, args, *, now=None):
-    ticket = open_ticket(args.ticket, "process") if args.ticket else {}
+    ticket = _opened(directory, args, "process")
     job = job_from(ticket, args)
     day = directory.name
     dest = str(job.get("dest") or "").strip().rstrip("/")
