@@ -119,15 +119,29 @@ def front_door() -> list:
     return [found] if found else []
 
 
-def _uv_project(door: list) -> str | None:
-    """The `--project <dir>` a `uv run --project <dir> … llm-wiki-ops` front
-    door names, or None. That project is the venv `format_transcript.py`'s
-    own imports (`llm_wiki_ops`, pyyaml) resolve in — the one a direct run
-    of it, bypassing `run`, still needs."""
-    for i, arg in enumerate(door):
-        if arg == "--project" and i + 1 < len(door):
-            return door[i + 1]
-    return None
+def _front_door_interpreter(door: list) -> str | None:
+    """The python a `uv tool install`ed `llm-wiki-ops` runs under, read off
+    its own shebang, or None.
+
+    `LLM_WIKI_OPS` always ends up naming that bare console script — every
+    `llm-wiki-ops`/`llm-wiki-cli` entry rewrites it to the durable path at
+    its own start (`llm_wiki_cli.dispatch`), overwriting whatever a caller
+    exported first — so a `--project`-shaped line is never what a nested
+    call actually sees. The shebang IS the project's own venv python: the
+    one `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …)
+    resolve in, and the one `llm-wiki-ops run` would hand a script if not
+    for a PEP 723 script's own ephemeral venv (G2) — which is exactly why
+    a direct run of the formatter, bypassing `run`, still needs it."""
+    if not door:
+        return None
+    try:
+        first_line = Path(door[-1]).open(encoding="utf-8", errors="ignore").readline()
+    except OSError:
+        return None
+    if not first_line.startswith("#!"):
+        return None
+    interpreter = first_line[2:].strip()
+    return interpreter if interpreter and Path(interpreter).is_file() else None
 
 
 def open_ticket(ticket: str, stage: str | None = None) -> dict:
@@ -349,22 +363,9 @@ def format_transcript(captions, chapters_json, wiki, override):
     if override:
         # A direct run still needs the formatter's own dependencies
         # (`llm_wiki_ops`, pyyaml, …), which `sys.executable` alone never
-        # has. `LLM_WIKI_OPS` names the project that has them when it is
-        # itself a `uv run --project <dir> …` line (the harness's shape);
-        # reuse that project so the override runs under the same venv the
-        # front door would have used. A bare front door (no `--project`)
-        # falls back to `sys.executable`, as before.
-        proj = _uv_project(front_door())
-        print(f"DEBUG2 proj={proj!r} door={front_door()!r} env_llm_wiki_ops={__import__('os').environ.get('LLM_WIKI_OPS')!r}", file=sys.stderr)
-        if proj:
-            # `VIRTUAL_ENV`, inherited from whatever ran THIS script, outranks
-            # `--project` in uv's own resolution — nested inside another uv
-            # invocation (this script is itself no-PEP-723-free, `uv run
-            # --script`'d), it would silently misdirect this call to that
-            # OTHER venv instead. Unset it; `--project` alone is unambiguous.
-            cmd, where = ["uv", "run", "--project", proj, str(Path(override).resolve())], {"env": {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}}
-        else:
-            cmd, where = [sys.executable, str(Path(override).resolve())], {}
+        # has; the front door's own interpreter does.
+        interpreter = _front_door_interpreter(front_door()) or sys.executable
+        cmd, where = [interpreter, str(Path(override).resolve())], {}
     else:
         door = front_door()
         if not door:

@@ -131,19 +131,26 @@ def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
     return json.loads(cp.stdout) if check else cp
 
 
-def _ops_project():
-    """The ops CLI's own uv project, under `LLM_WIKI_OPS_PLUGIN` — the venv
-    `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …) resolve in.
-    A real hosted run's `LLM_WIKI_OPS` already names it (`uv run --project
-    <dir> llm-wiki-ops`, the workflow's own shape); the stub front door
-    below carries the same shape where a case runs the REAL formatter, so
+def _ops_interpreter():
+    """The ops CLI's own project venv, under `LLM_WIKI_OPS_PLUGIN` — the
+    python `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …)
+    resolve in. A hosted `llm-wiki-ops` is a `uv tool install`ed console
+    script whose own shebang names this same venv
+    (`_front_door_interpreter`); the stub front door below is given that
+    shebang too, where a case runs the REAL formatter, so
     `format_transcript()`'s direct (`--format-transcript`) arm — which
-    reaches that project through `LLM_WIKI_OPS`, not through `run` — finds
-    it too. None when there is no plugin checkout to name one."""
-    return f"{_PLUGIN}/packages/llm-wiki-ops-v1" if _PLUGIN else None
+    reads it off the front door, never off `LLM_WIKI_OPS` alone (a real
+    hosted run's always ends up the bare console script path,
+    `llm_wiki_cli.dispatch` rewriting it at every entry) — finds one that
+    actually has them. None where there is no plugin checkout, or its
+    project venv is not synced, to name one."""
+    if not _PLUGIN:
+        return None
+    python = Path(_PLUGIN) / "packages/llm-wiki-ops-v1/.venv/bin/python"
+    return str(python) if python.is_file() else None
 
 
-def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, project=None):
+def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, interpreter=None):
     """A recording `llm-wiki-ops` first on PATH.
 
     It appends every call — argv, cwd, the binding it inherited, whatever arrived on
@@ -154,9 +161,9 @@ def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, project=None):
     script's own helpers (`open_ticket`, `post_update`, `write_page`) reach
     through one `LLM_WIKI_OPS`. `body` is python run before any of that, for
     a case that wants `run` (the transcript formatter) answered its own way.
-    `project` wraps the stub in `uv run --project <project> <stub>`, the
-    shape a hosted `LLM_WIKI_OPS` carries, for a case that runs the REAL
-    formatter through `--format-transcript` (`_ops_project`).
+    `interpreter` shebangs the stub with a real venv's python, the shape a
+    hosted `llm-wiki-ops`'s own console script carries, for a case that runs
+    the REAL formatter through `--format-transcript` (`_ops_interpreter`).
     """
     if ticket is _DEFAULT:
         ticket = _default_ticket("process")
@@ -166,7 +173,7 @@ def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, project=None):
     seen.unlink(missing_ok=True)
     stub = bin_dir / "llm-wiki-ops"
     stub.write_text(
-        f"#!{sys.executable}\n"
+        f"#!{interpreter or sys.executable}\n"
         "import json, os, sys, pathlib\n"
         "argv = sys.argv[1:]\n"
         "stdin = '' if sys.stdin.isatty() else sys.stdin.read()\n"
@@ -193,8 +200,7 @@ def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, project=None):
         "    sys.exit(0)\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    ops = f"uv run --project {project} {stub}" if project else str(stub)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": ops}, seen
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "LLM_WIKI_OPS": str(stub)}, seen
 
 
 def _calls(seen):
@@ -208,7 +214,7 @@ def _page_calls(seen):
 def _processed(tmp_path, cap, **kw):
     """The process arm against a stubbed front door, with the real formatter."""
     _need_formatter()
-    path, seen = _stub_front_door(tmp_path, project=_ops_project())
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     res = _run(tmp_path, cap, extra_env=path, **kw)
     return res, seen
 
@@ -269,7 +275,7 @@ def test_a_title_dest_already_holds_is_edited_not_created_twice(tmp_path):
     the refusal is the signal to replace the page rather than to fail."""
     cap = _capture(tmp_path)
     _processed(tmp_path, cap)
-    path, seen = _stub_front_door(tmp_path, project=_ops_project())
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     res = _run(tmp_path, cap, extra_env=path)
     verbs = [[a for a in c["argv"] if not a.startswith("--")] for c in _page_calls(seen)]
     assert verbs[0][:2] == ["page", "create"] and verbs[1][:2] == ["page", "edit"], verbs
@@ -282,7 +288,7 @@ def test_the_page_verbs_are_reached_without_the_harness_project_dir(tmp_path):
     harness's directory, not a wiki root — so it does not travel with a nested
     front-door call."""
     cap = _capture(tmp_path)
-    path, seen = _stub_front_door(tmp_path, project=_ops_project())
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     _run(tmp_path, cap, extra_env={**path, "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")})
     assert _page_calls(seen), "no page call was made"
     for call in _page_calls(seen):
@@ -407,7 +413,7 @@ def test_a_refused_page_write_is_a_failure_not_a_silent_success(tmp_path):
     cap = _capture(tmp_path)
     path, _seen = _stub_front_door(
         tmp_path, "\nif 'page' in argv:\n    sys.exit('page create: dest is outside this wiki')\n",
-        project=_ops_project())
+        interpreter=_ops_interpreter())
     cp = _run(tmp_path, cap, check=False, extra_env=path)
     assert cp.returncode != 0
     assert "`page create` refused" in cp.stderr and "outside this wiki" in cp.stderr
@@ -439,7 +445,7 @@ def test_the_front_door_a_hosted_run_names_wins_over_the_bare_name(tmp_path):
     """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was reached
     by — a jail is not promised the `~/.local/bin` entry the bare name is."""
     cap = _capture(tmp_path)
-    path, seen = _stub_front_door(tmp_path, project=_ops_project())
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     broken = tmp_path / "wrong-bin"
     broken.mkdir()
     (broken / "llm-wiki-ops").write_text("#!/bin/sh\nexit 127\n")
