@@ -245,7 +245,7 @@ def resolve_job(root, url=None, out=None, plan=None, leaf=None, ticket=None, now
     refusal: list = []
     chosen, from_ticket = (url, False) if url else (ticket_target(root, ticket, refusal), True)
     if not chosen:
-        why = refusal[0] if refusal else "no url given and no --ticket names one"
+        why = (refusal[0] if refusal else None) or "no url given and no --ticket names one"
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, why)
     if not is_http(chosen):
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "the url is not an http(s) address")
