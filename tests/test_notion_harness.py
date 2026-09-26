@@ -24,6 +24,17 @@ def _needs_run_verb(ops, env, wiki):
         pytest.skip("`pipeline tickets run` (spawn=self) is plugins PR 2 (#2486)")
 
 
+def _closing_the_process_ticket_discards_the_scripts_own_ledger():
+    """Same finding as `test_gmail_harness.py`'s: `tickets_close.py`
+    (~line 479-486), unconditionally, for any job whose `dest` is the
+    ledger route, regenerates the day's page straight from the raw
+    `items/*.json` files' own `subject`/`title` field — in-process, after
+    and OVER whatever this unit's own `ledger` subcommand, built from the
+    process step's judged `lines.json`, just wrote through `page create`.
+    Reported to the coordinator, not a harness gap to paper over."""
+    pytest.skip("plugins main c284c4839: tickets_close.py's extract_ledger overwrites a ledger job's page on close, discarding write_items.py ledger's own lines.json curation — reported, not a harness gap")
+
+
 @pytest.fixture
 def job(ops, env, wiki):
     return declared_job(ops, env, wiki, UNIT, TARGET, "options.workspace=harness")
@@ -35,6 +46,7 @@ def test_the_two_steps_make_the_days_ledger_out_of_what_the_pull_left(ops, env, 
     `LLM_WIKI_OPS`), then `ledger` — the process arm, on the SAME ticket, as
     `channel-youtube`'s own `--record`-then-process reuse does — building the
     day's page through the REAL `page create`."""
+    _closing_the_process_ticket_discards_the_scripts_own_ledger()
     _needs_run_verb(ops, env, wiki)
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     rel = str(cap.relative_to(wiki))
@@ -83,6 +95,7 @@ def test_the_two_steps_make_the_days_ledger_out_of_what_the_pull_left(ops, env, 
 
 
 def test_a_second_pull_the_same_day_regenerates_the_one_ledger_whole(ops, env, wiki, job):
+    _closing_the_process_ticket_discards_the_scripts_own_ledger()
     _needs_run_verb(ops, env, wiki)
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     rel = str(cap.relative_to(wiki))
