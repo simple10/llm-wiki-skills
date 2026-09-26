@@ -544,6 +544,10 @@ def test_a_consumed_pull_file_is_removed_and_only_inside_the_day(tmp_path):
 
 
 def test_since_is_the_cursor_else_the_lookback_never_before_min_date(tmp_path, monkeypatch, capsys):
+    # Q3: `since` now reads the TICKET's own `capture_dir`, wiki-relative,
+    # outright — a direct call (no subprocess, no cwd=<wiki root>) needs
+    # cwd set to resolve it the same way a real run's cwd does.
+    monkeypatch.chdir(tmp_path)
     directory, ticket = day_dir(tmp_path)
     monkeypatch.setattr(W, "open_ticket", lambda tid, stage=None: ticket)
     now = datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc)
@@ -577,27 +581,22 @@ def test_a_ticketed_job_with_no_mailbox_is_refused(tmp_path, monkeypatch, capsys
     assert W.since(directory, args) == 1 and "options.mailbox" in capsys.readouterr().err
 
 
-def test_a_capture_dir_naming_a_different_day_than_the_ticket_is_refused(tmp_path):
-    """F3: a wrong path that still looks like a day directory must not be
-    written into on the ticket's say-so — it would put items, `capture.json`
-    and the cursor where the ticket never granted."""
+def test_a_wrong_positional_is_ignored_for_the_tickets_own_capture_dir(tmp_path):
+    """Q3: the ticket's own `capture_dir` is used outright — the positional
+    is the argument grammar's own address, never the truth once a ticket
+    names one, so a wrong positional (even one shaped like a day directory,
+    or one that merely ends in the ticket's own text — R2-2's old bug) does
+    not misdirect a read or a write; it lands on the ticket's own day."""
     directory, ticket = day_dir(tmp_path)
+    (directory / "pull.json").write_text(json.dumps([msg(1)]), encoding="utf-8")
     other, _ = day_dir(tmp_path, day="2026-09-19")
-    r = script("since", other, ticket)
-    assert r.returncode != 0 and "capture_dir" in r.stderr and ticket["capture_dir"] in r.stderr
-
-
-def test_a_capture_dir_that_merely_ends_in_the_tickets_text_is_refused(tmp_path):
-    """R2-2: a bare string `endswith` has no path-component boundary —
-    `bad_raw/mail/<day>` reads as ending in `_raw/mail/<day>` character for
-    character. The match is on trailing PATH COMPONENTS, so this is still
-    refused."""
-    directory, ticket = day_dir(tmp_path)
     bad = tmp_path / "bad_raw" / "mail" / DAY
     bad.mkdir(parents=True)
-    assert str(bad).endswith(ticket["capture_dir"])  # the bug this pins: true as plain text
-    r = script("since", bad, ticket)
-    assert r.returncode != 0 and "capture_dir" in r.stderr
+    for wrong in (other, bad):
+        r = script("write", wrong, ticket, "--from", "pull.json")
+        assert r.returncode == 0, r.stderr
+        assert names(directory) == [f"{T0 + 1000}--m1.json"]
+        (directory / "pull.json").write_text(json.dumps([msg(1)]), encoding="utf-8")
 
 
 def test_only_a_day_directory_is_written_into(tmp_path):

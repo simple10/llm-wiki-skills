@@ -571,33 +571,24 @@ def misplaced(directory):
 
 
 def _opened(directory, args, stage):
-    """`open_ticket`, then refuse a `capture_dir` that does not match the
-    positional `directory` — a wrong path that still looks like a day
-    directory would otherwise put items, `capture.json` and the cursor
-    where the ticket never granted, while the report lands on the ticket
-    the caller named."""
+    """`open_ticket`, then the directory to actually read and write —
+    the ticket's own `capture_dir`, outright, never the positional (Q3):
+    a wrong positional that still looked like a day directory used to be
+    refused, but the ticket's own answer is the one grant that matters, so
+    it is what every read and write below uses, as `section_plan.py`
+    already does. A hand run (no `--ticket`) keeps the positional as
+    given — there is no ticket to defer to."""
     if not args.ticket:
-        return {}
+        return {}, directory
     ticket = open_ticket(args.ticket, stage)
     named = ticket.get("capture_dir")
-    # Wiki-relative on a real run, cwd is the wiki root (the doc's own
-    # words); a unit test calling this directly hands an absolute
-    # `tmp_path`-rooted one instead, ending in the SAME relative
-    # `_raw/<slug>/<day>` a fixture ticket answers — a match on trailing
-    # PATH COMPONENTS holds for both (R2-2: a plain string `endswith` has no
-    # component boundary, so `bad_raw/mail/<day>` would pass for `_raw/mail/<day>`).
-    wanted = tuple(named.split("/")) if isinstance(named, str) and named else None
-    parts = tuple(str(directory).replace("\\", "/").split("/"))
-    if not wanted or parts[-len(wanted):] != wanted:
-        sys.exit(
-            f"write_items: --ticket {args.ticket} names capture_dir {named!r}, not {str(directory)!r} "
-            "— give the ticket's own, wiki-relative"
-        )
-    return ticket
+    if isinstance(named, str) and named:
+        directory = Path(named)
+    return ticket, directory
 
 
 def since(directory, args, *, now=None):
-    ticket = _opened(directory, args, "harvest")
+    ticket, directory = _opened(directory, args, "harvest")
     job = job_from(ticket, args)
     if job[INPUT_KEY] is None:
         print(f"write_items: the job names no {INPUT_KEY} — `options.{INPUT_KEY}` is this unit's one input", file=sys.stderr)
@@ -624,7 +615,7 @@ def since(directory, args, *, now=None):
 
 
 def write(directory, args, *, now=None):
-    ticket = _opened(directory, args, "harvest")
+    ticket, directory = _opened(directory, args, "harvest")
     job = job_from(ticket, args)
     now = _ms(now or datetime.now(timezone.utc))
     missing = [{"host": host, "url": url, "why": why} for host, url, why in args.missing]
@@ -818,7 +809,7 @@ def write_page(dest, title, front, body):
 
 
 def ledger(directory, args, *, now=None):
-    ticket = _opened(directory, args, "process")
+    ticket, directory = _opened(directory, args, "process")
     job = job_from(ticket, args)
     now = _ms(now or datetime.now(timezone.utc))
     dest = str(job.get("dest") or "").strip().rstrip("/")
