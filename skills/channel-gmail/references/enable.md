@@ -1,7 +1,7 @@
 # channel-gmail — after enabling
 
 1. One watch per mailbox. Ask a slug and a description for each, then:
-   `llm-wiki-ops pipeline add <slug> slug=<slug>
+   `llm-wiki-ops pipeline jobs add <slug> slug=<slug>
    description="<whose mailbox>" skill=channel-gmail
    options.mailbox=<who>@example.com [every=1d]` — the target is a bare
    channel NAME, never a url, and a wiki holds ONE job per target: a second
@@ -23,11 +23,11 @@
    says `ok`, and the days pile up as pages in the staged tree that nothing
    reads and curate is left to judge. The skill cannot detect it: `dest` is
    the job's answer, and a harvest ticket does not carry one at all. Check
-   each job with `llm-wiki-ops pipeline show <slug>` (it names `dest` and the
+   each job with `llm-wiki-ops pipeline jobs show <slug>` (it names `dest` and the
    target), and re-point any that is not under `research/channels/`.
-   `pipeline edit` refuses `dest`, but re-running `add` with the same target
+   `pipeline jobs edit` refuses `dest`, but re-running `add` with the same target
    and slug moves it and keeps every other key:
-   `llm-wiki-ops pipeline add <its target> slug=<slug> dest=research/channels/<slug>`.
+   `llm-wiki-ops pipeline jobs add <its target> slug=<slug> dest=research/channels/<slug>`.
 2. **Bind the job on each pulling machine**, per watch — this is a SWITCH,
    not a secret. The skill declares `requires.credential: true` and never
    reads the value: connector auth is the session's. What the binding does is

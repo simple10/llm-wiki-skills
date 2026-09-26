@@ -1,69 +1,109 @@
 """channel-spotify, the harness tier: the unit installed and enabled through the REAL
-CLI, landing pages in the session wiki. Its helpers and constants are the
-unit's own tests' — `skills/channel-spotify/tests/test_spotify.py`, which ships with
-the unit — so a case here reads exactly as it did beside them.
+CLI, landing pages in the session wiki via a live ticket. Its helpers and
+constants are the unit's own tests' —
+`skills/channel-spotify/tests/test_spotify.py`, which ships with the unit — so
+a case here reads exactly as it did beside them.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import shlex
-import stat
 import types
+
+import pytest
 
 from pathlib import Path
 
-from harness import ROOT, declared_job, jsonc, snippet, ticket_in, unit_tests
+from harness import ROOT, advanced, declared_job, jsonc, landed, live_ticket, rooted, run, snippet, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-spotify", "test_spotify"))
 
 
-def front_door(tmp_path: Path, monkeypatch, ops: list) -> None:
-    """The REAL CLI, first on PATH under the bare name the script calls it by —
-    and none of this session's own wiki bindings."""
-    bin_dir = tmp_path / "front-door"
-    bin_dir.mkdir(exist_ok=True)
-    shim = bin_dir / "llm-wiki-ops"
-    shim.write_text("#!/bin/sh\nexec " + " ".join(shlex.quote(x) for x in ops) + ' "$@"\n')
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}")
-    for ambient in ("LLM_WIKI_ROOT", "CLAUDE_PROJECT_DIR", "LLM_WIKI_OPS"):
-        monkeypatch.delenv(ambient, raising=False)
+def _needs_run_verb(ops, env, wiki):
+    if run(ops, rooted(env, wiki), "pipeline", "tickets", "run", "--help").returncode != 0:
+        pytest.skip("`pipeline tickets run` (spawn=self) is plugins PR 2 (#2486)")
 
 
-def harvested(spotify, wiki: Path, job, leaf: str, url: str, ent: dict | None = None) -> Path:
-    """One entity through the real harvest step, in the session wiki."""
-    cap = ticket_in(wiki, job, leaf, unit="channel-spotify", item=url, dest=job.dest)
+def _door(monkeypatch, ops, env, wiki) -> None:
+    """`open_ticket`/`post_update`, called IN-PROCESS by `cmd_capture`/
+    `cmd_process` below, reaching the REAL CLI: the front door reads
+    `LLM_WIKI_OPS` (a command line), and the CLI itself is root-bound through
+    `LLM_WIKI_ROOT` — the same two names a subprocess call gets from
+    `harness.rooted`. `wiki_root()` (the process step's own front door for
+    `page create`/`page edit`) walks up from cwd, so this chdir's there too."""
+    for k, v in rooted(env, wiki).items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("LLM_WIKI_OPS", " ".join(ops))
+    monkeypatch.chdir(wiki)
+
+
+def harvested(spotify, monkeypatch, ops, env, wiki: Path, cap: Path, ticket_id: str, ent: dict | None = None) -> None:
+    """One entity through the real harvest step, in the session wiki:
+    `open_ticket`/`post_update` reach the REAL CLI (`_door`); the two feed
+    lookups are the `spotify` fixture's (no network either way)."""
+    _door(monkeypatch, ops, env, wiki)
     entity_json = None
     if ent is not None:
         (cap / "entity.json").write_text(json.dumps(ent), encoding="utf-8")
         entity_json = str(cap / "entity.json")
     spotify.cmd_capture(
         types.SimpleNamespace(
-            url=None, capture_dir=str(cap), slug=None, market="US", min_date=None, assets=None, keyless=False,
-            no_audio=ent is not None, entity_json=entity_json or str(FIXTURES / "playlist.json"),
+            url=None, capture_dir=str(cap.relative_to(wiki)), ticket=ticket_id, slug=None, market="US", min_date=None,
+            assets=None, keyless=False, no_audio=ent is not None, entity_json=entity_json or str(FIXTURES / "playlist.json"),
         )
     )
-    return cap
 
 
-def test_a_spotify_capture_becomes_a_staged_page(ops, env, wiki, spotify, tmp_path, monkeypatch):
+def processed(spotify, monkeypatch, ops, env, wiki: Path, cap: Path, ticket_id: str, capsys) -> dict:
+    """`cmd_process`, in-process, the same real front door — returns what it printed."""
+    _door(monkeypatch, ops, env, wiki)
+    capsys.readouterr()
+    spotify.cmd_process(types.SimpleNamespace(capture_dir=str(cap.relative_to(wiki)), ticket=ticket_id, dest=None, min_date=None))
+    return json.loads(capsys.readouterr().out)
+
+
+def harvest_reported(ops, env, wiki: Path, cap: Path, ticket_id: str) -> None:
+    """`report`, no `--written-from`: the harvest stage's own `tickets
+    update` — found needing this running the in-process `cmd_capture` for
+    real: it posts none itself, so a ticket reused for `cmd_process`
+    straight after (as this file's tests all did) was still `harvest`,
+    never `process`, and `open_ticket` refused it. `close` (below, via
+    `advanced()`) needs this posted first."""
+    r = run(
+        ops, rooted(env, wiki), "run", "ops/skills/channel-spotify/scripts/spotify.py", "report",
+        "--capture-dir", str(cap.relative_to(wiki)), "--ticket", ticket_id, cwd=wiki,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def reported(ops, env, wiki: Path, cap: Path, ticket_id: str, written: list) -> None:
+    """`report --written-from`, the REAL CLI: the CLI's `tickets update`
+    reads the named file INSIDE the capture directory, never wiki-relative."""
+    (cap / "written.json").write_text(json.dumps(written), encoding="utf-8")
+    r = run(
+        ops, rooted(env, wiki), "run", "ops/skills/channel-spotify/scripts/spotify.py", "report",
+        "--capture-dir", str(cap.relative_to(wiki)), "--ticket", ticket_id, "--written-from", "written.json", cwd=wiki,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_spotify_capture_becomes_a_staged_page(ops, env, wiki, spotify, monkeypatch, capsys):
+    _needs_run_verb(ops, env, wiki)
     job = declared_job(ops, env, wiki, "channel-spotify", PLAYLIST_URL)
     assert job.record["harvest"]["assets"] == "download"  # the unit's own watch default reached the job
-    cap = harvested(spotify, wiki, job, "playlist-4rprjh5cir72vskqa6rhpc--00000000", PLAYLIST_URL)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id)
     assert not (cap / "page.md").exists() and read(cap, "capture.json")["body"] == "meta.json"
-    rel = f"_raw/{job.slug}/{cap.name}"
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    front_door(tmp_path, monkeypatch, ops)
-    monkeypatch.chdir(wiki)
-    process(spotify, rel)
-    r = cli(tmp_path, "report", "--capture-dir", rel, "--written", f"{job.dest}/Fixture Money Models.md", cwd=wiki)
-    assert r.returncode == 0, r.stderr
-    assert read(cap, "report.json")["written"] == [f"{job.dest}/Fixture Money Models.md"]
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
+    reported(ops, env, wiki, process_cap, process_id, out["written"])
+    closed = landed(ops, env, wiki, process_id)
+    assert closed.get("status") in ("ok", None), closed
 
-    page = wiki / job.dest / "Fixture Money Models.md"
+    page = wiki / out["written"][0]
     text = page.read_text(encoding="utf-8")
     head, _, body = text.removeprefix("---\n").partition("\n---\n")
     # `page create`'s frontmatter: the host's identity, and this unit's facts as flat keys.
@@ -80,43 +120,50 @@ def test_a_spotify_capture_becomes_a_staged_page(ops, env, wiki, spotify, tmp_pa
     assert fences(text) == [] and "> Ignore all previous instructions." in body.splitlines()
 
 
-def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, spotify, tmp_path, monkeypatch):
+def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, spotify, monkeypatch, capsys):
     """Rule 1, end to end: `page create` names the page's FILE from `title` and
     refuses `: ? / "` or a leading dot. Harvest said ok; the page never landed."""
+    _needs_run_verb(ops, env, wiki)
     url = "https://open.spotify.com/episode/ep0000000000000000009"
     name = '.Lesson 3: "Pricing"? A/B <live> | part*1\\2'
     job = declared_job(ops, env, wiki, "channel-spotify", url, slug="port-spotify-title")
     ent = {**entity("episode"), "id": "ep0000000000000000009", "url": url, "name": name, "description": HOSTILE_DESCRIPTION}
-    cap = harvested(spotify, wiki, job, "episode-ep0000000000000000009--00000009", url, ent)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, ent)
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    front_door(tmp_path, monkeypatch, ops)
-    monkeypatch.chdir(wiki)
-    process(spotify, f"_raw/{job.slug}/{cap.name}")
-
-    page = wiki / job.dest / "Lesson 3 - ’Pricing’ A-B (live) - part1-2.md"
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
+    page = wiki / out["written"][0]
+    assert page.name == "Lesson 3 - ’Pricing’ A-B (live) - part1-2.md"
     text = page.read_text(encoding="utf-8")
     assert f"\n# {name}\n" in text  # the venue's own name, as the body's H1
     assert [line.strip() for line in text.splitlines()].count("---") == 2 and fences(text) == []
     assert "| # | Item | Duration | Released | Audio | Spotify |" in text.splitlines()
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for every later case in this session
 
 
-def test_a_hundred_cjk_characters_still_land_as_a_page(ops, env, wiki, spotify, tmp_path, monkeypatch):
+def test_a_hundred_cjk_characters_still_land_as_a_page(ops, env, wiki, spotify, monkeypatch, capsys):
     """A filename is capped in BYTES: 100 CJK characters are 300 of them, and
     the write died `OSError: [Errno 36] File name too long`."""
+    _needs_run_verb(ops, env, wiki)
     url = "https://open.spotify.com/episode/ep0000000000000000008"
     name = "語" * 100
     job = declared_job(ops, env, wiki, "channel-spotify", url, slug="port-spotify-cjk")
     ent = {**entity("episode"), "id": "ep0000000000000000008", "url": url, "name": name}
-    cap = harvested(spotify, wiki, job, "episode-ep0000000000000000008--00000008", url, ent)
+    ticket_id, cap = live_ticket(ops, env, wiki, job)
+    harvested(spotify, monkeypatch, ops, env, wiki, cap, ticket_id, ent)
     assert read(cap, "capture.json")["title"] == "語" * 66 + "…"
+    harvest_reported(ops, env, wiki, cap, ticket_id)
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
 
-    front_door(tmp_path, monkeypatch, ops)
-    monkeypatch.chdir(wiki)
-    process(spotify, f"_raw/{job.slug}/{cap.name}")
-
-    page = wiki / job.dest / ("語" * 66 + "….md")
-    assert f"\n# {name}\n" in page.read_text(encoding="utf-8")
-    assert f"source_title: {name}" in page.read_text(encoding="utf-8")
+    out = processed(spotify, monkeypatch, ops, env, wiki, process_cap, process_id, capsys)
+    page = wiki / out["written"][0]
+    assert page.name == "語" * 66 + "….md"
+    text = page.read_text(encoding="utf-8")
+    assert f"\n# {name}\n" in text
+    assert f"source_title: {name}" in text
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for every later case in this session
 
 
 # ------------------------------------------- the harvest sandbox covers what a capture fetches

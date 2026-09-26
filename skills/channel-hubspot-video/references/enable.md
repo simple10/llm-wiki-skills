@@ -54,11 +54,11 @@
    `/llm-wiki:enable channel-hubspot-video` — because `run` and the
    slice serve the ENABLED copy, and steps 2–4 edited the wiki's.
 5. **Declare the job.**
-   `llm-wiki-ops pipeline add <section-root-url> slug=<site-section>
+   `llm-wiki-ops pipeline jobs add <section-root-url> slug=<site-section>
    description="<what this is>" skill=channel-hubspot-video` — the skill's
    manifest supplies `every=once`, `harvest.scope=section`,
-   `harvest.assets=download`, `transcribe.when=always` (the video IS the
-   content — keep it) and a `dest` of `sources/courses/<slug>`. Point it at
+   `harvest.assets=download`, `transcribe.options.when=always` (the video IS
+   the content — keep it) and a `dest` of `sources/courses/<slug>`. Point it at
    the section ROOT, not a leaf page — the manifest's `watch.note` says why:
    the skill's own filter (`leaves.py plan`) takes the section prefix from the
    job's target, so under a leaf-rooted job every sibling is skipped as out of
@@ -68,7 +68,8 @@
    is killed at thirty minutes, and one run attempts six pages by default, so
    a section reports `partial` many times. `every=once` — the default above —
    is NOT pulled again after a `partial`: either
-   `llm-wiki-ops pipeline queue retry <ticket>` (three attempts a ticket), or
-   declare the job with a period while it fills (`every=1h`, at `pipeline add`
-   or `llm-wiki-ops pipeline edit <slug> every=1h`) and set `every=once` when
-   a run reports `skipped`. The report's `reason` says the same.
+   `llm-wiki-ops pipeline tickets retry <id>` (three attempts a ticket), or
+   declare the job with a period while it fills (`every=1h`, at `pipeline jobs
+   add` or `llm-wiki-ops pipeline jobs edit <slug> every=1h`) and set
+   `every=once` when a run reports `ok` with nothing new. The report's
+   `reason` says the same.

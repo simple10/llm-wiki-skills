@@ -8,12 +8,12 @@
    re-enable, `llm-wiki-ops credential set <name>`, `llm-wiki-ops credential
    bind <slug> <name>` — and their cost: every job on this skill then needs
    a binding.
-2. Declare the job, naming the skill: `llm-wiki-ops pipeline add
+2. Declare the job, naming the skill: `llm-wiki-ops pipeline jobs add
    <archive-url> slug=<newsletter>
    description="<what this is>" skill=channel-substack
    [harvest.max_age=3m] [harvest.access=free|licensed]` — the skill's manifest
    supplies `every=1d`, `harvest.scope=domain` and a `dest` of
    `sources/newsletters/<slug>`. **Scope MUST stay `domain`**: an archive is
    every post under the newsletter's host, so never pass `harvest.scope=page`
-   for this skill. `llm-wiki-ops pipeline edit <slug> every=<period>` changes
+   for this skill. `llm-wiki-ops pipeline jobs edit <slug> every=<period>` changes
    the cadence later.

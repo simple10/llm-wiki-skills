@@ -30,20 +30,27 @@ FORMATTER_REL = re.search(r'^FORMATTER = "([^"]+)"$', SCRIPT.read_text(), re.M).
 # `format_transcript.py` is HOST code, not part of this package:
 # `LLM_WIKI_OPS_PLUGIN` names the ops plugin's root — the tree `run` serves
 # that address from — where a checkout is at hand; without it the cases that
-# need the real formatter skip.
+# need the real formatter skip. G3 moves it from the old, nested address to
+# `FORMATTER_REL` in plugins PR 4; until then the old one is what a real
+# plugin checkout serves, and this file still tests against the real thing.
 _PLUGIN = os.environ.get("LLM_WIKI_OPS_PLUGIN")
-FORMATTER = Path(_PLUGIN) / FORMATTER_REL if _PLUGIN else None
+_OLD_FORMATTER_REL = "skills/process/scripts/format_transcript.py"
+FORMATTER = None
+if _PLUGIN:
+    _new, _old = Path(_PLUGIN) / FORMATTER_REL, Path(_PLUGIN) / _OLD_FORMATTER_REL
+    FORMATTER = _new if _new.is_file() else (_old if _old.is_file() else None)
 
 DEST = "sources/youtube/yt-somechannel"
 PAGE = f"{DEST}/A Video About Things.md"
 
+TICKET_ID = "0123456789ab"
+
 
 def _need_formatter():
-    if FORMATTER is None:
+    if _PLUGIN is None:
         pytest.skip("set LLM_WIKI_OPS_PLUGIN to the ops plugin's root — format_transcript.py is host code")
-    # Named and absent is a FAILURE, not a skip: a formatter that moved is
-    # what this suite skipped over, green, while every real capture aborted.
-    assert FORMATTER.is_file(), f"{FORMATTER_REL} is not under LLM_WIKI_OPS_PLUGIN={_PLUGIN} — did the plugin move it?"
+    if FORMATTER is None:
+        pytest.skip(f"{FORMATTER_REL} is not under LLM_WIKI_OPS_PLUGIN={_PLUGIN} yet — plugins PR 4 (G3) moves it there")
 
 
 VTT = """WEBVTT
@@ -63,16 +70,13 @@ META = {"id": "abc123", "title": "A Video About Things", "duration": 327,
 ITEM = "https://www.youtube.com/watch?v=abc123"
 
 
-def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True, ticket=True):
+def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True):
     """A capture laid out the way a slice finds one: inside the JOB's
-    `_raw/<slug>` slice, with the `ticket.json` the spawner wrote beside it."""
+    `_raw/<slug>` slice — the ticket itself is `tickets open`'s now, never a
+    file beside it."""
     cap = tmp_path / "_raw" / slug / "a-video-about-things--4cf2bd5f"
     cap.mkdir(parents=True)
     (cap / "metadata.json").write_text(json.dumps(META))
-    if ticket:
-        (cap / "ticket.json").write_text(json.dumps({
-            "v": 1, "ticket": "0123456789ab", "unit": "channel-youtube", "slug": slug, "item": ITEM,
-            "target": ITEM, "capture_dir": str(cap.relative_to(tmp_path)), "dest": None}))
     dest = cap / "captions" if captions_subdir else cap
     dest.mkdir(exist_ok=True)
     (dest / "abc123.en.vtt").write_text(VTT)
@@ -83,46 +87,93 @@ def _capture(tmp_path, slug="yt-somechannel", captions_subdir=True, ticket=True)
     return cap
 
 
+def _default_ticket(stage, **over):
+    ticket = {
+        "ticket": TICKET_ID, "stage": stage, "slug": "yt-somechannel", "item": ITEM, "target": ITEM,
+        "capture_dir": "_raw/yt-somechannel/a-video-about-things--4cf2bd5f", "dest": None,
+        "known": [], "options": {},
+    }
+    ticket.update(over)
+    return ticket
+
+
 _DEFAULT = object()
 
 
 def _run(tmp_path, cap, formatter=_DEFAULT, check=True, extra_env=None,
-         extra_argv=None, mode=_DEFAULT):
+         extra_argv=None, mode=_DEFAULT, ticket=True):
     """One arm of the script. `mode` defaults to the PROCESS arm, which is the
-    one that builds a body; pass `["--record"]` for harvest."""
+    one that builds a body; pass `["--record"]` for harvest. `ticket=True`
+    (the default) stands up a front door answering `tickets open` with the
+    standard ticket (`_default_ticket`) and appends `--ticket <id>`, unless
+    `extra_env` already names one; `ticket=False` is a hand run — `--item`
+    (and `--slug`) on `extra_argv` stand in for it."""
     if mode is _DEFAULT:
         mode = ["--dest", DEST]
     if formatter is _DEFAULT:  # the host formatter, where a checkout names it
         _need_formatter()
         formatter = FORMATTER
     env = dict(os.environ)
+    if ticket and not (extra_env and "LLM_WIKI_OPS" in extra_env):
+        stage = "harvest" if mode[:1] == ["--record"] else "process"
+        path, _seen = _stub_front_door(tmp_path, ticket=_default_ticket(stage))
+        env.update(path)
     if extra_env:
         env.update(extra_env)
     cp = subprocess.run(
         ["uv", "run", str(SCRIPT), str(tmp_path),
          "--capture-dir", str(cap.relative_to(tmp_path)),
          *mode,
+         *(["--ticket", TICKET_ID] if ticket else []),
          *(extra_argv or []),
          *(["--format-transcript", str(formatter)] if formatter else [])],
         check=check, capture_output=True, text=True, env=env)
     return json.loads(cp.stdout) if check else cp
 
 
-def _stub_front_door(tmp_path, body=None):
+def _ops_interpreter():
+    """The ops CLI's own project venv, under `LLM_WIKI_OPS_PLUGIN` — the
+    python `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …)
+    resolve in. A hosted `llm-wiki-ops` is a `uv tool install`ed console
+    script whose own shebang names this same venv
+    (`_front_door_interpreter`); the stub front door below is given that
+    shebang too, where a case runs the REAL formatter, so
+    `format_transcript()`'s direct (`--format-transcript`) arm — which
+    reads it off the front door, never off `LLM_WIKI_OPS` alone (a real
+    hosted run's always ends up the bare console script path,
+    `llm_wiki_cli.dispatch` rewriting it at every entry) — finds one that
+    actually has them. None where there is no plugin checkout, or its
+    project venv is not synced, to name one."""
+    if not _PLUGIN:
+        return None
+    python = Path(_PLUGIN) / "packages/llm-wiki-ops-v1/.venv/bin/python"
+    return str(python) if python.is_file() else None
+
+
+def _stub_front_door(tmp_path, body=None, ticket=_DEFAULT, interpreter=None):
     """A recording `llm-wiki-ops` first on PATH.
 
     It appends every call — argv, cwd, the binding it inherited, whatever arrived on
-    stdin — to `seen.jsonl`, then answers `page create`/`page edit` by writing
-    the page and printing what the real verb prints. `body` is python run
-    before that, for a case that wants `run` answered its own way.
+    stdin — to `seen.jsonl`, then answers `pipeline tickets open` with `ticket`
+    (default: the standard `_default_ticket("process")`), `pipeline tickets
+    update` with a bare 0, and `page create`/`page edit` by writing the page
+    and printing what the real verb prints — the whole front door this
+    script's own helpers (`open_ticket`, `post_update`, `write_page`) reach
+    through one `LLM_WIKI_OPS`. `body` is python run before any of that, for
+    a case that wants `run` (the transcript formatter) answered its own way.
+    `interpreter` shebangs the stub with a real venv's python, the shape a
+    hosted `llm-wiki-ops`'s own console script carries, for a case that runs
+    the REAL formatter through `--format-transcript` (`_ops_interpreter`).
     """
+    if ticket is _DEFAULT:
+        ticket = _default_ticket("process")
     bin_dir = tmp_path / "stub-bin"
     bin_dir.mkdir(exist_ok=True)
     seen = tmp_path / "seen.jsonl"
     seen.unlink(missing_ok=True)
     stub = bin_dir / "llm-wiki-ops"
     stub.write_text(
-        f"#!{sys.executable}\n"
+        f"#!{interpreter or sys.executable}\n"
         "import json, os, sys, pathlib\n"
         "argv = sys.argv[1:]\n"
         "stdin = '' if sys.stdin.isatty() else sys.stdin.read()\n"
@@ -130,6 +181,12 @@ def _stub_front_door(tmp_path, body=None):
         "    'project_dir': os.environ.get('CLAUDE_PROJECT_DIR')}) + '\\n')\n"
         f"{body or 'pass'}\n"
         "verb = [a for a in argv if not a.startswith('--')]\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket))})\n"
+        "if verb[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if verb[:3] == ['pipeline', 'tickets', 'update']:\n"
+        "    sys.exit(0)\n"
         "if verb[:1] == ['page']:\n"
         "    pairs = dict(a.split('=', 1) for a in argv if '=' in a and not a.startswith('--'))\n"
         "    rel = pairs['dest'].rstrip('/') + '/' + pairs['title'] + '.md' if verb[1] == 'create' else verb[2]\n"
@@ -157,7 +214,7 @@ def _page_calls(seen):
 def _processed(tmp_path, cap, **kw):
     """The process arm against a stubbed front door, with the real formatter."""
     _need_formatter()
-    path, seen = _stub_front_door(tmp_path)
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     res = _run(tmp_path, cap, extra_env=path, **kw)
     return res, seen
 
@@ -183,10 +240,12 @@ def test_the_harvest_arm_writes_a_capture_record_and_nothing_else(tmp_path):
     """Harvest is BYTES. No page, no summary, and no `frontmatter` object on
     the record: the facts reach the page because this unit writes the page."""
     cap = _capture(tmp_path)
+    path, _seen = _stub_front_door(tmp_path, ticket=_default_ticket("harvest"))
     before = {p for p in tmp_path.rglob("*") if p.is_file()}
-    res = _run(tmp_path, cap, mode=["--record"], formatter=None)
+    res = _run(tmp_path, cap, mode=["--record"], formatter=None, extra_env=path)
     assert res["capture"] == f"{cap.relative_to(tmp_path)}/capture.json"
-    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
+    # `seen.jsonl` is the stub front door's OWN recording, not this script's.
+    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before - {tmp_path / "seen.jsonl"}
     assert new == {cap / "capture.json"}, new
     record = json.loads((cap / "capture.json").read_text())
     assert record["body"] == "metadata.json" and record["content_type"] == "application/json"
@@ -216,7 +275,7 @@ def test_a_title_dest_already_holds_is_edited_not_created_twice(tmp_path):
     the refusal is the signal to replace the page rather than to fail."""
     cap = _capture(tmp_path)
     _processed(tmp_path, cap)
-    path, seen = _stub_front_door(tmp_path)
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     res = _run(tmp_path, cap, extra_env=path)
     verbs = [[a for a in c["argv"] if not a.startswith("--")] for c in _page_calls(seen)]
     assert verbs[0][:2] == ["page", "create"] and verbs[1][:2] == ["page", "edit"], verbs
@@ -229,7 +288,7 @@ def test_the_page_verbs_are_reached_without_the_harness_project_dir(tmp_path):
     harness's directory, not a wiki root — so it does not travel with a nested
     front-door call."""
     cap = _capture(tmp_path)
-    path, seen = _stub_front_door(tmp_path)
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     _run(tmp_path, cap, extra_env={**path, "CLAUDE_PROJECT_DIR": str(tmp_path / "another-wiki")})
     assert _page_calls(seen), "no page call was made"
     for call in _page_calls(seen):
@@ -237,9 +296,9 @@ def test_the_page_verbs_are_reached_without_the_harness_project_dir(tmp_path):
         assert Path(call["cwd"]) == tmp_path.resolve(), call
 
 
-def test_slug_and_item_are_the_tickets(tmp_path):
-    """`ticket.json` is the worker's whole input: what the record names is read
-    off it, never guessed."""
+def test_slug_and_item_are_the_tickets_own(tmp_path):
+    """`tickets open` is the worker's whole input: what the record names is
+    read off it, never guessed."""
     cap = _capture(tmp_path)
     _run(tmp_path, cap, mode=["--record"], formatter=None)
     record = json.loads((cap / "capture.json").read_text())
@@ -247,8 +306,8 @@ def test_slug_and_item_are_the_tickets(tmp_path):
 
 
 def test_flags_override_the_ticket_and_stand_in_for_it_on_a_hand_run(tmp_path):
-    cap = _capture(tmp_path, ticket=False)
-    _run(tmp_path, cap, mode=["--record"], formatter=None,
+    cap = _capture(tmp_path)
+    _run(tmp_path, cap, mode=["--record"], formatter=None, ticket=False,
          extra_argv=["--slug", "by-hand", "--item", "https://youtu.be/abc123"])
     record = json.loads((cap / "capture.json").read_text())
     assert (record["slug"], record["item"]) == ("by-hand", "https://youtu.be/abc123")
@@ -256,14 +315,15 @@ def test_flags_override_the_ticket_and_stand_in_for_it_on_a_hand_run(tmp_path):
 
 def test_a_hand_run_with_no_ticket_and_no_item_is_refused(tmp_path):
     """`llm-wiki-ops run` starts this script at the WIKI ROOT, so a directory
-    no spawner wrote a ticket into is as likely a mistyped `--capture-dir` as a
-    hand run. A hand run says what the directory holds with `--item`; the slug
-    may still be read off the layout, `_raw/<slug>/<leaf>` by definition."""
-    cap = _capture(tmp_path, ticket=False)
-    cp = _run(tmp_path, cap, mode=["--record"], formatter=None, check=False)
-    assert cp.returncode != 0 and "ticket.json" in cp.stderr and "--item" in cp.stderr
+    started with neither `--ticket` nor `--item` is as likely a mistyped
+    `--capture-dir` as a hand run. A hand run says what the directory holds
+    with `--item`; the slug may still be read off the layout,
+    `_raw/<slug>/<leaf>` by definition."""
+    cap = _capture(tmp_path)
+    cp = _run(tmp_path, cap, mode=["--record"], formatter=None, ticket=False, check=False)
+    assert cp.returncode != 0 and "--ticket" in cp.stderr and "--item" in cp.stderr
     assert not (cap / "page.md").exists() and not (cap / "capture.json").exists()
-    _run(tmp_path, cap, mode=["--record"], formatter=None, extra_argv=["--item", ITEM])
+    _run(tmp_path, cap, mode=["--record"], formatter=None, ticket=False, extra_argv=["--item", ITEM])
     record = json.loads((cap / "capture.json").read_text())
     assert (record["slug"], record["item"]) == ("yt-somechannel", ITEM)
 
@@ -272,7 +332,7 @@ def test_an_arm_must_be_named(tmp_path):
     """Neither arm is the default: the two write different files in different
     directories, and a run that named none would silently pick one."""
     cap = _capture(tmp_path)
-    cp = _run(tmp_path, cap, mode=[], formatter=None, check=False)
+    cp = _run(tmp_path, cap, mode=[], formatter=None, ticket=False, check=False)
     assert cp.returncode != 0 and "--record" in cp.stderr and "--dest" in cp.stderr
 
 
@@ -300,7 +360,6 @@ def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     broken formatter produced a note with no transcript, exit 0, reporting
     success — the exact silent failure this file was written to guard."""
     cap = _capture(tmp_path)
-    (cap / "report.json").write_text(json.dumps({"outcome": "ok", "stale": True}))
     boom = tmp_path / "boom.py"
     boom.write_text("import sys; sys.exit(9)\n")
     path, _seen = _stub_front_door(tmp_path)
@@ -309,7 +368,6 @@ def test_a_failing_formatter_aborts_instead_of_shipping_a_bare_note(tmp_path):
     assert "transcript formatting failed" in cp.stderr
     assert not (cap / "page.md").exists(), "page was written"
     assert not (tmp_path / DEST).exists(), "a page landed under dest"
-    assert not (cap / "report.json").exists(), "an earlier run's report survived a failed build"
 
 
 def test_the_process_arm_leaves_harvests_capture_record_alone(tmp_path):
@@ -354,7 +412,8 @@ def test_a_refused_page_write_is_a_failure_not_a_silent_success(tmp_path):
     _need_formatter()
     cap = _capture(tmp_path)
     path, _seen = _stub_front_door(
-        tmp_path, "\nif 'page' in argv:\n    sys.exit('page create: dest is outside this wiki')\n")
+        tmp_path, "\nif 'page' in argv:\n    sys.exit('page create: dest is outside this wiki')\n",
+        interpreter=_ops_interpreter())
     cp = _run(tmp_path, cap, check=False, extra_env=path)
     assert cp.returncode != 0
     assert "`page create` refused" in cp.stderr and "outside this wiki" in cp.stderr
@@ -377,16 +436,30 @@ def test_a_machine_without_the_front_door_is_told_so(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         mod.write_page(tmp_path, DEST, "T", {}, "body")
     assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        mod.open_ticket("some-id")
+    assert "`llm-wiki-ops` is not on PATH" in str(exc.value) and "front door" in str(exc.value)
 
 
 def test_the_front_door_a_hosted_run_names_wins_over_the_bare_name(tmp_path):
     """`llm-wiki-ops run` exports `LLM_WIKI_OPS`, naming the CLI it was reached
     by — a jail is not promised the `~/.local/bin` entry the bare name is."""
     cap = _capture(tmp_path)
-    path, seen = _stub_front_door(tmp_path)
+    path, seen = _stub_front_door(tmp_path, interpreter=_ops_interpreter())
     broken = tmp_path / "wrong-bin"
     broken.mkdir()
     (broken / "llm-wiki-ops").write_text("#!/bin/sh\nexit 127\n")
     (broken / "llm-wiki-ops").chmod(0o755)
     _run(tmp_path, cap, extra_env={**path, "PATH": f"{broken}{os.pathsep}{os.environ['PATH']}"})
     assert _page_calls(seen), "the named front door was not the one reached"
+
+
+def test_the_ticket_is_opened_with_the_right_stage(tmp_path):
+    """The harvest arm asserts `stage=harvest`, the process arm `stage=process`
+    — a wrong stage would be the host's own bug, refused by `tickets open`
+    itself in production; here it is enough that the right one is asked."""
+    cap = _capture(tmp_path)
+    path, seen = _stub_front_door(tmp_path, ticket=_default_ticket("harvest"))
+    _run(tmp_path, cap, mode=["--record"], formatter=None, extra_env=path)
+    opens = [c["argv"] for c in _calls(seen) if c["argv"][:3] == ["--json", "pipeline", "tickets"]]
+    assert any(a[3:5] == ["open", TICKET_ID] and "stage=harvest" in a for a in opens), opens

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import ROOT, SOURCE, _cli, _ops_argv, run
+from harness import ROOT, SOURCE, _cli, _ops_argv, rooted, run
 
 
 @pytest.fixture(scope="session")
@@ -42,6 +42,10 @@ def env(tmp_path_factory, ops) -> dict:
         GIT_AUTHOR_EMAIL="harness@example.invalid",
         GIT_COMMITTER_NAME="harness",
         GIT_COMMITTER_EMAIL="harness@example.invalid",
+        # `live_ticket`'s `spawn=self` sets a ticket's `worker` to the calling
+        # session's id, and `open` refuses a ticket whose `worker` is not the
+        # caller's own — so the harness session needs one of its own to match.
+        LLM_WIKI_SESSION_ID="harness-session",
     )
     return e
 
@@ -59,5 +63,16 @@ def wiki(tmp_path_factory, ops, env) -> Path:
     home = tmp_path_factory.mktemp("home")
     uv_cache = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True, check=True).stdout.strip()
     r = run(ops, {**env, "HOME": str(home), "UV_CACHE_DIR": uv_cache}, "join", "key=harness", cwd=w)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # `[pipeline] model` is the committed fallback ADR-0014 falls to where a
+    # unit declares no `stages.<stage>.model` (plugins main, post-#2487) — a
+    # `config set` writes the LOCAL manifest only, and this key is read from
+    # the COMMITTED one, so it is hand-written and committed like a peer's edit.
+    (w / ".llm-wiki.toml").write_text(
+        (w / ".llm-wiki.toml").read_text(encoding="utf-8") + '\n[pipeline]\nmodel = "harness-model"\n',
+        encoding="utf-8",
+    )
+    r = run(ops, rooted(env, w), "git", "commit", ".llm-wiki.toml",
+            "message=harness: a committed model of last resort", cwd=w)
     assert r.returncode == 0, r.stdout + r.stderr
     return w

@@ -23,6 +23,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -78,8 +79,8 @@ class Result:
         return json.loads(self.stdout)
 
 
-def run(ops: list, env: dict, *args, cwd=None) -> Result:
-    cp = subprocess.run([*ops, *args], env=env, cwd=cwd or NEUTRAL_CWD, capture_output=True, text=True, check=False)
+def run(ops: list, env: dict, *args, cwd=None, input=None) -> Result:
+    cp = subprocess.run([*ops, *args], env=env, cwd=cwd or NEUTRAL_CWD, capture_output=True, text=True, check=False, input=input)
     return Result(cp.returncode, cp.stdout, cp.stderr)
 
 
@@ -90,6 +91,47 @@ def rooted(env: dict, wiki: Path) -> dict:
     whole argv, so that one verb binds by `cwd=` instead — and a case that
     stands inside the wiki may pass both, because they agree."""
     return {**env, "LLM_WIKI_ROOT": str(Path(wiki).resolve())}
+
+
+def outbound_ip() -> str:
+    """This box's own outbound-routable address — NOT necessarily a public
+    one (found the hard way: on a NAT'd CI runner it is a private 10.x/
+    172.16.x/192.168.x address, and `ticket_host.of` refuses that as a job
+    target exactly as it should: "names this machine or a private
+    network"). A UDP `connect` never sends a packet; it only asks the
+    routing table which local address would carry one to `host`, so this
+    needs no reachability and touches no network. Useful only for binding
+    a harness's own local `http.server` somewhere this box's own traffic
+    can reach — callers that also need the RESULT to pass `ticket_host`'s
+    guard must check `is_globally_routable` themselves, or use
+    `RESOLVABLE_TEST_HOST` instead where no real reachability is needed."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect(("8.8.8.8", 80))
+        return probe.getsockname()[0]
+
+
+def is_globally_routable(ip: str) -> bool:
+    """Whether `ticket_host.of`/`reaches_public` would accept `ip` as a job's
+    target — the same `ipaddress.is_global` test the plugin itself runs."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
+
+
+# A real, IANA-reserved public domain (RFC 2606): `ticket_host.of` accepts any
+# DNS name that is not `localhost`/`*.localhost`, unconditionally — WHAT it
+# resolves to is `reaches_public`'s question, asked through the box's own
+# system resolver, with no override seam in the plugin (`common/resolver.py`
+# imports no network module beyond `socket.getaddrinfo` and reads no env var).
+# This name resolves to a real, stable, globally-routable address wherever
+# there is DNS/internet egress at all — unlike `outbound_ip()`, it does not
+# depend on THIS box's own address being public, so it is what a case uses
+# when it only needs the dispatch GATE to pass (a fixture-only capture that
+# never actually fetches the target) rather than a real, reachable server.
+RESOLVABLE_TEST_HOST = "example.com"
 
 
 def jsonc(text: str) -> object:
@@ -173,46 +215,103 @@ class Job:
     record: dict
 
 
+def bound_credential(ops: list, env: dict, wiki: Path, slug: str, name: str | None = None, value: str = "harness-credential") -> str:
+    """`requires.credential: true`'s claim gate, satisfied for `slug` on this
+    session (references/enable.md): `credential set <name>` (stdin — never a
+    command-line argument), then `credential bind <slug> <name>` — `bind`
+    refuses a name not set here first. The VALUE is unread by everything, so
+    any placeholder does (enable.md). Returns `name`."""
+    name = name or f"{slug}-cred"
+    r = run(ops, rooted(env, wiki), "--json", "credential", "set", name, input=value)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "credential", "bind", slug, name)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return name
+
+
 def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
     """A real job for `unit` in the session wiki, declared the way
-    references/enable.md says to — `pipeline extract` reads the job a capture
-    belongs to, so a
+    references/enable.md says to (A-11: `jobs add`/`jobs show`) — `pipeline
+    extract` reads the job a capture belongs to, so a
     capture with no job behind it is refused. Idempotent for one
     (slug, target) pair; a wiki holds ONE job per target and a slug names one
     source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
     slug = slug or f"port-{unit}"
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
+    # `dest` and `every` are both required now (plugins main, post-#2487): a
+    # job needs where its pages land and how often it pulls. A caller that
+    # wants its own passes `dest=`/`every=` in `extra`.
+    if not any(e.startswith("dest=") for e in extra):
+        extra = (*extra, f"dest=sources/harness/{slug}")
+    if not any(e.startswith("every=") for e in extra):
+        extra = (*extra, "every=once")
+    # `transcribe` is a host ENGINE section every job carries by default
+    # (`job_schema` — the unit never declares it), so `close` on a harvest
+    # `ok` routes through a transcribe ticket first, media or not, and only
+    # the transcribe DRAIN (this box's own, not a case here) lands it on to
+    # `process`. None of this suite's units declare `transcribe`, so every
+    # harness job nulls the section at declare time — one real hop, harvest
+    # to process, the shape `advanced()` assumes.
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, "--stdin", input='{"transcribe": null}')
     assert r.returncode == 0, r.stdout + r.stderr
-    record = run(ops, rooted(env, wiki), "--json", "pipeline", "show", slug).data["job"]
+    record = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "show", slug).data["job"]
     return Job(slug, record["dest"], record)
 
 
-def ticket_in(wiki: Path, job: Job, leaf: str, *, unit: str, item: str, **over) -> Path:
-    """A capture directory holding the `ticket.json` a harvest worker is
-    started beside — every key `pipeline/dispatch.py` writes, the job's own
-    sections riding along. Returns the directory; `leaf` is `<page>--<hash8>`
-    for an item with an address, `<YYYY-MM-DD>` for a channel's pull."""
-    rel = f"_raw/{job.slug}/{leaf}"
-    directory = wiki / rel
-    directory.mkdir(parents=True, exist_ok=True)
-    ticket = {
-        "v": 1, "ticket": "0123456789ab", "unit": unit, "slug": job.slug, "item": item, "target": item,
-        "capture_dir": rel, "dest": None, "hosts": [], "harvest": job.record["harvest"],
-        "options": job.record.get("options") or {}, "credential": None, "min_date": None, "known": [],
-    }
-    ticket.update(over)
-    (directory / "ticket.json").write_text(json.dumps(ticket, indent=1), encoding="utf-8")
-    return directory
-
-
-def extracted(ops: list, env: dict, wiki: Path, capture_dir: Path) -> list:
-    """The REAL extractor over one capture — the pages it wrote, as paths. The
-    whole point of a unit's harvest is that this works on what it left."""
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "extract", str(capture_dir.relative_to(wiki)))
+def live_ticket(ops: list, env: dict, wiki: Path, job: Job) -> tuple[str, Path]:
+    """A real ticket, minted and moved to `active/` by the CLI — never a hand
+    fixture (side note; A-8, A-9). `jobs claim <slug>` leases the job and
+    mints its harvest ticket, pending; `tickets run <id> spawn=self` moves it
+    to `active/` under THIS SESSION's own worker id, matched against
+    `LLM_WIKI_SESSION_ID` (`conftest.py`'s `env` fixture) the way `open`
+    checks it against `env.current().session`. Returns the id and its
+    capture directory, the latter read back through `open` (A-1) rather than
+    guessed off `run`'s own answer shape."""
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "claim", job.slug)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert r.data["pages"] or r.data["ledgers"], r.data
-    return [wiki / rel for rel in [*r.data["pages"], *r.data["ledgers"]]]
+    claimed = next(c for c in r.data["claimed"] if c["slug"] == job.slug)
+    ticket_id = claimed["tickets"][0]["id"]
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "run", ticket_id, "spawn=self")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", ticket_id)
+    assert r.returncode == 0, r.stdout + r.stderr
+    capture_dir = wiki / r.data["ticket"]["capture_dir"]
+    # `spawn=self` takes the `starting.claim_rows` arm (tickets_run.py), never
+    # `starting.start`, so it never runs that arm's `capture.mkdir(...)` — a
+    # real worker's own first act (P-7's clearing line) makes the directory a
+    # spawned slice would otherwise be granted already made. A case that
+    # writes a fixture into it before running the unit's own script needs it
+    # to exist first, same as a granted slice would find it.
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    return ticket_id, capture_dir
+
+
+def landed(ops: list, env: dict, wiki: Path, ticket: str) -> dict:
+    """The ticket, closed by the host (A-10) — the real `close`, reading
+    whatever `update` the worker last posted and routing it."""
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "close", ticket)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return r.data
+
+
+def advanced(ops: list, env: dict, wiki: Path, ticket: str) -> tuple[str, Path]:
+    """Close `ticket` (A-10) and move the ONE ticket it mints for the next
+    declared stage to `active/`, the way `live_ticket` moves a fresh
+    harvest ticket there — a `close` only enqueues (`pending/`); a caller
+    invoking a unit's next stage still needs `tickets run <id> spawn=self`
+    to reach it. For a unit whose harvest and process share one ticket id
+    (P5's `SAME ticket` units), skip this and pass the harvest id straight
+    to the process step instead."""
+    closed = landed(ops, env, wiki, ticket)
+    row = closed["closed"][0]
+    enqueued = row["enqueued"]
+    assert len(enqueued) == 1, f"{ticket}: close enqueued {enqueued}, not exactly one next-stage ticket"
+    next_id = enqueued[0]
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "run", next_id, "spawn=self")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", next_id)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return next_id, wiki / r.data["ticket"]["capture_dir"]
 
 
 

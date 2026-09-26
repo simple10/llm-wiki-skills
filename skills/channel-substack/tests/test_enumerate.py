@@ -44,8 +44,9 @@ def _urls(out):
 
 
 def _run(monkeypatch, capsys, pages, *argv, ticket=None, tmp_path):
-    """One walk over `pages`. With `ticket`, the inputs come from a
-    `ticket.json` in `tmp_path`, the way a worker's do; without, from flags.
+    """One walk over `pages`. With `ticket`, the inputs come from `tickets
+    open` — stubbed in-process, since this runs the module directly rather
+    than as a subprocess — the way a worker's do; without, from flags.
     `--capture-dir` is REQUIRED either way (2026-09-19: its `.` default read
     and wrote at the wiki root under `llm-wiki-ops run`), so every case names
     a directory; the wiki-relative, cwd-is-the-wiki-root form is driven in
@@ -54,8 +55,8 @@ def _run(monkeypatch, capsys, pages, *argv, ticket=None, tmp_path):
     served = list(pages)
     base = ["ex.substack.com", "--slug", "w1", "--capture-dir", str(tmp_path)]
     if ticket is not None:
-        (tmp_path / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-        base = ["--capture-dir", str(tmp_path)]
+        monkeypatch.setattr(mod, "open_ticket", lambda tid, stage=None: ticket)
+        base = ["--capture-dir", str(tmp_path), "--ticket", ticket["ticket"]]
 
     def fake_fetch(domain, offset, limit):
         return served.pop(0) if served else []
@@ -100,14 +101,21 @@ def test_the_script_shells_nothing():
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             imported.add((node.module or "").split(".")[0])
     # An allow-list, not a deny-list: a deny-list is why the old one passed.
-    # Grown by the port, each for a reason: `pathlib` reads `ticket.json` and
-    # writes `leaves.json`, `hashlib` + `re` compose the leaf name, `fnmatch`
-    # matches `harvest.exclude_urls`. Still nothing that can shell or import.
-    assert imported == {"argparse", "fnmatch", "hashlib", "json", "pathlib", "re", "sys", "time", "urllib"}, imported
+    # Grown by the port, each for a reason: `pathlib` writes `leaves.json`,
+    # `hashlib` + `re` compose the leaf name, `fnmatch` matches
+    # `harvest.exclude_urls`. `os`/`shlex`/`shutil`/`subprocess` are
+    # `front_door`'s/`open_ticket`'s — the front door, called with an argv
+    # LIST and never `shell=True` (P-6), is how this worker reaches `tickets
+    # open` now that there is no `ticket.json` to read instead.
+    assert imported == {
+        "argparse", "fnmatch", "hashlib", "json", "os", "pathlib", "re", "shlex", "shutil", "subprocess", "sys",
+        "time", "urllib",
+    }, imported
 
     called = {n.func.id for n in ast.walk(tree)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert not called & {"eval", "exec", "compile", "__import__", "open"}
+    assert "shell=True" not in SCRIPT.read_text() and "shell = True" not in SCRIPT.read_text()
 
 
 def test_free_access_emits_only_everyone(monkeypatch, capsys, tmp_path):
@@ -220,7 +228,7 @@ def test_a_run_with_no_job_behind_it_is_refused(monkeypatch, tmp_path):
     """WAS `test_parent_is_required`: `--parent` named the dispatched job a
     `discovered` row had to match, and is gone with the row. What a run cannot
     do without is the job's SLUG — it names every leaf directory — so that is
-    the refusal at the call now, from a flag or from `ticket.json`."""
+    the refusal at the call now, from a flag or from `--ticket`."""
     mod = _module()
     # Stubbed even though the refusal should come first: without this, a
     # regression that made the slug optional would send this test to the real

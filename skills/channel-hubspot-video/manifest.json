@@ -20,10 +20,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-hubspot-video ticket=<id> stage=harvest|process",
+  "usage": "/channel-hubspot-video ticket=<id>",
   "v": 2,
   "venue": "hubspot-cms",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "watch": {
     "defaults": {
       "every": "once",
@@ -33,7 +33,10 @@
         "scope": "section"
       },
       "transcribe": {
-        "when": "always"
+        "options": {
+          "diarize": false,
+          "when": "always"
+        }
       }
     },
     "dest": "sources/courses/{slug}",

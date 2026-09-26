@@ -26,17 +26,16 @@ import pytest
 UNIT_DIR = Path(__file__).resolve().parents[1]  # the unit, wherever its tree sits
 SCRIPTS = UNIT_DIR / "scripts"
 BUILDER = SCRIPTS / "youtube_note.py"
-REPORTER = SCRIPTS / "write_report.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 META = json.loads((FIXTURES / "metadata.json").read_text(encoding="utf-8"))
 ITEM = META["webpage_url"]
 
 UNIT = "channel-youtube"
-# The target `tests/test_port_smoke.py` declares this same job with. The slug
-# `declared_job` derives is per UNIT and a slug names one source for good, so
-# a second target here would be refused whenever the smoke case ran first. The
-# ITEM a ticket carries is its own, and is what this file varies.
-JOB_TARGET = "https://www.youtube.com/watch?v=smoke"
+# A url job's ticket carries `item` off the job's own `target` at mint (a
+# live ticket, never a hand fixture) — so the harness's default-slug job,
+# which asserts `record["item"] == ITEM`, is declared with `target=ITEM`
+# itself. A case wanting a job of its own passes `slug=` (`declared_job`).
+JOB_TARGET = ITEM
 
 # Where a tmp-path case's process arm writes. A real job's is the ticket's.
 DEST = "sources/youtube/yt-job"
@@ -57,11 +56,6 @@ def _load(path):
 @pytest.fixture(scope="module")
 def builder():
     return _load(BUILDER)
-
-
-@pytest.fixture(scope="module")
-def reporter():
-    return _load(REPORTER)
 
 
 # ------------------------------------------------------------------ pure logic
@@ -138,41 +132,6 @@ def test_the_body_never_opens_with_a_frontmatter_fence_and_has_no_summary_placeh
     assert "<https://example.com/plan>" in full and "- `1:30` How to progress" in full and "#strength" not in full
 
 
-def test_a_report_derives_captured_from_the_capture_and_never_claims_it(reporter, tmp_path):
-    (tmp_path / "page.md").write_text("body\n")
-    (tmp_path / "capture.json").write_text(json.dumps({"item": ITEM, "title": "T", "body": "page.md"}))
-    report = reporter.build_report(tmp_path, "_raw/s/leaf--00000000", ticket="abc", outcome="ok")
-    assert report == {
-        "v": 1, "ticket": "abc", "outcome": "ok", "reason": None,
-        "captured": [{"item": ITEM, "dir": "_raw/s/leaf--00000000", "title": "T"}],
-        "written": [], "missing": [], "discovered": [],
-    }
-
-
-@pytest.mark.parametrize("outcome", ["ok", "partial", "unchanged"])
-def test_a_report_cannot_say_a_capture_landed_when_none_did(reporter, tmp_path, outcome):
-    """An aborted build leaves no `capture.json`; a record naming a body that
-    is not there is the same lie."""
-    with pytest.raises(ValueError, match="names no body file"):
-        reporter.build_report(tmp_path, "_raw/s/l", ticket="abc", outcome=outcome, reason="r")
-    (tmp_path / "capture.json").write_text(json.dumps({"item": ITEM, "body": "page.md"}))
-    with pytest.raises(ValueError, match="names no body file"):
-        reporter.build_report(tmp_path, "_raw/s/l", ticket="abc", outcome=outcome, reason="r")
-
-
-def test_a_failed_report_carries_its_reason_and_its_missing_hosts(reporter, tmp_path):
-    report = reporter.build_report(
-        tmp_path, "_raw/s/l", ticket="abc", outcome="failed", reason="proxy refused the host",
-        missing=[("rr1.googlevideo.com", "https://rr1.googlevideo.com/x", "denied")],
-    )
-    assert report["captured"] == [] and report["reason"] == "proxy refused the host"
-    assert report["missing"] == [{"host": "rr1.googlevideo.com", "url": "https://rr1.googlevideo.com/x", "why": "denied"}]
-    with pytest.raises(ValueError, match="must say why"):
-        reporter.build_report(tmp_path, "_raw/s/l", ticket="abc", outcome="failed")
-    with pytest.raises(ValueError, match="why must be one of"):
-        reporter.build_report(tmp_path, "_raw/s/l", ticket="abc", outcome="failed", reason="r", missing=[("h", "u", "blocked")])
-
-
 # ------------------------------------------------------------------ the scripts, as a worker runs them
 
 
@@ -183,10 +142,14 @@ def _fill(cap):
     shutil.copy(FIXTURES / "dQw4fixture.en.vtt", cap / "captions" / "dQw4fixture.en.vtt")
 
 
-def _script(script, root, cap, *argv, check=True):
+TICKET_ID = "8c1d2e3f4a5b"
+
+
+def _script(script, root, cap, *argv, check=True, env=None):
+    run_env = {**os.environ, **(env or {})}
     cp = subprocess.run(
         ["uv", "run", "-q", str(script), str(root), "--capture-dir", str(cap.relative_to(root)), *argv],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, env=run_env,
     )
     if check:
         assert cp.returncode == 0, cp.stderr
@@ -199,15 +162,35 @@ def _stub_formatter(tmp_path):
     return stub
 
 
-def _stub_ops(tmp_path):
-    """A stand-in for the front door's page verbs, for the cases whose wiki is
-    a bare tmp directory. It writes what the real `page create`/`page edit`
-    would, and refuses a `create` over a title that is already a page."""
+def _default_ticket(cap, root, stage, **over):
+    ticket = {
+        "ticket": TICKET_ID, "stage": stage, "slug": "yt-job", "item": ITEM, "target": ITEM,
+        "capture_dir": str(cap.relative_to(root)), "dest": None, "hosts": ["www.youtube.com"],
+        "known": [], "options": {},
+    }
+    ticket.update(over)
+    return ticket
+
+
+def _stub_ops(tmp_path, ticket=None):
+    """A stand-in for the front door: `pipeline tickets open` (answers
+    `ticket`), `pipeline tickets update` (a bare 0, recorded), and the page
+    verbs (`page create`/`page edit`) — the one `LLM_WIKI_OPS`/`--ops` this
+    script's `open_ticket`, `post_update` and `write_page` all reach through.
+    It writes what the real `page create`/`page edit` would, and refuses a
+    `create` over a title that is already a page."""
     stub = tmp_path / "ops_stub.py"
     stub.write_text(
         "import json, os, pathlib, sys\n"
         "argv = sys.argv[1:]\n"
         "verb = [a for a in argv if not a.startswith('--')]\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket))})\n"
+        "if verb[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if verb[:3] == ['pipeline', 'tickets', 'update']:\n"
+        "    pathlib.Path(os.getcwd(), 'update-calls.jsonl').open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
         "pairs = dict(a.split('=', 1) for a in verb if '=' in a)\n"
         "rel = pairs['dest'].rstrip('/') + '/' + pairs['title'] + '.md' if verb[1] == 'create' else verb[2]\n"
         "out = pathlib.Path(os.getcwd()) / rel\n"
@@ -222,15 +205,21 @@ def _stub_ops(tmp_path):
     return shlex.join(["uv", "run", "-q", str(stub)])
 
 
-def _record(root, cap, *argv, check=True):
+def _record(root, cap, *argv, check=True, ticket=True, ops=None):
     """The HARVEST arm: the capture record for the bytes already on disk."""
-    return _script(BUILDER, root, cap, "--record", *argv, check=check)
+    env, ticket_argv = None, []
+    if ticket:
+        front_door = ops if ops is not None else _stub_ops(root, ticket=_default_ticket(cap, root, "harvest"))
+        env, ticket_argv = {"LLM_WIKI_OPS": front_door}, ["--ticket", TICKET_ID]
+    return _script(BUILDER, root, cap, "--record", *ticket_argv, *argv, check=check, env=env)
 
 
-def _build(root, cap, *argv, dest=DEST, ops=None, check=True):
+def _build(root, cap, *argv, dest=DEST, ops=None, check=True, ticket=True):
     """The PROCESS arm: the body, and the page under `dest`."""
-    front_door = ops if ops is not None else _stub_ops(root)
-    return _script(BUILDER, root, cap, "--dest", dest, "--ops", front_door, *argv, check=check)
+    front_door = ops if ops is not None else _stub_ops(root, ticket=_default_ticket(cap, root, "process") if ticket else None)
+    ticket_argv = ["--ticket", TICKET_ID] if ticket else []
+    return _script(BUILDER, root, cap, "--dest", dest, "--ops", front_door, *ticket_argv, *argv,
+                    check=check, env={"LLM_WIKI_OPS": front_door})
 
 
 def _page_calls(root):
@@ -241,9 +230,6 @@ def _page_calls(root):
 def _ticketed(tmp_path):
     cap = tmp_path / "_raw" / "yt-job" / "watch--1a2b3c4d"
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps({
-        "v": 1, "ticket": "8c1d2e3f4a5b", "unit": UNIT, "slug": "yt-job", "item": ITEM, "target": ITEM,
-        "capture_dir": "_raw/yt-job/watch--1a2b3c4d", "dest": None, "hosts": ["www.youtube.com"]}))
     _fill(cap)
     return cap
 
@@ -253,14 +239,17 @@ def test_harvest_leaves_the_bytes_and_a_flat_capture_record(tmp_path):
     carries no `frontmatter` object and no key a page verb owns — the facts
     reach the page because this unit writes the page."""
     cap = _ticketed(tmp_path)
+    stub = _stub_ops(tmp_path, ticket=_default_ticket(cap, tmp_path, "harvest"))
     before = {p for p in tmp_path.rglob("*") if p.is_file()}
-    _record(tmp_path, cap)
+    _record(tmp_path, cap, ops=stub)
     record = json.loads((cap / "capture.json").read_text())
     assert record == {
         "slug": "yt-job", "item": ITEM, "title": META["title"], "body": "metadata.json",
         "content_type": "application/json", "fetched_at": record["fetched_at"]}
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["fetched_at"])
-    assert {p for p in tmp_path.rglob("*") if p.is_file()} - before == {cap / "capture.json"}
+    # `update-calls.jsonl` is the stub front door's OWN recording, not this script's.
+    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before - {tmp_path / "update-calls.jsonl"}
+    assert new == {cap / "capture.json"}, new
 
 
 def test_process_writes_the_page_under_dest_through_the_page_verbs(tmp_path):
@@ -304,48 +293,22 @@ def test_a_rerun_over_the_same_capture_is_byte_identical(tmp_path):
 
 
 def test_no_captions_is_a_page_without_a_transcript_and_says_so(tmp_path):
+    """`has_transcript` is the whole of what this script says about it — the
+    session's own `tickets update` line (SKILL.md step 4) is what turns a
+    false one into `reason=no_captions`; there is no report for this script
+    to compose any more."""
     cap = _ticketed(tmp_path)
     shutil.rmtree(cap / "captions")
     out = json.loads(_build(tmp_path, cap).stdout)  # no formatter needed: nothing to format
     assert out["has_transcript"] is False
     assert "## Transcript" not in (cap / "page.md").read_text()
-    _script(REPORTER, tmp_path, cap, "--outcome", "partial", "--reason", "no_captions",
-            "--written-from", "written.json")
-    report = json.loads((cap / "report.json").read_text())
-    assert (report["outcome"], report["reason"], report["captured"]) == ("partial", "no_captions", [])
-    assert report["written"] == out["written"]
 
 
-def test_no_metadata_is_refused_by_name_and_reported_failed(tmp_path):
+def test_no_metadata_is_refused_by_name(tmp_path):
     cap = _ticketed(tmp_path)
     (cap / "metadata.json").unlink()
     cp = _record(tmp_path, cap, check=False)
     assert cp.returncode != 0 and "metadata.json" in cp.stderr and "Traceback" not in cp.stderr
-    # `ok` over a capture that never landed is refused, and writes nothing…
-    cp = _script(REPORTER, tmp_path, cap, "--outcome", "ok", check=False)
-    assert cp.returncode != 0 and "names no body file" in cp.stderr and not (cap / "report.json").exists()
-    # …and `failed` is what the worker reports instead.
-    _script(REPORTER, tmp_path, cap, "--outcome", "failed", "--reason", "yt-dlp: Video unavailable",
-            "--missing", "www.youtube.com", ITEM, "error")
-    report = json.loads((cap / "report.json").read_text())
-    assert report["ticket"] == "8c1d2e3f4a5b" and report["outcome"] == "failed" and report["captured"] == []
-    assert report["missing"] == [{"host": "www.youtube.com", "url": ITEM, "why": "error"}]
-
-
-def test_the_report_names_the_tickets_own_capture_dir_and_a_hand_run_needs_a_ticket_id(tmp_path):
-    cap = _ticketed(tmp_path)
-    _record(tmp_path, cap)
-    _script(REPORTER, tmp_path, cap, "--outcome", "ok")
-    report = json.loads((cap / "report.json").read_text())
-    assert set(report) == {"v", "ticket", "outcome", "reason", "captured", "written", "missing", "discovered"}
-    assert report["captured"] == [{"item": ITEM, "dir": "_raw/yt-job/watch--1a2b3c4d", "title": META["title"]}]
-    # `spawn: none`: no ticket.json, so the id is handed over — or refused.
-    (cap / "ticket.json").unlink()
-    (cap / "report.json").unlink()
-    cp = _script(REPORTER, tmp_path, cap, "--outcome", "ok", check=False)
-    assert cp.returncode != 0 and "--ticket" in cp.stderr and not (cap / "report.json").exists()
-    _script(REPORTER, tmp_path, cap, "--outcome", "ok", "--ticket", "feedfacecafe")
-    assert json.loads((cap / "report.json").read_text())["ticket"] == "feedfacecafe"
 
 
 # --- titles, hostile venue text, and the scripts as `run` starts them ---------
@@ -529,48 +492,50 @@ def test_a_hostile_video_builds_a_page_whose_structure_is_all_ours(tmp_path):
 # Rule 3 — `llm-wiki-ops run` starts a script at the WIKI ROOT, not in the capture dir.
 
 
-def _as_run_does(script, root, *argv):
+def _as_run_does(script, root, *argv, env=None):
     """THE DOCUMENTED WAY: cwd is the wiki root, the wiki is `.`, and the
     capture dir is the ticket's wiki-relative value — no absolute path anywhere."""
-    return subprocess.run(["uv", "run", "-q", str(script), ".", *argv], cwd=root, capture_output=True, text=True, check=False)
+    run_env = {**os.environ, **(env or {})}
+    return subprocess.run(["uv", "run", "-q", str(script), ".", *argv], cwd=root, capture_output=True, text=True, check=False, env=run_env)
 
 
 def test_both_scripts_run_from_the_wiki_root_with_the_tickets_relative_capture_dir(tmp_path):
     cap = _ticketed(tmp_path)
-    rel = json.loads((cap / "ticket.json").read_text())["capture_dir"]
+    rel = str(cap.relative_to(tmp_path))
+    stub = _stub_ops(tmp_path, ticket=_default_ticket(cap, tmp_path, "harvest"))
     before = {p for p in tmp_path.rglob("*") if p.is_file()}
-    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--record")
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--record", "--ticket", TICKET_ID, env={"LLM_WIKI_OPS": stub})
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout)["capture"] == f"{rel}/capture.json"
-    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--dest", DEST,
-                      "--ops", _stub_ops(tmp_path), "--format-transcript", str(_stub_formatter(tmp_path)))
+    stub = _stub_ops(tmp_path, ticket=_default_ticket(cap, tmp_path, "process"))
+    cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", rel, "--dest", DEST, "--ticket", TICKET_ID,
+                       "--ops", stub, "--format-transcript", str(_stub_formatter(tmp_path)), env={"LLM_WIKI_OPS": stub})
     assert cp.returncode == 0, cp.stderr
     assert json.loads(cp.stdout)["page"] == f"{rel}/page.md"
-    cp = _as_run_does(REPORTER, tmp_path, "--capture-dir", rel, "--outcome", "ok")
-    assert cp.returncode == 0, cp.stderr
-    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before
-    assert new == {cap / "page.md", cap / "capture.json", cap / "report.json", cap / "written.json",
-                   tmp_path / "fmt.py", tmp_path / "ops_stub.py", tmp_path / "page-calls.jsonl",
+    # `update-calls.jsonl`/`ops_stub.py` are the stub front door's own files.
+    new = {p for p in tmp_path.rglob("*") if p.is_file()} - before - {tmp_path / "update-calls.jsonl", tmp_path / "ops_stub.py"}
+    assert new == {cap / "page.md", cap / "capture.json", cap / "written.json",
+                   tmp_path / "fmt.py", tmp_path / "page-calls.jsonl",
                    tmp_path / DEST / f"{META['title']}.md"}, new
-    assert json.loads((cap / "report.json").read_text())["captured"][0]["dir"] == rel
 
 
-@pytest.mark.parametrize("script, tail", [(BUILDER, ["--record"]), (REPORTER, ["--outcome", "failed", "--reason", "r"])])
-def test_a_capture_dir_that_is_not_wiki_relative_is_refused(tmp_path, script, tail):
+@pytest.mark.parametrize("tail", [["--record"], ["--dest", DEST]])
+def test_a_capture_dir_that_is_not_wiki_relative_is_refused(tmp_path, tail):
     cap = _ticketed(tmp_path)
     for bad in (str(cap), "_raw/yt-job/../yt-job/watch--1a2b3c4d", "_raw/yt-job/nope"):
-        cp = _as_run_does(script, tmp_path, "--capture-dir", bad, *tail)
+        cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", bad, *tail, "--item", ITEM)
         assert cp.returncode != 0 and "Traceback" not in cp.stderr, (bad, cp.stderr)
-    assert not (cap / "report.json").exists() and not (tmp_path / "report.json").exists()
+    assert not (cap / "page.md").exists() and not (tmp_path / "page.md").exists()
 
 
 def test_the_builder_refuses_a_directory_no_spawner_wrote_a_ticket_into(tmp_path):
     """`.` — the wiki root itself, which is what a capture-dir default of `.`
-    used to mean under `run` — holds no ticket.json: refused, nothing written."""
+    used to mean under `run` — has neither `--ticket` nor `--item`: refused,
+    nothing written."""
     cap = _ticketed(tmp_path)
     shutil.copy(cap / "metadata.json", tmp_path / "metadata.json")
     cp = _as_run_does(BUILDER, tmp_path, "--capture-dir", ".", "--record")
-    assert cp.returncode != 0 and "ticket.json" in cp.stderr and "--item" in cp.stderr
+    assert cp.returncode != 0 and "--ticket" in cp.stderr and "--item" in cp.stderr
     assert not (tmp_path / "page.md").exists() and not (tmp_path / "capture.json").exists()
 
 
@@ -580,36 +545,21 @@ def test_the_builder_refuses_a_directory_no_spawner_wrote_a_ticket_into(tmp_path
 def _an_earlier_run(tmp_path):
     cap = _ticketed(tmp_path)
     _record(tmp_path, cap)
-    _script(REPORTER, tmp_path, cap, "--outcome", "ok")
-    assert json.loads((cap / "report.json").read_text())["outcome"] == "ok"
+    assert (cap / "capture.json").is_file()
     return cap
 
 
-def _respawn(cap):
-    """What the spawner does on every dispatch: rewrite ticket.json."""
-    ticket = json.loads((cap / "ticket.json").read_text())
-    (cap / "ticket.json").write_text(json.dumps({**ticket, "ticket": "feedfacecafe"}))
-    stamp = (cap / "ticket.json").stat().st_mtime_ns
-    for name in ("capture.json", "page.md", "report.json"):   # make "earlier" unmistakable on a coarse clock
-        if (cap / name).exists():
-            os.utime(cap / name, ns=(stamp - 10**9, stamp - 10**9))
-
-
 def test_a_failed_yt_dlp_on_a_respawn_is_not_reported_as_the_earlier_runs_capture(tmp_path):
-    """`yt-dlp … > metadata.json` leaves an EMPTY file when yt-dlp fails. The
-    builder used to traceback on it BEFORE removing the old capture.json, and
-    `write_report --outcome ok` then said `captured: 1` for a video this run
-    never captured."""
+    """`yt-dlp … > metadata.json` leaves an EMPTY file when yt-dlp fails. P-7:
+    every harvest run clears `capture.json` FIRST, so a failed respawn can
+    never be read as the run before's success — no ticket-mtime comparison
+    needed, because there is nothing stale left to compare against."""
     cap = _an_earlier_run(tmp_path)
-    _respawn(cap)
     (cap / "metadata.json").write_text("")
     cp = _record(tmp_path, cap, check=False)
     assert cp.returncode != 0 and "Traceback" not in cp.stderr
     assert "metadata.json" in cp.stderr and "yt-dlp failed" in cp.stderr
-    for stale in ("capture.json", "page.md", "report.json"):
-        assert not (cap / stale).exists(), f"{stale} survived a failed build"
-    cp = _script(REPORTER, tmp_path, cap, "--outcome", "ok", check=False)
-    assert cp.returncode != 0 and not (cap / "report.json").exists()
+    assert not (cap / "capture.json").exists(), "capture.json survived a failed build"
 
 
 @pytest.mark.parametrize("junk", ["[1, 2]", '"text"', "{not json"])
@@ -620,55 +570,20 @@ def test_metadata_that_is_not_yt_dlps_object_is_refused_without_a_traceback(tmp_
     assert cp.returncode != 0 and "Traceback" not in cp.stderr and not (cap / "capture.json").exists()
 
 
-def test_the_reporter_cannot_say_ok_off_a_capture_older_than_its_ticket(reporter, tmp_path):
-    """The worker that never ran the builder at all (yt-dlp failed, it skipped
-    to the report, and said `ok`): the capture on disk is the run before's."""
-    cap = _an_earlier_run(tmp_path)
-    _respawn(cap)
-    assert reporter.is_stale(cap)
-    for outcome in ("ok", "partial", "unchanged"):
-        cp = _script(REPORTER, tmp_path, cap, "--outcome", outcome, "--reason", "r", check=False)
-        assert cp.returncode != 0 and "EARLIER run" in cp.stderr, cp.stderr
-        assert not (cap / "report.json").exists(), "a refusal leaves no report — not even the earlier run's"
-    _script(REPORTER, tmp_path, cap, "--outcome", "failed", "--reason", "yt-dlp: Video unavailable")
-    report = json.loads((cap / "report.json").read_text())
-    assert (report["ticket"], report["outcome"], report["captured"]) == ("feedfacecafe", "failed", [])
-    # …and a capture AFTER the respawn is this ticket's, and reportable.
-    _record(tmp_path, cap)
-    assert not reporter.is_stale(cap) and not (cap / "report.json").exists()
-    _script(REPORTER, tmp_path, cap, "--outcome", "ok")
-    assert len(json.loads((cap / "report.json").read_text())["captured"]) == 1
+# Rule 1 — the ticket's `embeds` reaches the page.
 
 
-def test_a_written_report_exits_zero_whatever_it_says_and_a_refusal_does_not(tmp_path):
-    """The status answers "was a report written", which is what a worker that
-    must always leave one needs to know. `skipped` is step 1's `known[]` case."""
-    cap = _ticketed(tmp_path)
-    for outcome in ("failed", "skipped", "gone"):
-        cp = _script(REPORTER, tmp_path, cap, "--outcome", outcome, "--reason", "known: already held", check=False)
-        assert cp.returncode == 0 and json.loads(cp.stdout)["captured"] == 0
-        report = json.loads((cap / "report.json").read_text())
-        assert (report["outcome"], report["reason"], report["captured"]) == (outcome, "known: already held", [])
-    cp = _script(REPORTER, tmp_path, cap, "--outcome", "skipped", check=False)
-    assert cp.returncode != 0 and "must say why" in cp.stderr and not (cap / "report.json").exists()
-
-
-# Rule 1 — the report reads the pages off a file; the ticket's `embeds` reaches the page.
-
-
-def test_the_report_reads_the_pages_off_a_file_not_off_a_command_line(tmp_path):
+def test_the_written_pages_land_in_a_file_not_on_a_command_line(tmp_path):
     """A page's filename IS the video's title, and `safe_title` leaves `;`, `$`
-    and a backtick in one — a filename may hold them. Typed onto the worker's
-    Bash line that is the venue running a command, so the builder leaves the
-    list under a fixed name and the report reads it."""
+    and a backtick in one — a filename may hold them. Typed onto the SKILL's
+    `tickets update written_from=` line that would be the venue running a
+    command, so the builder leaves the list under a fixed name instead."""
     cap = _ticketed(tmp_path)
     (cap / "metadata.json").write_text(json.dumps({**META, "title": "Pricing;$(touch PWNED) `id`"}))
     _record(tmp_path, cap)
     out = json.loads(_build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path))).stdout)
     assert json.loads((cap / "written.json").read_text()) == out["written"]
     assert ";" in out["written"][0] and "$(" in out["written"][0], out["written"]
-    _script(REPORTER, tmp_path, cap, "--outcome", "ok", "--written-from", "written.json")
-    assert json.loads((cap / "report.json").read_text())["written"] == out["written"]
 
 
 @pytest.mark.parametrize("embeds, iframe", [(True, True), (False, False)])
@@ -683,15 +598,13 @@ def test_process_embeds_false_takes_the_iframe_out(builder, embeds, iframe):
 
 @pytest.mark.parametrize("process, iframe", [({"embeds": False}, False), ({"embeds": True}, True), ({}, True), (None, True), ("nope", True)])
 def test_the_tickets_embeds_key_reaches_the_page_the_script_writes(tmp_path, process, iframe):
-    """The shipped path: `ticket.json`'s `process.embeds`, read by the script
-    itself (`embeds_of`), not a `build_body(embeds=)` a test hands over — a
-    wrong key there stays green above. Absent, the embed stays: the record's
-    own default."""
+    """The shipped path: the ticket's `process.embeds`, off `tickets open`,
+    read by the script itself (`embeds_of`), not a `build_body(embeds=)` a
+    test hands over — a wrong key there stays green above. Absent, the
+    embed stays: the record's own default."""
     cap = _ticketed(tmp_path)
-    ticket = json.loads((cap / "ticket.json").read_text())
-    if process is not None:
-        ticket["process"] = process
-    (cap / "ticket.json").write_text(json.dumps(ticket))
-    _build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)))
+    over = {"process": process} if process is not None else {}
+    stub = _stub_ops(tmp_path, ticket=_default_ticket(cap, tmp_path, "process", **over))
+    _build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)), ops=stub)
     body = (cap / "page.md").read_text()
     assert ("<iframe" in body) is iframe, body[:200]

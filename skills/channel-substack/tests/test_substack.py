@@ -2,13 +2,13 @@
 
 HARVEST is bytes: `enumerate_archive.py` applies the job's own rules and plans
 the leaf capture directories, `capture_posts.py` writes each post's
-`page.html`, `leaf.json` and a flat `capture.json`, and `write_report.py`
-lists every leaf in `captured[]`.
+`page.html`, `leaf.json` and a flat `capture.json`, and `capture_posts.py
+--report` lists every leaf in `captured[]` and posts `tickets update`.
 
 PROCESS is the unit's own: one ticket per captured leaf, the SKILL's three
 commands — `to_markdown.py`, then `page create --stdin`, then `page edit
-extracted=true` — driven here against the REAL CLI, and `write_report.py
---written` reporting the page.
+extracted=true` — driven here against the REAL CLI, and `capture_posts.py
+--report --written-from` reporting the page.
 
 No network anywhere: the archive API is a fixture (`fixtures/
 archive.json`) served through a stubbed `fetch_page`, and post pages are
@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -58,18 +59,21 @@ def _ticket(slug="news", **over):
 def _plan(monkeypatch, capsys, ticket_dir, ticket=None, *argv):
     """The enumerator over the fixture archive, IN PROCESS (the archive API is
     stubbed, which a subprocess cannot be) and therefore with an ABSOLUTE
-    `--capture-dir`; everything else comes off `ticket.json`. That is NOT how
-    a worker runs it — `llm-wiki-ops run` starts a script at the wiki root
-    with the ticket's wiki-relative `capture_dir` — and the cases under "the
-    documented way" below drive all three scripts exactly so."""
+    `--capture-dir`; everything else comes off `tickets open`, stubbed
+    in-process. That is NOT how a worker runs it — `llm-wiki-ops run` starts
+    a script at the wiki root with the ticket's wiki-relative `capture_dir`
+    — and the cases under "the documented way" below drive all three
+    scripts exactly so."""
     mod = _module("enumerate_archive")
+    extra_argv = ["--capture-dir", str(ticket_dir)]
     if ticket is not None:
         ticket_dir.mkdir(parents=True, exist_ok=True)
-        (ticket_dir / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
+        monkeypatch.setattr(mod, "open_ticket", lambda tid, stage=None: ticket)
+        extra_argv += ["--ticket", ticket["ticket"]]
     archive = json.loads((FIX / "archive.json").read_text(encoding="utf-8"))
     monkeypatch.setattr(mod, "fetch_page", lambda domain, offset, limit: archive[offset:offset + limit])
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(ticket_dir), *argv])
+    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", *extra_argv, *argv])
     mod.main()
     return json.loads(capsys.readouterr().out)
 
@@ -154,8 +158,8 @@ def test_a_narrow_scope_on_an_archive_plans_nothing_and_says_so(monkeypatch, cap
     plan = _plan(monkeypatch, capsys, cap, _ticket(harvest={"scope": scope, "access": "free", "exclude_urls": []}))
     assert plan["leaves"] == [] and plan["summary"]["skipped_by_scope"] == 8
 
-    report = _module("write_report").build(plan, [], {"ticket": "t"}, cap.parent)
-    assert report["outcome"] == "failed" and "harvest.scope" in report["reason"]
+    report = _module("capture_posts").build_update(plan, [], cap.parent)
+    assert report["status"] == "failed" and "harvest.scope" in report["reason"]
 
 
 def test_exclude_urls_matches_exact_path_prefix_and_star_glob():
@@ -184,8 +188,8 @@ def test_a_post_target_and_a_refresh_ticket_plan_one_leaf_in_the_tickets_own_dir
     def plan_for(ticket, name):
         directory = tmp_path / name
         directory.mkdir()
-        (directory / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-        monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(directory)])
+        monkeypatch.setattr(mod, "open_ticket", lambda tid, stage=None: ticket)
+        monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(directory), "--ticket", ticket["ticket"]])
         mod.main()
         return json.loads(capsys.readouterr().out)
 
@@ -230,41 +234,42 @@ def _land(root, leaf, title="T"):
 
 
 def test_captured_is_what_is_on_disk_and_the_outcome_follows(tmp_path):
-    build = _module("write_report").build
+    build = _module("capture_posts").build_update
     leaves = [{"item": f"{HOST}/p/a", "dir": "_raw/news/p-a--11111111"}, {"item": f"{HOST}/p/b", "dir": "_raw/news/p-b--22222222"}]
     plan = {"ticket": "abc", "newsletter": "example-newsletter.invalid", "leaves": leaves, "summary": {"truncated": False}}
 
-    nothing = build(plan, [], {}, tmp_path)
-    assert nothing["outcome"] == "failed" and nothing["captured"] == []
+    nothing = build(plan, [], tmp_path)
+    assert nothing["status"] == "failed" and nothing["captured"] == []
 
     _land(tmp_path, leaves[0])
     rows = [{"item": leaves[1]["item"], "state": "paywalled", "why": "auth"}]
-    partial = build(plan, rows, {"ticket": "abc"}, tmp_path)
-    assert partial["outcome"] == "partial" and "1 of 2" in partial["reason"] and "paywalled" in partial["reason"]
+    partial = build(plan, rows, tmp_path)
+    # P-5: a paywall is a LASTING fact about that one post, not a shortfall a
+    # re-run fixes — `ok`, with the post in `missing[]` and `reason` naming it.
+    assert partial["status"] == "ok" and "1 of 2" in partial["reason"] and "paywalled" in partial["reason"]
     assert partial["captured"] == [{"item": leaves[0]["item"], "dir": leaves[0]["dir"], "title": "T"}]
     assert partial["missing"] == [{"host": "example-newsletter.invalid", "url": leaves[1]["item"], "why": "auth"}]
-    assert (partial["v"], partial["ticket"], partial["written"], partial["discovered"]) == (1, "abc", [], [])
 
     # A capture record whose body is not there is not a capture.
     (tmp_path / "p-b--22222222").mkdir()
     (tmp_path / "p-b--22222222/capture.json").write_text(json.dumps({"body": "page.html"}), encoding="utf-8")
-    assert len(build(plan, [], {}, tmp_path)["captured"]) == 1
+    assert len(build(plan, [], tmp_path)["captured"]) == 1
 
     _land(tmp_path, leaves[1])
-    assert build(plan, [], {}, tmp_path)["outcome"] == "ok"
+    assert build(plan, [], tmp_path)["status"] == "ok"
     # The whole plan landed, but the plan was not the whole archive.
-    capped = build({**plan, "summary": {"truncated": True}}, [], {}, tmp_path)
-    assert capped["outcome"] == "partial" and "known[]" in capped["reason"]
+    capped = build({**plan, "summary": {"truncated": True}}, [], tmp_path)
+    assert capped["status"] == "partial" and "known[]" in capped["reason"]
 
 
 def test_an_empty_plan_is_skipped_and_a_dead_session_is_auth_expired(tmp_path):
-    build = _module("write_report").build
-    empty = build({"newsletter": "n.invalid", "leaves": [], "summary": {"skipped_known": 9}}, [], {"ticket": "t"}, tmp_path)
-    assert empty["outcome"] == "skipped" and empty["reason"].startswith("known:")
+    build = _module("capture_posts").build_update
+    empty = build({"newsletter": "n.invalid", "leaves": [], "summary": {"skipped_known": 9}}, [], tmp_path)
+    assert empty["status"] == "ok" and empty["reason"].startswith("known:")
 
     leaves = [{"item": f"{HOST}/p/a", "dir": "_raw/news/p-a--11111111"}]
-    dead = build({"newsletter": "n.invalid", "leaves": leaves, "summary": {}}, [{"item": leaves[0]["item"], "state": "paywalled", "why": "auth"}], {}, tmp_path)
-    assert dead["outcome"] == "failed" and dead["reason"] == "auth_expired:n.invalid"
+    dead = build({"newsletter": "n.invalid", "leaves": leaves, "summary": {}}, [{"item": leaves[0]["item"], "state": "paywalled", "why": "auth"}], tmp_path)
+    assert dead["status"] == "failed" and dead["reason"] == "auth_expired:n.invalid"
 
 
 # ---- page names: one page per post, whatever two posts are called --------
@@ -274,7 +279,7 @@ def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
     """`page/note.py::filename_for` is `title.strip() + ".md"` and nothing else:
     outer whitespace is all the HOST folds; case is what a case-insensitive
     filesystem folds under it."""
-    mod = _module("write_report")
+    mod = _module("capture_posts")
     assert mod.page_key("Open Thread") == mod.page_key(" Open Thread\n") == mod.page_key("OPEN THREAD")
     assert mod.page_key("Open Thread") != mod.page_key("Open Thread!")  # nothing else is dropped
     assert mod.TITLE_ILLEGAL == '/\\:*?"<>|'  # `page/note.py::ILLEGAL` — a title carrying one is refused
@@ -288,7 +293,7 @@ def test_the_page_key_is_the_hosts_filename_rule_plus_what_a_filesystem_folds():
 
 
 def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_path):
-    mod = _module("write_report")
+    mod = _module("capture_posts")
     leaves = [
         {"item": f"{HOST}/p/gone", "dir": "_raw/news/p-gone--00000000", "title": "Open Thread", "published": "2026-09-15"},
         {"item": f"{HOST}/p/a", "dir": "_raw/news/p-a--11111111", "title": "Open Thread", "published": "2026-09-08"},
@@ -300,81 +305,107 @@ def test_same_titled_posts_are_told_apart_by_the_day_they_were_published(tmp_pat
         _land(tmp_path, leaf, title=leaf["title"])
     want = ["Open Thread (2026-09-08)", f"Open Thread ({hashlib.sha1(leaves[2]['item'].encode()).hexdigest()[:8]})", "Something Else"]
     for _ in range(2):  # a second report renames nothing a second time
-        report = mod.build(plan, [], {}, tmp_path)
+        report = mod.build_update(plan, [], tmp_path)
         assert [c["title"] for c in report["captured"]] == want
         assert [json.loads((tmp_path / leaf["dir"].rsplit("/", 1)[-1] / "capture.json").read_text(encoding="utf-8"))["title"]
                 for leaf in leaves[1:]] == want
     # `--only` re-renders one leaf with its plain title; the next report settles it to the SAME name.
     _land(tmp_path, leaves[1], title="Open Thread")
-    assert [c["title"] for c in mod.build(plan, [], {}, tmp_path)["captured"]] == want
+    assert [c["title"] for c in mod.build_update(plan, [], tmp_path)["captured"]] == want
     # With nothing before it, the first LANDED post keeps its title untouched.
-    report = mod.build({**plan, "leaves": leaves[1:]}, [], {}, tmp_path)
+    report = mod.build_update({**plan, "leaves": leaves[1:]}, [], tmp_path)
     assert [c["title"] for c in report["captured"]][0] == "Open Thread (2026-09-08)"  # already settled: left as it is
     _land(tmp_path, leaves[1], title="Open Thread")
-    assert [c["title"] for c in mod.build({**plan, "leaves": leaves[1:]}, [], {}, tmp_path)["captured"]][:2] == ["Open Thread", want[1]]
+    assert [c["title"] for c in mod.build_update({**plan, "leaves": leaves[1:]}, [], tmp_path)["captured"]][:2] == ["Open Thread", want[1]]
 
 
 # --- the scripts from the wiki root, on relative paths ------------------------
 #
 # `llm-wiki-ops run` starts a script with the wiki root as its cwd
 # (`commands/run/run.py::_exec`), NOT in the capture directory the worker
-# stands in. Every case above this line passes an absolute `--capture-dir`,
-# which is how a `.` default got through review: `write_report.py` wrote a
-# fabricated `failed` report with a null ticket AT THE WIKI ROOT.
+# stands in. Every case above this line passes an absolute `--capture-dir`.
 
 
 POST = f"{HOST}/p/the-newest-one"
 OWN = "_raw/news/p-the-newest-one--1e31d334"
-STDLIB = ("enumerate_archive.py", "capture_posts.py", "write_report.py")  # no dependencies: plain python runs them
+STDLIB = ("enumerate_archive.py", "capture_posts.py")  # no dependencies: plain python runs them
 
 
-def _py(name, *argv, cwd):
-    return subprocess.run([sys.executable, "-B", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd)
+def _py(name, *argv, cwd, env=None):
+    run_env = {**os.environ, **(env or {})}
+    return subprocess.run([sys.executable, "-B", str(SCRIPTS / name), *argv], capture_output=True, text=True, check=False, cwd=cwd, env=run_env)
+
+
+def _stub_ops(root, ticket=None):
+    """A stand-in front door: `pipeline tickets open` answers `ticket`;
+    `pipeline tickets update` is recorded to `update-calls.jsonl` and
+    answers a bare 0 — the one `LLM_WIKI_OPS` `open_ticket`/`post_update`
+    both reach through when these scripts run as real subprocesses."""
+    stub = root / "ops_stub.py"
+    stub.write_text(
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        "    pathlib.Path('update-calls.jsonl').open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return shlex.join([sys.executable, str(stub)])
+
+
+def _updates(root):
+    path = root / "update-calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def _kv(argv):
+    return dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("--"))
 
 
 def _root_with_post_ticket(tmp_path, **over):
-    """A stand-in wiki root holding one ticket whose target IS a post — the
-    one plan the enumerator makes with no archive call, so a subprocess can
-    run it with no network."""
+    """A stand-in wiki root and the ticket whose target IS a post — the one
+    plan the enumerator makes with no archive call, so a subprocess can run
+    it with no network. Returns `(root, ticket, env)`."""
     root = tmp_path / "wiki"
     (root / OWN).mkdir(parents=True)
     ticket = _ticket(item=POST, target=POST, capture_dir=OWN, **over)
-    (root / OWN / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    return root
+    env = {"LLM_WIKI_OPS": _stub_ops(root, ticket=ticket)}
+    return root, ticket, env
 
 
 def _litter(root):
-    return sorted(path.name for path in root.iterdir() if path.name != "_raw")
+    return sorted(path.name for path in root.iterdir() if path.name not in ("_raw", "ops_stub.py", "update-calls.jsonl"))
 
 
 def test_no_script_runs_without_a_capture_dir_and_none_writes_at_the_wiki_root(tmp_path):
     """The blocker, as the reviewer hit it through the real `run`: no
-    arguments, cwd the wiki root. Each script must REFUSE — and above all
-    `write_report.py` must not leave a `report.json` where it stands."""
-    root = _root_with_post_ticket(tmp_path)
+    arguments, cwd the wiki root. Each script must REFUSE."""
+    root, _ticket_, _env = _root_with_post_ticket(tmp_path)
     for name in STDLIB:
         done = _py(name, cwd=root)
         assert done.returncode == 2 and "--capture-dir" in done.stderr, (name, done.stderr)
     assert _litter(root) == []
 
-    # Pointed at a directory that is no ticket's (the wiki root itself): refused, nothing written.
-    done = _py("write_report.py", "--capture-dir", ".", cwd=root)
-    assert done.returncode == 2 and "ticket.json" in done.stderr and _litter(root) == []
+    # Pointed at a directory that is no ticket's (the wiki root itself), with
+    # no --ticket and no domain: refused, nothing written.
+    done = _py("enumerate_archive.py", "--capture-dir", ".", cwd=root)
+    assert done.returncode == 2 and "--ticket" in done.stderr and _litter(root) == []
     # A capture dir that is not there (an absolute-minded path from the wrong cwd) says what it wants.
     done = _py("enumerate_archive.py", "--capture-dir", "_raw/news/nope", cwd=root)
     assert done.returncode == 2 and "wiki-relative" in done.stderr
 
 
 def test_the_enumerator_and_the_report_run_from_the_wiki_root_on_relative_paths(tmp_path):
-    root = _root_with_post_ticket(tmp_path)
-    (root / OWN / "report.json").write_text('{"outcome": "ok", "ticket": "an-older-spawn"}', encoding="utf-8")
+    root, ticket, env = _root_with_post_ticket(tmp_path)
 
-    planned = _py("enumerate_archive.py", "--capture-dir", OWN, cwd=root)
+    planned = _py("enumerate_archive.py", "--capture-dir", OWN, "--ticket", ticket["ticket"], cwd=root, env=env)
     assert planned.returncode == 0, planned.stderr
     plan = json.loads((root / OWN / "leaves.json").read_text(encoding="utf-8"))
     assert [(leaf["item"], leaf["dir"]) for leaf in plan["leaves"]] == [(POST, OWN)]
-    # Rule 4: the first thing the flow does is remove a report that is not this run's.
-    assert not (root / OWN / "report.json").exists()
 
     # A hand run's relative `--out` lands INSIDE the capture dir, never at the wiki root.
     hand = root / "_raw/news/hand"
@@ -382,27 +413,26 @@ def test_the_enumerator_and_the_report_run_from_the_wiki_root_on_relative_paths(
     out = _py("enumerate_archive.py", POST, "--slug", "news", "--capture-dir", "_raw/news/hand", "--out", "leaves.json", cwd=root)
     assert out.returncode == 0 and (hand / "leaves.json").is_file(), out.stderr
 
-    # Nothing captured: the report says `failed` — IN the capture dir, with the ticket's id.
-    wrote = _py("write_report.py", "--capture-dir", OWN, cwd=root)
-    report = json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))
-    assert wrote.returncode == 1 and (report["ticket"], report["outcome"]) == ("0123456789ab", "failed")
-    assert _litter(root) == []
+    # Nothing captured: `tickets update` posts `status=failed` — with the ticket's id.
+    # The script's OWN exit is 0: the `tickets update` CALL succeeded, whatever it reported.
+    wrote = _py("capture_posts.py", "--capture-dir", OWN, "--report", "--ticket", ticket["ticket"], cwd=root, env=env)
+    assert wrote.returncode == 0, wrote.stderr
+    call = _updates(root)[-1]
+    assert call[3] == ticket["ticket"] and _kv(call)["status"] == "failed"
 
-    # A success claimed over nothing on disk is refused (agent-loop: it fails the ticket anyway).
-    # …and a refusal never leaves the PREVIOUS run's report standing for `apply` to read.
-    (root / OWN / "report.json").write_text('{"v": 1, "ticket": "0123456789ab", "outcome": "ok"}', encoding="utf-8")
-    claimed = _py("write_report.py", "--capture-dir", OWN, "--outcome", "unchanged", cwd=root)
-    assert claimed.returncode == 2 and not (root / OWN / "report.json").exists()
-    (root / OWN / "report.json").write_text('{"v": 1, "ticket": "0123456789ab", "outcome": "ok"}', encoding="utf-8")
-    assert _py("write_report.py", "--capture-dir", OWN, "--missing", "nonsense", cwd=root).returncode == 2
-    assert not (root / OWN / "report.json").exists()
+    # A malformed `--missing` is refused before anything is posted.
+    before = len(_updates(root))
+    bad = _py("capture_posts.py", "--capture-dir", OWN, "--report", "--ticket", ticket["ticket"], "--missing", "nonsense", cwd=root, env=env)
+    assert bad.returncode == 2
+    assert len(_updates(root)) == before
 
 
 def test_capture_posts_runs_from_the_wiki_root_on_relative_paths(tmp_path):
-    """No ops CLI needed: a stand-in root, the fixture page in the leaf dir, and
-    the script with cwd the root and `--capture-dir` relative."""
-    root = _root_with_post_ticket(tmp_path)
-    assert _py("enumerate_archive.py", "--capture-dir", OWN, cwd=root).returncode == 0
+    """The capture arm needs no ops CLI: a stand-in root, the fixture page in
+    the leaf dir, and the script with cwd the root and `--capture-dir`
+    relative. `--report` at the end does."""
+    root, ticket, env = _root_with_post_ticket(tmp_path)
+    assert _py("enumerate_archive.py", "--capture-dir", OWN, "--ticket", ticket["ticket"], cwd=root, env=env).returncode == 0
     shutil.copy(FIX / "post-the-newest-one.html", root / OWN / "page.html")
 
     done = _py("capture_posts.py", "--capture-dir", OWN, cwd=root)
@@ -413,30 +443,32 @@ def test_capture_posts_runs_from_the_wiki_root_on_relative_paths(tmp_path):
     # a relative --plan is inside the capture dir too
     again = _py("capture_posts.py", "--capture-dir", OWN, "--plan", "leaves.json", "--only", POST, cwd=root)
     assert again.returncode == 0, again.stderr
-    assert _py("write_report.py", "--capture-dir", OWN, cwd=root).returncode == 0
-    assert json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))["outcome"] == "ok"
-    assert _litter(root) == []
+    reported = _py("capture_posts.py", "--capture-dir", OWN, "--report", "--ticket", ticket["ticket"], cwd=root, env=env)
+    assert reported.returncode == 0, reported.stderr
+    assert _kv(_updates(root)[-1])["status"] == "ok"
 
 
 def test_a_process_ticket_reports_the_page_it_wrote(tmp_path):
-    """`--written` makes it the PROCESS ticket's report: the pages, and no
-    capture. A process ticket captures nothing, so the refusal guarding a
+    """`--written-from` makes it the PROCESS ticket's report: the pages, and
+    no capture. A process ticket captures nothing, so the refusal guarding a
     success claimed over an empty capture directory does not apply to it."""
-    root = _root_with_post_ticket(tmp_path)
+    root, ticket, env = _root_with_post_ticket(tmp_path)
     page = "sources/newsletters/news/The Newest One.md"
-    wrote = _py("write_report.py", "--capture-dir", OWN, "--written", page, cwd=root)
+    (root / OWN / "written.json").write_text(json.dumps([page]), encoding="utf-8")
+    wrote = _py("capture_posts.py", "--capture-dir", OWN, "--report", "--ticket", ticket["ticket"],
+               "--written-from", "written.json", cwd=root, env=env)
     assert wrote.returncode == 0, wrote.stderr
-    report = json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))
-    assert (report["outcome"], report["written"], report["ticket"]) == ("ok", [page], "0123456789ab")
-    assert (report["captured"], report["missing"], report["discovered"]) == ([], [], [])
+    call = _updates(root)[-1]
+    kv = _kv(call)
+    assert call[3] == ticket["ticket"] and kv["stage"] == "process" and kv["status"] == "ok"
+    assert kv["written_from"] == "written.json"
 
-    # A capture that earns no page says so instead, with no `--written` behind it.
-    skipped = _py("write_report.py", "--capture-dir", OWN, "--outcome", "skipped",
-                  "--reason", "excluded: the job's rules drop it", cwd=root)
+    # A capture that earns no page says so instead, with no `--written-from` behind it.
+    skipped = _py("capture_posts.py", "--capture-dir", OWN, "--report", "--ticket", ticket["ticket"], "--process",
+                  "--reason", "excluded: the job's rules drop it", cwd=root, env=env)
     assert skipped.returncode == 0, skipped.stderr
-    report = json.loads((root / OWN / "report.json").read_text(encoding="utf-8"))
-    assert (report["outcome"], report["written"], report["captured"]) == ("skipped", [], [])
-    assert report["reason"].startswith("excluded:") and _litter(root) == []
+    kv = _kv(_updates(root)[-1])
+    assert kv["status"] == "ok" and kv["reason"].startswith("excluded:") and "written_from" not in kv
 
 # ---- Rule 1: the title is a legal filename ---------------------------------
 
@@ -467,7 +499,7 @@ HOSTILE_AUTHOR = "Ada Example\n\n## Forged by the author\n\n```"
 def test_no_qualifier_this_unit_adds_can_push_a_capped_title_past_a_filename():
     """Worst case, by arithmetic and by the functions themselves: the longest
     safe title, a namesake on another day, then the counter."""
-    capture, report = _module("capture_posts"), _module("write_report")
+    capture = report = _module("capture_posts")
     title = capture.safe_title("語" * 300)
     taken = {}
     names = [report.unique_title(title, ["2026-09-08", "aaaaaaaa"], taken) for _ in range(12)]
@@ -518,8 +550,8 @@ def test_a_block_page_is_an_error_row_and_its_html_is_out_of_the_way(tmp_path, h
     assert not (directory / "capture.json").exists() and not (directory / "leaf.json").exists()
 
     plan = {"ticket": "t", "newsletter": "example-newsletter.invalid", "leaves": [leaf], "summary": {}}
-    report = _module("write_report").build(plan, [row], {"ticket": "t"}, tmp_path)
-    assert report["outcome"] == "failed" and report["captured"] == []
+    report = _module("capture_posts").build_update(plan, [row], tmp_path)
+    assert report["status"] == "failed" and report["captured"] == []
     assert report["missing"] == [{"host": "example-newsletter.invalid", "url": POST, "why": why}]
     if why == "auth":
         assert report["reason"] == "auth_expired:example-newsletter.invalid"
@@ -555,13 +587,12 @@ def _refresh_dir(tmp_path, monkeypatch, capsys):
     (own / "page.html").write_text(old.replace("lighthouses", "OLD-BYTES"), encoding="utf-8")
     (own / "leaf.json").write_text(json.dumps({"item": POST, "title": "The Newest One"}), encoding="utf-8")
     (own / "capture.json").write_text(json.dumps({"item": POST, "title": "The Newest One", "body": "page.html"}), encoding="utf-8")
-    (own / "report.json").write_text(json.dumps({"outcome": "ok"}), encoding="utf-8")
     ticket = _ticket(capture_dir=OWN, refresh=True, resource=POST, item=POST,
                      known=[{"resource": POST, "harvested_at": "2026-09-11T00:00:00Z"}])
     enum = _module("enumerate_archive")
     monkeypatch.setattr(enum, "fetch_page", lambda *a: pytest.fail("a refresh plans exactly its resource: no archive walk"))
-    (own / "ticket.json").write_text(json.dumps(ticket), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(own)])
+    monkeypatch.setattr(enum, "open_ticket", lambda tid, stage=None: ticket)
+    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(own), "--ticket", ticket["ticket"]])
     enum.main()
     plan = json.loads(capsys.readouterr().out)
     assert plan["refresh"] is True and [(leaf["item"], leaf["dir"]) for leaf in plan["leaves"]] == [(POST, OWN)]
@@ -585,9 +616,9 @@ def test_a_refresh_ticket_really_re_fetches(tmp_path, monkeypatch, capsys):
     landed = (own / "page.html").read_text(encoding="utf-8")
     assert "REFETCHED" in landed and "OLD-BYTES" not in landed
     plan = json.loads((own / "leaves.json").read_text(encoding="utf-8"))
-    report = _module("write_report").build(plan, rows, {"ticket": "t"}, own.parent)
+    report = _module("capture_posts").build_update(plan, rows, own.parent)
     # `ok` WITH the capture: `unchanged` is apply's verdict, reached by hashing what was left.
-    assert report["outcome"] == "ok" and [c["dir"] for c in report["captured"]] == [OWN]
+    assert report["status"] == "ok" and [c["dir"] for c in report["captured"]] == [OWN]
 
 
 def test_a_refresh_that_cannot_reach_the_source_is_never_ok(tmp_path, monkeypatch, capsys):
@@ -601,17 +632,17 @@ def test_a_refresh_that_cannot_reach_the_source_is_never_ok(tmp_path, monkeypatc
     _code, rows = _capture_main(monkeypatch, mod, own, down, "--fetch")
     assert [(row["state"], row["why"]) for row in rows] == [("error", "error")]
     plan = json.loads((own / "leaves.json").read_text(encoding="utf-8"))
-    report = _module("write_report").build(plan, rows, {"ticket": "t"}, own.parent)
-    assert report["outcome"] == "failed" and report["captured"] == []  # WAS: states {"on_disk": 1}, outcome ok
+    report = _module("capture_posts").build_update(plan, rows, own.parent)
+    assert report["status"] == "failed" and report["captured"] == []  # WAS: states {"on_disk": 1}, outcome ok
 
     def gone(url, *, sleep):
         raise urllib.error.HTTPError(url, 410, "Gone", None, None)
 
     _code, rows = _capture_main(monkeypatch, mod, own, gone, "--fetch")
     assert [row["state"] for row in rows] == ["gone"]
-    assert _module("write_report").build(plan, rows, {"ticket": "t"}, own.parent)["outcome"] == "gone"
+    assert _module("capture_posts").build_update(plan, rows, own.parent)["status"] == "gone"
     # …which is a refresh's word alone: the same 410 on an archive pull is a failure.
-    assert _module("write_report").build({**plan, "refresh": False}, rows, {"ticket": "t"}, own.parent)["outcome"] == "failed"
+    assert _module("capture_posts").build_update({**plan, "refresh": False}, rows, own.parent)["status"] == "failed"
 
 
 def _three_leaves(tmp_path):
@@ -650,8 +681,10 @@ def test_fetching_stops_on_a_host_that_said_no(tmp_path, monkeypatch, exc, why, 
     assert [(row["state"], row["why"]) for row in rows] == [("error", why), ("error", why), ("captured", None)]
     assert said in rows[0]["detail"] and said in rows[1]["detail"] and "not fetched" in rows[1]["detail"]
 
-    report = _module("write_report").build(json.loads((cap / "leaves.json").read_text(encoding="utf-8")), rows, {"ticket": "t"}, cap.parent)
-    assert report["outcome"] == "partial" and [m["why"] for m in report["missing"]] == [why, why]
+    report = _module("capture_posts").build_update(json.loads((cap / "leaves.json").read_text(encoding="utf-8")), rows, cap.parent)
+    # P-5: a host that said no is a LASTING fact this run — `ok`, with the two
+    # posts in `missing[]` and the reason naming what stopped fetching.
+    assert report["status"] == "ok" and [m["why"] for m in report["missing"]] == [why, why]
     if why == "auth":
         assert "auth_expired:example-newsletter.invalid" in report["reason"]
 
@@ -704,25 +737,26 @@ def test_an_archive_that_answers_a_challenge_page_is_unloadable_not_a_traceback(
     mod = _module("enumerate_archive")
     cap = tmp_path / "_raw/news/archive--4fbca949"
     cap.mkdir(parents=True)
-    (cap / "ticket.json").write_text(json.dumps(_ticket()), encoding="utf-8")
+    ticket = _ticket()
+    monkeypatch.setattr(mod, "open_ticket", lambda tid, stage=None: ticket)
 
     def fetch_page(domain, offset, limit):
         return json.loads("<html>Just a moment...</html>") if answer == "not-json" else answer  # raises JSONDecodeError
 
     monkeypatch.setattr(mod, "fetch_page", fetch_page)
-    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(cap)])
+    monkeypatch.setattr(sys, "argv", ["enumerate_archive.py", "--capture-dir", str(cap), "--ticket", ticket["ticket"]])
     mod.main()  # WAS: json.JSONDecodeError, uncaught
     plan = json.loads(capsys.readouterr().out)
     assert plan["leaves"] == [] and "did not answer a JSON list" in plan["summary"]["fetch_failed"]
-    report = _module("write_report").build(plan, [], {"ticket": "t"}, cap.parent)
-    assert report["outcome"] == "failed" and "would not load" in report["reason"]
+    report = _module("capture_posts").build_update(plan, [], cap.parent)
+    assert report["status"] == "failed" and "would not load" in report["reason"]
 
 
 def test_an_empty_plan_gives_its_true_reason(tmp_path):
-    build = _module("write_report").build
+    build = _module("capture_posts").build_update
     def reason(**summary):
-        report = build({"newsletter": "n.invalid", "access": "free", "leaves": [], "summary": summary}, [], {"ticket": "t"}, tmp_path)
-        assert report["outcome"] == "skipped"
+        report = build({"newsletter": "n.invalid", "access": "free", "leaves": [], "summary": summary}, [], tmp_path)
+        assert report["status"] == "ok"
         return report["reason"]
     paid = reason(skipped_paywalled=7, skipped_known=0)
     assert paid.startswith("paywalled:") and "known" not in paid and "7" in paid  # WAS "known: nothing new"

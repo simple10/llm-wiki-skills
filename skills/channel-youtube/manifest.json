@@ -32,10 +32,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-youtube ticket=<id> stage=harvest|process",
+  "usage": "/channel-youtube ticket=<id>",
   "v": 2,
   "venue": "youtube",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "watch": {
     "defaults": {
       "every": "once",

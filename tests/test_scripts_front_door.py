@@ -234,7 +234,7 @@ def _reach_gmail(mod, tmp_path, monkeypatch):
 
 
 def _reach_leaves(mod, tmp_path, monkeypatch):
-    mod._spawn(tmp_path, "run", "skills/harvest/scripts/assets.py")
+    mod._spawn(tmp_path, "run", "scripts/assets.py")
 
 
 def _reach_notion(mod, tmp_path, monkeypatch):

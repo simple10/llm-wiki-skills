@@ -5,7 +5,7 @@ HARVEST time: a page BODY (`page.md`) and the capture record (`capture.json`)
 that names it. Documented here so the output is reviewable and so other video
 platforms (Vimeo, Loom) can follow the same structure.
 
-The unit writes no page. The host's generic extractor (`pipeline extract`)
+The unit writes no page. The plugin's own extract
 takes `page.md` verbatim and writes the page under the job's `dest`, with
 frontmatter of its own — `title`, `status: draft`, `resource` (the capture's
 `item`), `harvested`. That is why neither file below carries any of those.
@@ -38,12 +38,12 @@ frontmatter of its own — `title`, `status: draft`, `resource` (the capture's
 }
 ```
 
-`slug` and `item` come from `ticket.json` beside the capture (`--slug`/`--item`
-on a hand run — `--item` is required where there is no ticket); `fetched_at` is
+`slug` and `item` come from `tickets open` (`--slug`/`--item` on a hand run —
+`--item` is required where there is no ticket); `fetched_at` is
 when yt-dlp wrote `metadata.json`.
 
 `title` is the video's title **made a legal filename** (`safe_title`): the
-extractor names the page's FILE from it and refuses the whole process ticket
+plugin's extract names the page's FILE from it and refuses the whole process ticket
 over any of `/ \ : * ? " < > |`, a control character or a leading dot. The
 swaps are `:` → ` -`; `/` `\` `|` → `-`; `?` `*` dropped; `"` → `'`; `<` `>` →
 `(` `)`; whitespace and control characters folded to single spaces; leading
@@ -52,7 +52,7 @@ with a `…`; and `YouTube video <id>` when nothing is left. The TRUE title is
 the body's H1, and `frontmatter.source_title` when the two differ.
 
 `frontmatter` is the video's exact facts, scalars and flat lists only. **The
-extractor ignores it today** — it is accepted, not merged — so every fact in it
+plugin's extract ignores it today** — it is accepted, not merged — so every fact in it
 is ALSO in the body's facts list, and nothing is lost in the meantime. It never
 carries a key a host verb owns: `title`, `resource`, `status`, `harvested`,
 `extracted`, `document_id`, `document_revision`.
@@ -77,7 +77,7 @@ at progressively broader breadths, and the curated knowledge areas. They were
 once one `domains:` list told apart by bracket shape, which is why neither
 filtered reliably. `tags` and `areas` are present only on a hand run that
 passed `--tag`/`--area`: a job's `meta` never crosses into a harvest slice, so
-a ticket carries neither, and the foreman's `pipeline apply` is what stamps the
+a ticket carries neither, and the host's `close` is what stamps the
 job's own onto the page.
 
 ## `page.md`
@@ -87,7 +87,7 @@ second one corrupts the page. The body opens with the H1 and the description
 is a blockquote, so no line of the page is a bare `---` even when a creator's
 description opens with one.
 
-The extractor takes this file VERBATIM, so nothing the venue wrote may forge
+The plugin's extract takes this file VERBATIM, so nothing the venue wrote may forge
 structure in it: the H1 is the true title folded to one line; the embed exists
 only for a validated id, with its `title` attribute HTML-escaped; links and the
 thumbnail take clean http(s) urls only; and every description line is quoted

@@ -1,7 +1,7 @@
 # channel-notion-tasks — after enabling
 
 1. Ask a slug and a description, then declare the job:
-   `llm-wiki-ops pipeline add notion-tasks slug=notion-tasks
+   `llm-wiki-ops pipeline jobs add notion-tasks slug=notion-tasks
    description="<what this is>" skill=channel-notion-tasks
    options.workspace=<workspace> [every=1d]` — the target is a bare channel
    NAME, never a url, and a wiki holds ONE job per target: a second workspace
@@ -21,11 +21,11 @@
    in the curation lifecycle, where a ledger does not belong — and sends the
    day directory down the one-page-per-capture route, which is not what a
    channel harvest leaves. The skill cannot detect it: a harvest ticket's
-   `dest` is null. Check each job with `llm-wiki-ops pipeline show <slug>` (it
+   `dest` is null. Check each job with `llm-wiki-ops pipeline jobs show <slug>` (it
    names `dest` and the target), and re-point any that is not under
-   `research/channels/`. `pipeline edit` refuses `dest`, but re-running `add`
+   `research/channels/`. `pipeline jobs edit` refuses `dest`, but re-running `add`
    with the same target and slug moves it and keeps every other key:
-   `llm-wiki-ops pipeline add <its target> slug=<slug> dest=research/channels/<slug>`.
+   `llm-wiki-ops pipeline jobs add <its target> slug=<slug> dest=research/channels/<slug>`.
 2. **No credential to bind, and why.** Connector auth is session-level on
    the pulling machine, and this skill declares `requires.credential: false`
    where `channel-gmail` — the same connector model — declares `true` as a
@@ -35,7 +35,7 @@
    declare. So say which machine pulls the other two ways: ENABLE the skill
    only on the machine whose session holds the Notion connector, and where
    more than one machine has it enabled, pin the job:
-   `llm-wiki-ops pipeline edit <slug> harvest.machine=<machine id>`.
+   `llm-wiki-ops pipeline jobs edit <slug> harvest.machine=<machine id>`.
 3. **Where this skill is expected to work: only where `llm-wiki-ops whereami`
    reports `spawn: none`** — the foreman runs the worker in its own session,
    which holds the connector — until the plugin grants a slice a connector.

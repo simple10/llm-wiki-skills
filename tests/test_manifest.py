@@ -27,3 +27,18 @@ def test_every_channel_unit_declares_its_ops_floor(name):
 
 def test_min_ops_version_is_a_bare_version():
     assert re.match(r"^\d+\.\d+\.\d+$", MANIFEST["min_ops_version"])
+
+
+def _version(text: str) -> tuple:
+    return tuple(int(b) for b in text.removeprefix(">=").split("."))
+
+
+@pytest.mark.parametrize("name", SKILLS)
+def test_every_units_floor_is_at_or_above_the_packages(name):
+    """`test_either_step_of_a_unit_opens_with_the_policy_read` pins this for
+    the eight channel units, from their own `## Stages` intro; a `script`
+    unit like `web-page` opens neither step with a policy read, so nothing
+    else checks its floor. A unit spelling a lower `requires.ops` would claim
+    to run on an ops CLI that `check-manifest.py` never rejects it for."""
+    floor = unit_manifest(name)["requires"]["ops"]
+    assert _version(floor) >= _version(MANIFEST["min_ops_version"]), f"{name}: requires.ops {floor} is under the package's min_ops_version"

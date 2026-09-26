@@ -26,7 +26,17 @@ GONE = {
     r"(?<![\w.-])(intake|job|watch|drain_pending|credentials)\.py": "old host queue scripts",
     r"<job\.[a-z_.]+>": "there is no job object — a worker reads `ticket.json`",
     r"\bassignment\.json\b(?! or)": "the old slice handoff — `ticket.json` replaced it",
+    r"(?<![\w.-])ticket\.json\b": "a worker reads its ticket through `tickets open`, never a file",
+    r"(?<![\w.-])ticket\.<id>\.json\b": "a worker reads its ticket through `tickets open`, never a file",
+    r"(?<![\w.-])write_report\.py": "every report is `tickets update`'s; no unit writes one",
+    r"\bpipeline (apply|extract|queue)\b": "retired: `apply` and `extract` fold into `close`/`run`, `queue` into `jobs`/`tickets`",
+    r'"discovered"|\bdiscovered\[\]': "retired report key — no report carries it",
+    r'"bundled"|\bbundled\[\]': "retired report key — no report carries it",
 }
+# `report.json` — a unit's OWN write of a bare, untracked-per-ticket report —
+# is gone; `report.<id>.json`, the host's own file under `tickets update`, is
+# not, so the pattern anchors on the bare name.
+GONE[r"(?<![\w.-])report\.json\b"] = "no unit writes a report; `tickets update` writes `report.<id>.json`"
 # A dated changelog line may name what it removed; that is history, not an instruction.
 _HISTORY = re.compile(r"^\s*[-*#>]?\s*`?20\d\d-\d\d-\d\d")
 
@@ -64,10 +74,10 @@ def test_a_channel_unit_declares_both_stages_it_documents_and_is_invoked_by_tick
     assert list(unit_manifest(name)["stages"]) == ["harvest", "process"], unit_manifest(name)["stages"]
     skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
     front = skill.split("---", 2)[1]
-    assert re.search(r'^argument-hint:\s*"ticket=<id> stage=harvest\|process"\s*$', front, re.M), front
-    assert unit_manifest(name)["usage"] == f"/{name} ticket=<id> stage=harvest|process"
+    assert re.search(r'^argument-hint:\s*"ticket=<id>"\s*$', front, re.M), front
+    assert unit_manifest(name)["usage"] == f"/{name} ticket=<id>"
     assert "allowed-tools" not in front and "disable-model-invocation" not in front
-    assert re.search(r"^## Stages", skill, re.M) and "report.json" in skill and "ticket.json" in skill
+    assert re.search(r"^## Stages", skill, re.M) and "tickets open" in skill and "tickets update" in skill
     assert re.search(r"^### harvest\b", skill, re.M) and re.search(r"^### process\b", skill, re.M), skill[:400]
 
 
@@ -126,14 +136,19 @@ def test_a_quirks_log_is_dated_one_liners(name):
 
 
 @pytest.mark.parametrize("name", CHANNELS)
-def test_the_step_a_unit_is_in_is_an_argument_not_a_file(name):
-    """One discriminator: the `stage=` the host composes into the prompt. A
-    process ticket's capture dir IS the harvest ticket's for a single-item
-    job, and `ticket.json` lands there under one name — so a step read off
-    that file can be the other step's, and the prompt cannot be clobbered."""
+def test_the_step_a_unit_is_in_is_the_stage_open_answers(name):
+    """One discriminator (G1): `## Stages` opens with `tickets open <id>`,
+    with no `stage=`, and the unit follows the section named by the
+    answer's own `stage` — never a `stage=` in `$ARGUMENTS`, and never a
+    file in the capture directory."""
     skill = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
-    assert re.search(r"stage=harvest\|process", skill), name
-    assert re.search(r"\$ARGUMENTS", skill), name
+    stages = skill.split("\n## Stages", 1)[1]
+    opener = stages.split("\n### harvest", 1)[0]
+    assert "llm-wiki-ops --json pipeline tickets open <id>" in opener, opener[:300]
+    assert "stage=<id>" not in opener and not re.search(r"open <id> stage=", opener), opener[:300]
+    assert not re.search(r"stage=harvest\|process", skill), name
+    assert not re.search(r"\$ARGUMENTS", skill), name
+    assert "ticket.json" not in skill, name
 
 
 @pytest.mark.parametrize("name", SKILLS)
@@ -260,6 +275,8 @@ READS = {
     "safe_title": ("_TITLE_SWAPS", "TITLE_MAX", "TITLE_MAX_BYTES"),
     "qualifier": ("TITLE_ILLEGAL", "QUALIFIER_MAX"),
     "front_door": ("OPS",),
+    "open_ticket": ("OPS",),
+    "post_update": ("OPS",),
 }
 
 
@@ -276,7 +293,15 @@ def _holders(name: str) -> list:
     return sorted(p for p in (ROOT / "skills").glob("*/scripts/*.py") if _function(p, name))
 
 
-@pytest.mark.parametrize(("name", "at_least"), [("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4), ("front_door", 9)])
+@pytest.mark.parametrize(
+    ("name", "at_least"),
+    [
+        ("safe_title", 6), ("page_key", 4), ("qualifier", 4), ("unique_title", 4), ("front_door", 9),
+        # open_ticket/post_update: every unit whose scripts talk to the
+        # ticket, at the final tip (step 11).
+        ("open_ticket", 11), ("post_update", 9),
+    ],
+)
 def test_code_the_units_share_by_copying_is_one_piece_of_code(name, at_least):
     """A unit is installed on its own, so what several need is COPIED into
     each — and a copy fixed in one unit and not the rest is a wiki whose pages

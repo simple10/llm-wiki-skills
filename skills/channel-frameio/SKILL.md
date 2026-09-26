@@ -1,7 +1,7 @@
 ---
 name: channel-frameio
 description: Frame.io guest-share capture for this wiki — tree enumeration, per-leaf asset capture, and the document page.
-argument-hint: "ticket=<id> stage=harvest|process"
+argument-hint: "ticket=<id>"
 ---
 
 # Channel: Frame.io
@@ -41,10 +41,13 @@ left out under `unplanned`).
 
 ## Stages
 
-`stage=` in `$ARGUMENTS` is the step, `harvest` or `process`; the two sections
-below are those steps.
-Either step opens with the policy read — the stage's overlay, then this unit's
-own, folded onto the step:
+```sh
+llm-wiki-ops --json pipeline tickets open <id>
+```
+
+The answer's own `stage` — `harvest` or `process` — is the step; the two
+sections below are those steps. Either step opens with the policy read — the
+stage's overlay, then this unit's own, folded onto the step:
 
 ```sh
 llm-wiki-ops policy get <stage> channel-frameio
@@ -52,33 +55,38 @@ llm-wiki-ops policy get <stage> channel-frameio
 
 ### harvest
 
-You are started IN your capture directory, where the spawner wrote
-`ticket.json`. The worker loop, the jail and the report every worker leaves
-are `llm-wiki-ops reference agent-loop`; this section is what this venue adds.
+You are started IN your capture directory, and the worker loop and the report
+every worker leaves are `llm-wiki-ops reference pipeline-ticket`; this section
+is what this venue adds.
 
 **Harvest is bytes.** You capture what the venue served and write one flat
 `capture.json` naming it. No page, no summary: the page is the process step's,
 over the same bytes.
 
 **One ticket captures the whole share**: enumerate once, then one driver plans
-the leaves, captures each into its OWN capture dir beside yours, and writes
-the one `report.json`. Paths below are wiki-relative — `run` starts a script
-at the wiki root — so hand them `capture_dir` exactly as the ticket spells it.
+the leaves, captures each into its OWN capture dir beside yours, and posts
+`tickets update` after every leaf. Paths below are wiki-relative — `run`
+starts a script at the wiki root — so hand them `capture_dir` exactly as the
+ticket spells it.
 
-**Nothing here runs a queue verb.** `claim`, `complete`, `fail` and `apply`
-are the foreman's, and the jail refuses them. You write bytes under the job's
-own `_raw/<slug>/` and one report; `pipeline apply` reads the report and mints
-ONE process ticket per `captured[].dir`.
+**Nothing here runs a queue verb.** `claim`, `run` and `close` are the host's
+own, and the jail refuses them. You write bytes under the job's own
+`_raw/<slug>/` and post one status; the host's own `close` reads it and mints
+ONE process ticket per `captured=` directory.
 
 #### 1. Read the job
 
-`ticket.json` beside you; the fields this unit serves:
+```sh
+llm-wiki-ops --json pipeline tickets open <id>
+```
+
+The fields this unit serves:
 
 | field | what it is here |
 | :--- | :--- |
-| `ticket`, `slug` | the report's id; the job's slug, which names every leaf directory |
+| `ticket`, `slug` | the update's id; the job's slug, which names every leaf directory |
 | `target` | the share root, a folder inside it, or one leaf viewer (`.../view/<asset-id>`) |
-| `capture_dir` | the TICKET's directory, `_raw/<slug>/<one>` — `tree.json`, `plan.json` and `report.json` go here. Never compose it |
+| `capture_dir` | the TICKET's directory, `_raw/<slug>/<one>` — `tree.json` and `plan.json` go here. Never compose it |
 | `hosts` | your egress: `*.frame.io` and `frame.io`. The HLS and document-proxy hosts are under it; a host outside it is refused by the proxy — report it, never route around it |
 | `harvest.scope` | applied by this unit — see above. Must be `domain` |
 | `harvest.assets` | `download` captures every leaf; `reference` plans no media leaf of a share — see above. A target that IS a leaf viewer, and a refresh, is captured under every value: no card name reaches it. `download-audio` is not told from `download`: the whole asset is kept |
@@ -89,10 +97,6 @@ ONE process ticket per `captured[].dir`.
 Not consulted, and why: `harvest.access` (a guest share has no free/paid
 split), `min_date` (a listing card carries no date), `credential` (always
 null; the link authorizes), `dest` (null here).
-
-No `ticket.json` — `llm-wiki-ops whereami` says `spawn: none` — means the
-foreman read the same facts off `llm-wiki-ops pipeline queue show ids=<id>`;
-pass them as `--target`, `--slug` and `--ticket`.
 
 #### 2. Enumerate the tree (once, before any downloads)
 
@@ -109,10 +113,10 @@ walked INTO below the target, never the share's own name (that is
 enumerator needs `/share/<share-id>` in the URL; an `f.io` short link carries
 none, and is outside `hosts` — report it and stop.
 
-#### 3. Capture the leaves and write the report
+#### 3. Capture the leaves and post progress
 
 ```
-llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_dir> \
+llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_dir> --ticket <id> \
     [--title-strip "<share suffix>"] [--author NAME] [--group "<bundle name>"] [--group-type <kind>]
 ```
 
@@ -120,51 +124,51 @@ llm-wiki-ops run ops/skills/channel-frameio/scripts/harvest_share.py <capture_di
   `harvest.scope` and `harvest.exclude_urls` rule out, minus `known[]`. The
   plan lands in `<capture_dir>/plan.json`; `--plan-only` stops there.
 - **Each leaf gets its own capture dir**, `_raw/<slug>/<folders-and-name>--<hash8>/`
-  — a sibling of yours, never inside it, because `apply` mints a process
+  — a sibling of yours, never inside it, because `close` mints a process
   ticket for exactly `_raw/<slug>/<one component>` and the slice is granted
   the job's whole `_raw/<slug>/`.
 - **Per leaf it runs `capture_job.py`**, which wraps `capture_asset.py` (open
   the viewer, take the HLS master or the signed document proxy out of the
   network log, download it, write `meta.json`) and names what landed as the
   capture's `body` — see "What a captured leaf holds".
-- **It writes `report.json` when a pass opens and again after EVERY leaf**,
-  atomically — `captured[]` one entry per landed leaf (`item`, `dir`,
-  `title`), `missing[]` one per leaf that failed (`why` is `timeout` or
-  `error`), `written` and `discovered` empty. So whatever ends a pass early
-  costs the leaf in flight and nothing else. A refusal (exit 2) writes no
-  report and removes the one an earlier run left.
-- **It settles the titles before each report.** A page is filed under its
+- **It posts `tickets update` when a pass opens and again after EVERY leaf**
+  — `captured=` one per landed leaf's directory, `missing=` one per leaf that
+  failed (`why` is `timeout` or `error`). So whatever ends a pass early costs
+  the leaf in flight and nothing else. A refusal (exit 2) posts nothing.
+- **It settles the titles before each post.** A page is filed under its
   TITLE and the second write wins, so two assets of one share with one name
   would be ONE page. The first leaf in manifest order keeps its title; a later
-  namesake is retitled in its own `capture.json`, and `captured[].title` says
-  the same. **Across runs this cannot be known** — `known[]` carries no titles
-  — so say so in your run report when a resumed share repeats file names.
+  namesake is retitled in its own `capture.json`, and the posted `captured=`
+  directory's title says the same. **Across runs this cannot be known** —
+  `known[]` carries no titles — so say so in your run report when a resumed
+  share repeats file names.
 - **It is bounded, and you re-run it.** Run it with your tool's longest
   timeout. Its stdout summary says `"stop": "budget"` — run the same command
   again — or `"done"` / `"slice"` — stop. A leaf already captured is counted,
   never re-fetched; a leaf THIS SPAWN failed is left alone unless you pass
-  `--retry-failed`. Outside any slice — a hand run in a capture dir whose
-  `ticket.json` is old — pass `--slice-seconds 0`.
-- **Outcomes.** `ok`: every planned leaf landed. `partial`: some did, and the
-  rest are the job's next spawn's (unverified: whether an `every: once` job is
-  pulled again after a `partial` is the foreman's call — say so in your run
-  report). `skipped`: every leaf is already a page, excluded, or media under
-  `harvest.assets=reference`. `failed`:
-  nothing landed, the share listed nothing, or scope emptied the plan. Exit 0
-  for the first three, 1 for `failed`, 2 when the inputs do not add up.
+  `--retry-failed` (a genuine new spawn — the next pull, retry or widen
+  respawn — retries it on its own; see the script's own docstring). Outside
+  any slice — a hand run continuing an old plan — pass `--slice-seconds 0`.
+- **Outcomes.** `ok`: every planned leaf landed, or nothing new was in scope
+  (P-4: known/excluded/reference — never a worker's `skipped`). `partial`:
+  some leaves did, and the rest are the job's next spawn's (unverified:
+  whether an `every: once` job is pulled again after a `partial` is the
+  host's own call — say so in your run report). `failed`: nothing landed, the
+  share listed nothing, or scope emptied the plan. Exit 0 for `ok`/`partial`,
+  1 for `failed`, 2 when the inputs do not add up.
 
 Then say the target, the outcome, the counts and any `missing[]` hosts, and
-exit. Do not retry a `denied` host: a widen is the foreman's call.
+exit. Do not retry a `denied` host: a widen is the host's own call.
 
 **A refresh ticket** (`refresh: true`, `resource: <view URL>`) is ONE leaf,
 re-captured: skip step 2, run step 3. The first pass of the spawn drops the
-`capture.json` the last refresh left and fetches again. `apply`, not you,
-hashes the body against the page's stamp and decides `unchanged`. Never report
-`gone` — a removed asset and a viewer this unit no longer understands look the
-same from here: that is `failed`. Unverified: whether a re-muxed HLS download
-hashes the same twice; if not, a video refresh reads as changed — say so when
-you refresh a video. A refresh whose `resource` is not a leaf viewer is
-`failed` with `refresh_unsupported:` in the reason.
+`capture.json` the last refresh left and fetches again. A later read, not
+you, hashes the body against the page's stamp and decides `unchanged`. Never
+report `gone` — a removed asset and a viewer this unit no longer understands
+look the same from here: that is `failed`. Unverified: whether a re-muxed
+HLS download hashes the same twice; if not, a video refresh reads as changed
+— say so when you refresh a video. A refresh whose `resource` is not a leaf
+viewer is `failed` with `refresh_unsupported:` in the reason.
 
 `--author`/`--group`/`--group-type` are for a hand run with no job behind it:
 normally the operator declares them once on the job (`meta.author=`,
@@ -191,8 +195,8 @@ capturing machine; only its extracted text reaches the page.
 
 ### process
 
-One captured leaf, one page. You are started IN that leaf's capture dir, where
-the spawner wrote its own `ticket.json`. The fields this step reads:
+One captured leaf, one page. You are started IN that leaf's capture dir. The
+fields this step reads (`llm-wiki-ops --json pipeline tickets open <id>`):
 
 | field | what it is here |
 | :--- | :--- |
@@ -206,19 +210,20 @@ the spawner wrote its own `ticket.json`. The fields this step reads:
 No network, no credential, no browser.
 
 1. **Apply `process.exclude_rules` and `options`.** A capture that earns no
-   page reports `outcome: skipped` with the reason and stops:
+   page posts the `ok` update (P-4: never a worker's `skipped`) with the
+   reason and stops:
 
    ```
    llm-wiki-ops run ops/skills/channel-frameio/scripts/frameio_doc_note.py . \
-       --capture-dir <capture_dir> --dest <dest> --skip "<reason>"
+       --capture-dir <capture_dir> --dest <dest> --ticket <id> --skip "<reason>"
    ```
 
-2. **Run the builder.** It clears a stale `report.json` first, reads the
-   bytes, and writes the page under `dest` itself:
+2. **Run the builder.** It reads the bytes and writes the page under `dest`
+   itself:
 
    ```
    llm-wiki-ops run ops/skills/channel-frameio/scripts/frameio_doc_note.py . \
-       --capture-dir <capture_dir> --dest <dest>
+       --capture-dir <capture_dir> --dest <dest> --ticket <id>
    ```
 
    The positional `.` is the wiki root, which binds the nested front door to
@@ -226,9 +231,10 @@ No network, no credential, no browser.
    `--path=`, `--crumb-skip=`, `--title-strip=`, `--author=`, `--group=`,
    `--group-type=` only for a hand run over a capture harvest did not record.
 
-3. **Read the report it left.** `report.json` is written LAST, `written[]`
-   naming every page and `captured[]` empty. A refusal from the CLI aborts
-   before any report is written — report `failed` and quote what it said.
+3. **It posts `tickets update` LAST**, `written_from=` naming the page (a
+   file inside the capture dir) and no capture claimed. A refusal from the
+   CLI aborts before anything is posted — report `failed` and quote what it
+   said.
 
 Then say the page, the capture it came from, and anything the builder
 reported, and exit.

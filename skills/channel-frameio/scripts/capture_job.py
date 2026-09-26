@@ -14,7 +14,7 @@ served plus a FLAT `capture.json` naming it:
 - a **document** (pdf/pptx/xlsx/…): `body` is `document.<ext>`, as downloaded.
   The page is the PROCESS step's — `frameio_doc_note.py` over these bytes.
 - a **video**: `body` is `video.mp4`. A media body is the transcriber's, and
-  only `pipeline extract` mints the page that waits for a transcript.
+  only the transcribe stage mints the page that waits for a transcript.
 
 No page is rendered here, no summary is written, and `capture.json` carries no
 `frontmatter` object: harvest captures bytes. What the harvest knew and the
@@ -22,8 +22,8 @@ bytes do not carry — the leaf's folder path, the operator's
 `--author`/`--group`/`--title-strip` — is recorded in `meta.json`, which is
 where the process step reads it back.
 
-It runs no queue verb and writes no report: `report.json` is the ticket's, and
-`harvest_share.py` writes it from what this left on disk.
+It runs no queue verb and posts no update: that is `harvest_share.py`'s own,
+from what this left on disk.
 
 The leaf dir must be exactly `_raw/<slug>/<one component>` — the slice is
 granted the job's whole `_raw/<slug>/`, and `apply` mints a process ticket for
@@ -46,8 +46,9 @@ less and is killed, with everything it started, when it runs out (exit 1,
 `timeout` in the error). `--fresh` is a refresh ticket's: the `video.mp4` an
 earlier capture left is dropped first, or yt-dlp would call it downloaded.
 
-`--url` and `--slug` default from a `ticket.json` in `<leaf-dir>` (a ticket
-whose target is itself a leaf viewer); `harvest_share.py` always passes both.
+`--url` and `--slug` default from `--ticket <id>`, opened through the front
+door (a ticket whose target is itself a leaf viewer); `harvest_share.py`
+always passes both explicitly.
 `--name`/`--path` come off the share's leaf manifest; without them the name
 falls back to the URL's asset id and the document extension comes off the
 signed proxy route.
@@ -75,6 +76,8 @@ History:
               the `frontmatter` object are gone from here, the document's
               `body` is the downloaded file, and the manifest and operator
               facts are recorded in `meta.json` for the process step.
+  2026-09-25  `--url`/`--slug` default through `--ticket <id>` (`tickets
+              open`), not a file beside the leaf dir.
 """
 
 import argparse
@@ -85,13 +88,13 @@ from pathlib import Path
 from capture_record import (
     CAPTURE_NAME,
     META_NAME,
-    TICKET_NAME,
     TIMED_OUT,
     capture_record,
     content_type_for,
     inner_deadline,
     leaf_ids,
     name_stem,
+    open_ticket,
     pick_document,
     read_json,
     run,
@@ -139,8 +142,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("leaf_dir", type=Path, help="the leaf's capture dir: _raw/<slug>/<one component>")
     ap.add_argument("--root", type=Path, default=None, help="the wiki root the leaf dir must sit under (default: read off the dir)")
-    ap.add_argument("--url", default=None, help="the leaf's view URL (default: ticket.json's target)")
-    ap.add_argument("--slug", default=None, help="the job's slug (default: ticket.json's slug)")
+    ap.add_argument("--url", default=None, help="the leaf's view URL (default: --ticket's own target)")
+    ap.add_argument("--slug", default=None, help="the job's slug (default: --ticket's own slug)")
+    ap.add_argument("--ticket", default=None, help="the ticket id, opened for --url/--slug's defaults")
     ap.add_argument("--name", default=None, help="the asset's original filename, off the share's leaf manifest")
     ap.add_argument("--path", action="append", default=None, help="folder breadcrumb bit, repeatable — same source as --name")
     ap.add_argument("--title-strip", default=None, help="share-wide suffix to trim off the captured title")
@@ -153,14 +157,14 @@ def main() -> int:
     ap.add_argument("--fresh", action="store_true", help="a refresh: drop the media an earlier capture left, so it is fetched again")
     args = ap.parse_args()
 
-    ticket = read_json(args.leaf_dir / TICKET_NAME) or {}
+    ticket = open_ticket(args.ticket) if args.ticket else {}
     url = args.url or ticket.get("target")
     slug = args.slug or ticket.get("slug")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")) or not leaf_ids(url)[1]:
         print(f"error: {url!r} is not a leaf viewer URL (https://.../share/<share-id>/view/<asset-id>)", file=sys.stderr)
         return 2
     if not isinstance(slug, str) or not slug:
-        print(f"error: no --slug and no {TICKET_NAME} in {args.leaf_dir} to read one from", file=sys.stderr)
+        print("error: no --slug and no --ticket to read one from", file=sys.stderr)
         return 2
     rel = slice_leaf(args.leaf_dir, slug, args.root)
     if rel is None:

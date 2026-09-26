@@ -12,8 +12,8 @@ hands it to every leaf, and each leaf records it for the process step);
 record the chosen value in the installed
 SKILL.md. The share's author, group and tags go on the JOB, not in this
 file — `meta.author=`, `meta.group=`, `meta.group_type=`, `meta.tags=`,
-`meta.areas=` on the `pipeline add` at enable — and the host stamps them
-onto every page the job lands.
+`meta.areas=` on the `pipeline jobs add` at enable — and the host stamps
+them onto every page the job lands.
 
 ## Sandbox
 

@@ -31,10 +31,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-frameio ticket=<id> stage=harvest|process",
+  "usage": "/channel-frameio ticket=<id>",
   "v": 2,
   "venue": "frameio",
-  "version": "1.20.0",
+  "version": "1.21.0",
   "watch": {
     "defaults": {
       "every": "once",

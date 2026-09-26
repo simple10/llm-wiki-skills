@@ -20,10 +20,10 @@
     },
     "process": {}
   },
-  "usage": "/channel-gmail ticket=<id> stage=harvest|process",
+  "usage": "/channel-gmail ticket=<id>",
   "v": 2,
   "venue": "gmail",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "watch": {
     "defaults": {
       "every": "1d"

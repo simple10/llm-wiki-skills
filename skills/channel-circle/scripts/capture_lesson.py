@@ -7,7 +7,7 @@
 platform: circle
 scope: platform-general (any Circle-hosted community: *.circle.so or a
 custom domain fronted by Circle). No hardcoded domain/slug — takes the URL
-as an arg, or off the `ticket.json` the spawner wrote into the capture dir.
+as an arg, or `--ticket <id>`'s own `target` (A-1), through `tickets open`.
 
 Circle is a React SPA behind Cloudflare, with lesson bodies and video
 players rendered client-side. So we drive a real Chrome via Playwright
@@ -20,15 +20,16 @@ render, then dump:
                       that never appear in the DOM live here)
   - meta.json         title, final_url, canonical, discovered sidebar links
 
-It does NOT write page.md, capture.json, report.json, or download assets —
-the caller runs this unit's `to_markdown.py` and `section_plan.py` and the
-harvest skill's `assets.py` on the outputs (keeps this script pure I/O). One
-harvest ticket runs it once for the job's target and once per planned lesson:
-`meta.json`'s `discovered_lesson_links` is what `section_plan.py plan` reads.
+It does NOT write page.md, capture.json, or download assets, and it posts
+no update itself — the caller runs this unit's `to_markdown.py` and
+`section_plan.py` and the harvest skill's `assets.py` on the outputs (keeps
+this script pure I/O). One harvest ticket runs it once for the job's target
+and once per planned lesson: `meta.json`'s `discovered_lesson_links` is what
+`section_plan.py plan` reads.
 
 Usage:
   llm-wiki-ops run ops/skills/channel-circle/scripts/capture_lesson.py \
-         <root> --out <capture_dir>                       # the ticket's target
+         <root> --out <capture_dir> --ticket <id>          # the ticket's target
          <root> --plan <capture_dir>/plan.json --leaf N   # one planned lesson
          <root> <url> --out <dir>                         # HAND RUNS ONLY
          [--headed] [--timeout-ms 45000]
@@ -38,24 +39,20 @@ there) — auth profiles are reached through the credential store's
 `profile-dir` lookup, keyed by domain. `--out` and `--plan` are WIKI-RELATIVE:
 a relative one is resolved against `<root>`, not against wherever the caller
 stands. A worker never types a url — a lesson's address is venue data and a
-command line is a shell: with no url, the `target` of `<capture_dir>/ticket.json`
-is captured; with `--leaf N`, leaf N of `plan.json` (its `order`) is captured
+command line is a shell: with no url, `--ticket <id>`'s own `target` is
+captured; with `--leaf N`, leaf N of `plan.json` (its `order`) is captured
 into the `dir` the plan gave it. A url on the command line is for hand runs.
-
-Capturing the ticket's own target also REMOVES a stale `report.json` from the
-capture dir first — the directory is stable across pulls, and a respawn must
-never be read as a success it did not have.
 
 Exit 0 on capture, 2 if there is no auth profile yet or the session
 had expired (landed on a sign_in page) — either way, re-run the login
 helper. 3 on a Cloudflare challenge that didn't clear. 5 if the credential
 store itself could not be reached (denied/unreadable) — a REAL failure,
 distinct from "no profile yet"; re-running the login helper will not fix it.
-4 if there is nothing usable to capture: no url and no `ticket.json` naming a
+4 if there is nothing usable to capture: no url and no `--ticket` naming a
 target, a `--leaf` the plan does not hold, or a url that is not http(s).
 6 if `--leaf` was asked after the plan's `deadline`: NOTHING was started — run
 `section_plan.py report` and exit (the slice is killed at 30 minutes, and a
-killed slice leaves no report).
+killed slice posts no update).
 
 History:
   2026-07-11  created — first Circle course capture.
@@ -71,6 +68,10 @@ History:
               on a command line; paths resolve against <root>; refuses to start
               a lesson past the plan's deadline; meta.json carries the
               navigation's `http_status`.
+  2026-09-25  moved to the CLI-verb worker contract: the ticket's own target
+              comes off `tickets open`, given --ticket, instead of a file
+              beside the capture dir; the stale-report unlink went — the
+              host's own start unlinks it now (A-4).
 """
 
 import argparse
@@ -160,14 +161,19 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
-def ticket_target(out: Path) -> str | None:
-    """The `target` of the `ticket.json` the spawner wrote into the capture
-    dir, or None where nothing spawned this capture."""
-    try:
-        ticket = json.loads((out / "ticket.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+def ticket_target(root: Path, ticket_id: str | None) -> str | None:
+    """`--ticket <id>`'s own `target` (A-1), through `tickets open` — or None
+    where there is no `--ticket` (a hand run names its own url instead)."""
+    if not ticket_id:
         return None
-    target = ticket.get("target") if isinstance(ticket, dict) else None
+    proc = _ops(root, "pipeline", "tickets", "open", ticket_id)
+    try:
+        answer = json.loads(proc.stdout)
+    except ValueError:
+        answer = None
+    if proc.returncode != 0 or not isinstance(answer, dict):
+        return None
+    target = (answer.get("ticket") or {}).get("target") if isinstance(answer.get("ticket"), dict) else None
     return target if isinstance(target, str) and target else None
 
 
@@ -214,7 +220,7 @@ def planned_leaf(plan_path: Path, number: int, now: float | None = None):
     return leaf, None
 
 
-def resolve_job(root, url=None, out=None, plan=None, leaf=None, now=None):
+def resolve_job(root, url=None, out=None, plan=None, leaf=None, ticket=None, now=None):
     """`(url, out_dir, is_ticket_target, None)` or `(None, None, False, (exit, why))`
     — everything `main` decides before it needs a browser."""
     if leaf is not None:
@@ -230,9 +236,9 @@ def resolve_job(root, url=None, out=None, plan=None, leaf=None, now=None):
     if out is None:
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "--out <capture_dir> is required (wiki-relative) unless --plan/--leaf name a lesson")
     out_dir = under(root, out)
-    chosen, from_ticket = (url, False) if url else (ticket_target(out_dir), True)
+    chosen, from_ticket = (url, False) if url else (ticket_target(root, ticket), True)
     if not chosen:
-        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, f"no url given and {out_dir / 'ticket.json'} names no target")
+        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "no url given and no --ticket names one")
     if not is_http(chosen):
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "the url is not an http(s) address")
     return chosen, out_dir, from_ticket, None
@@ -260,10 +266,11 @@ def caption_records(tracks):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", help="wiki root path (`.` under `llm-wiki-ops run`)")
-    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY. Default: `target` of <out>/ticket.json, or --leaf's url")
+    ap.add_argument("url", nargs="?", help="HAND RUNS ONLY. Default: --ticket's own `target`, or --leaf's url")
     ap.add_argument("--out", help="capture dir, wiki-relative; not needed with --leaf (the plan names the dir)")
     ap.add_argument("--plan", help="<capture_dir>/plan.json, wiki-relative — with --leaf")
     ap.add_argument("--leaf", type=int, metavar="N", help="capture leaf N of --plan (its `order`)")
+    ap.add_argument("--ticket", help="the ticket id, opened for its own `target` — needed only with no --leaf and no <url>")
     ap.add_argument("--headed", action="store_true", help="Show the browser (safer vs Cloudflare; default headless)")
     ap.add_argument("--timeout-ms", type=int, default=45000)
     args = ap.parse_args()
@@ -271,16 +278,12 @@ def main() -> int:
     if args.leaf is not None and args.url:
         print("error: a url and --leaf are two names for the lesson — give one", file=sys.stderr)
         return EXIT_NOTHING_TO_CAPTURE
-    args.url, out, is_ticket_target, refused = resolve_job(args.root, args.url, args.out, args.plan, args.leaf)
+    args.url, out, is_ticket_target, refused = resolve_job(args.root, args.url, args.out, args.plan, args.leaf, args.ticket)
     if refused:
         print(f"error: {refused[1]}", file=sys.stderr)
         return refused[0]
     domain = domain_of(args.url)
     out.mkdir(parents=True, exist_ok=True)
-    if is_ticket_target:
-        # The flow's FIRST act: whatever an earlier pull — or the extractor —
-        # left here as `report.json` is not this run's answer.
-        (out / "report.json").unlink(missing_ok=True)
 
     try:
         profile, refused = profile_dir(args.root, domain)

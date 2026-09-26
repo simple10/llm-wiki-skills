@@ -52,13 +52,12 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 CAPTURE_NAME = "capture.json"
-TICKET_NAME = "ticket.json"
-REPORT_NAME = "report.json"
 META_NAME = "meta.json"
 
 # The front door, by the bare name every SKILL.md already runs this unit's
@@ -89,6 +88,63 @@ NOT_INHERITED = ("CLAUDE_PROJECT_DIR",)
 
 def front_door_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in NOT_INHERITED}
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
 
 
 #: Frontmatter keys another verb owns. A unit that sets one is asking a fetched
@@ -154,7 +210,7 @@ def read_json(path: Path):
 
 def write_json(path: Path, value: dict) -> None:
     """Atomically: a temp file beside `path`, then `os.replace`. A slice can be
-    killed at any instant, and half a `report.json` is no report at all."""
+    killed at any instant, and half a JSON file is worse than none at all."""
     path = Path(path)
     scratch = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:

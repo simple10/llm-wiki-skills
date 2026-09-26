@@ -1,13 +1,13 @@
 """channel-spotify on the rebuilt worker contract, both steps.
 
-One ticket is one Spotify entity. At harvest `spotify.py capture` reads
-`ticket.json` beside it and leaves the entity JSON plus a flat `capture.json`
-naming it as the body — no page, no facts object. At process `spotify.py
-process` reads those bytes and writes the page under the ticket's `dest`
-through the REAL `page create`/`page edit`, and `spotify.py report --written`
-leaves `report.json` last. Nothing here reaches Spotify, iTunes or a feed:
-entities are fixtures, and the open-feed lookup is either replaced in-process
-or switched off with `--no-audio`.
+One ticket is one Spotify entity. At harvest `spotify.py capture` reads its
+ticket through `tickets open` (given `--ticket`) and leaves the entity JSON
+plus a flat `capture.json` naming it as the body — no page, no facts object.
+At process `spotify.py process` reads those bytes and writes the page under
+the ticket's `dest` through the REAL `page create`/`page edit`, and
+`spotify.py report --written-from` posts `tickets update` last. Nothing here
+reaches Spotify, iTunes or a feed: entities are fixtures, and the open-feed
+lookup is either replaced in-process or switched off with `--no-audio`.
 """
 
 from __future__ import annotations
@@ -97,9 +97,50 @@ get = post = _answer
 '''
 
 
-def cli(tmp_path: Path, *args: str, cwd=None, routes=None, env=None, stdin=None) -> subprocess.CompletedProcess:
+# The most recent `ticket()`'s dict — module-global, on purpose: every case
+# here builds exactly one ticket and then drives `capture`/`process`/`report`
+# over it, so `cli()` can default to it and no call site needs threading a
+# ticket through by hand. A case that needs otherwise passes `ticket=` itself.
+_LAST_TICKET: dict | None = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_last_ticket():
+    """Test isolation for `_LAST_TICKET`: a case naming no ticket of its own
+    must never inherit the previous test's."""
+    global _LAST_TICKET
+    _LAST_TICKET = None
+    yield
+    _LAST_TICKET = None
+
+
+def _stub_ops(tmp_path: Path, ticket_dict: dict) -> str:
+    """A stand-in front door: `pipeline tickets open` answers `ticket_dict`;
+    `pipeline tickets update` is recorded to `update-calls.jsonl` (relative
+    to wherever the worker's own cwd is) and answers a bare 0."""
+    stub = tmp_path / "ops_stub.py"
+    updates = tmp_path / "update-calls.jsonl"
+    stub.write_text(
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket_dict))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        f"    pathlib.Path({str(updates)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    return shlex.join([sys.executable, str(stub)])
+
+
+def cli(tmp_path: Path, *args: str, cwd=None, routes=None, env=None, stdin=None, ticket=None) -> subprocess.CompletedProcess:
     """The script as a worker runs it — a real process. `requests` is the stub
-    above; `routes` is the only network there is."""
+    above; `routes` is the only network there is. `ticket` (default: the
+    last one `ticket()` built) stands up the `LLM_WIKI_OPS` front door
+    `open_ticket`/`post_update` reach, and `--ticket <id>` is appended when
+    the call names a ticketed subcommand and does not already carry one."""
     stub = tmp_path / "stub-site"
     stub.mkdir(exist_ok=True)
     (stub / "requests.py").write_text(REQUESTS_STUB, encoding="utf-8")
@@ -107,10 +148,26 @@ def cli(tmp_path: Path, *args: str, cwd=None, routes=None, env=None, stdin=None)
     if routes is not None:
         (tmp_path / "routes.json").write_text(json.dumps(routes), encoding="utf-8")
         environ["STUB_ROUTES"] = str(tmp_path / "routes.json")
-    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=environ, cwd=cwd, input=stdin)
+    argv = list(args)
+    active = ticket if ticket is not None else _LAST_TICKET
+    if active and argv and argv[0] in ("capture", "process", "report") and "--ticket" not in argv:
+        argv += ["--ticket", active["ticket"]]
+    if active and "LLM_WIKI_OPS" not in environ:
+        environ["LLM_WIKI_OPS"] = _stub_ops(tmp_path, active)
+    return subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, text=True, env=environ, cwd=cwd, input=stdin)
+
+
+def _updates(tmp_path: Path) -> list:
+    path = tmp_path / "update-calls.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def _kv(argv: list) -> dict:
+    return dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("--"))
 
 
 def ticket(cap: Path, **over) -> dict:
+    global _LAST_TICKET
     body = {
         "v": 1, "ticket": "0123456789ab", "unit": "channel-spotify", "slug": "money-models", "item": PLAYLIST_URL,
         "target": PLAYLIST_URL, "capture_dir": "_raw/money-models/playlist--deadbeef", "dest": None, "hosts": [],
@@ -119,7 +176,7 @@ def ticket(cap: Path, **over) -> dict:
     }
     body.update(over)
     cap.mkdir(parents=True, exist_ok=True)
-    (cap / "ticket.json").write_text(json.dumps(body), encoding="utf-8")
+    _LAST_TICKET = body
     return body
 
 
@@ -327,7 +384,7 @@ def test_the_true_name_stays_visible_when_the_title_had_to_change(spotify, tmp_p
     assert record["title"] == "Lesson 3 - ’Pricing’ A-B"
     assert spotify.page_frontmatter(meta)["source_title"] == '.Lesson 3: "Pricing"? A/B'
     assert spotify.render_page_md(meta).startswith('# .Lesson 3: "Pricing"? A/B\n')
-    assert spotify.build_report(tmp_path / "cap", ticket(tmp_path / "cap"))["captured"][0]["title"] == record["title"]
+    assert spotify.build_update(tmp_path / "cap", ticket(tmp_path / "cap"))["captured"][0]["title"] == record["title"]
     # …and a name the rule leaves alone carries no `source_title` at all.
     plain, _ = spotify.plan_capture(entity("playlist"), no_audio=True)
     assert "source_title" not in spotify.page_frontmatter(plain)
@@ -360,11 +417,11 @@ def test_report_names_the_tickets_capture_dir(spotify, tmp_path):
     t = ticket(cap)
     meta, assets = spotify.plan_capture(entity("playlist"))
     spotify.write_capture_dir(cap, meta, assets, slug=t["slug"], item=t["item"])
-    report = spotify.build_report(cap, t)
+    report = spotify.build_update(cap, t)
     assert report == {
-        "v": 1, "ticket": "0123456789ab", "outcome": "ok", "reason": None,
+        "status": "ok", "reason": None,
         "captured": [{"item": PLAYLIST_URL, "dir": "_raw/money-models/playlist--deadbeef", "title": "Fixture Money Models"}],
-        "written": [], "missing": [], "discovered": [],
+        "missing": [],
     }
 
 
@@ -375,8 +432,9 @@ def test_report_is_partial_when_an_asset_failed_and_says_which(spotify, tmp_path
     spotify.write_capture_dir(cap, meta, assets, slug=t["slug"], item=t["item"])
     assets[1].update(status="failed", error="Tunnel connection failed: 403 Forbidden")
     (cap / "assets.json").write_text(json.dumps(assets), encoding="utf-8")
-    report = spotify.build_report(cap, t)
-    assert report["outcome"] == "partial" and report["captured"]
+    report = spotify.build_update(cap, t)
+    # P-5: a failed asset is a LASTING fact this pull — `ok`, not `partial`.
+    assert report["status"] == "ok" and report["captured"]
     assert report["missing"] == [{"host": "cdn.feed.example", "url": ENCLOSURE, "why": "denied"}]
 
 
@@ -385,15 +443,16 @@ def test_report_is_partial_for_a_keyless_capture(spotify, tmp_path):
     t = ticket(cap)
     meta, assets = spotify.plan_capture({**entity("playlist"), "keyless": True}, no_audio=True)
     spotify.write_capture_dir(cap, meta, assets, slug=t["slug"], item=t["item"])
-    report = spotify.build_report(cap, t)
-    assert report["outcome"] == "partial" and "truncated" in report["reason"]
+    report = spotify.build_update(cap, t)
+    # P-5: a keyless capture is a LASTING fact this pull — `ok`, not `partial`.
+    assert report["status"] == "ok" and "keyless" in report["reason"]
     assert "> [!warning] Keyless capture" in spotify.render_page_md(meta)
 
 
 def test_report_with_no_capture_is_failed(spotify, tmp_path):
     cap = tmp_path / "cap"
-    report = spotify.build_report(cap, ticket(cap))
-    assert report["outcome"] == "failed" and report["captured"] == [] and report["reason"]
+    report = spotify.build_update(cap, ticket(cap))
+    assert report["status"] == "failed" and report["captured"] == [] and report["reason"]
 
 
 # ------------------------------------------------------- the script as a process
@@ -411,7 +470,7 @@ def test_capture_reads_everything_off_the_ticket(tmp_path):
     assert (record["slug"], record["item"]) == ("money-models", PLAYLIST_URL)
     r = cli(tmp_path, "report", "--capture-dir", str(cap))
     assert r.returncode == 0, r.stderr
-    assert read(cap, "report.json")["outcome"] == "ok"
+    assert _kv(_updates(tmp_path)[-1])["status"] == "ok"
 
 
 def test_flags_override_the_ticket(tmp_path):
@@ -432,8 +491,11 @@ def test_a_known_entity_is_skipped_without_a_fetch(tmp_path):
     ticket(cap, known=[{"resource": PLAYLIST_URL, "harvested_at": "2026-09-01T00:00:00Z"}])
     r = cli(tmp_path, "capture", "--capture-dir", str(cap))  # no entity, no network: it must not need either
     assert r.returncode == 0, r.stderr
-    report = read(cap, "report.json")
-    assert report["outcome"] == "skipped" and report["reason"] == f"known: {PLAYLIST_URL}" and report["captured"] == []
+    # P-4: `known[]` is `ok` + a reason naming known, never a worker's `skipped`.
+    r = cli(tmp_path, "report", "--capture-dir", str(cap))
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "ok" and kv["reason"] == f"known: {PLAYLIST_URL}"
+    assert "captured" not in kv
     assert not (cap / "capture.json").exists()
 
 
@@ -442,7 +504,7 @@ def test_a_refresh_ticket_recaptures_a_known_entity(tmp_path):
     ticket(cap, known=[{"resource": PLAYLIST_URL, "harvested_at": "x"}], refresh=True, resource=PLAYLIST_URL)
     r = cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(FIXTURES / "playlist.json"), "--no-audio")
     assert r.returncode == 0, r.stderr
-    assert (cap / "capture.json").exists() and not (cap / "report.json").exists()
+    assert (cap / "capture.json").exists() and not (cap / "verdict.json").exists()
 
 
 def test_an_entity_file_for_another_entity_is_refused(tmp_path):
@@ -463,9 +525,9 @@ def test_a_failed_report_exits_nonzero_and_still_lands(tmp_path):
     ticket(cap)
     r = cli(tmp_path, "report", "--capture-dir", str(cap), "--missing", "https://api.spotify.com/v1/playlists/x=denied")
     assert r.returncode == 1
-    report = read(cap, "report.json")
-    assert report["outcome"] == "failed"
-    assert report["missing"] == [{"host": "api.spotify.com", "url": "https://api.spotify.com/v1/playlists/x", "why": "denied"}]
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "failed"
+    assert kv["missing"] == "api.spotify.com,https://api.spotify.com/v1/playlists/x,denied"
 
 
 # ----------------------------------------------- the process step, in the wiki
@@ -498,8 +560,15 @@ def recording_ops(spotify, monkeypatch, *answers) -> list:
     return calls
 
 
-def process(spotify, cap, dest=None, min_date=None):
-    spotify.cmd_process(types.SimpleNamespace(capture_dir=str(cap), dest=dest, min_date=min_date))
+def process(spotify, cap, monkeypatch, dest=None, min_date=None):
+    """`cmd_process`, direct — `open_ticket` stubbed to the last `ticket()`
+    built (or `process_ticket()`, which is one), since this bypasses the
+    front door entirely."""
+    if _LAST_TICKET is not None:
+        monkeypatch.setattr(spotify, "open_ticket", lambda tid, stage=None: _LAST_TICKET)
+    spotify.cmd_process(types.SimpleNamespace(
+        capture_dir=str(cap), ticket=_LAST_TICKET["ticket"] if _LAST_TICKET else None, dest=dest, min_date=min_date,
+    ))
 
 
 WROTE = (0, {"path": "sources/podcasts/money-models/Fixture Money Models.md"})
@@ -512,7 +581,7 @@ def test_the_builder_hands_the_front_door_an_argv_list_never_a_shell_line(spotif
     process_ticket(cap, "sources/podcasts/money-models")
     captured(spotify, cap)
     calls = recording_ops(spotify, monkeypatch, WROTE)
-    process(spotify, cap)
+    process(spotify, cap, monkeypatch)
 
     (args, body), = calls
     assert args[:4] == ("page", "create", "title=Fixture Money Models", "dest=sources/podcasts/money-models")
@@ -528,7 +597,7 @@ def test_a_page_that_already_exists_is_edited_not_created_twice(spotify, tmp_pat
     captured(spotify, cap)
     refused = (2, {"error": "sources/podcasts/money-models/Fixture Money Models.md already exists — the filename is the title"})
     calls = recording_ops(spotify, monkeypatch, refused, WROTE)
-    process(spotify, cap)
+    process(spotify, cap, monkeypatch)
 
     assert calls[1][0][:3] == ("page", "edit", "sources/podcasts/money-models/Fixture Money Models.md")
     assert not [a for a in calls[1][0] if a.startswith(("dest=", "title="))]  # `edit` names the path, not the title
@@ -541,8 +610,8 @@ def test_a_refusal_the_builder_does_not_know_is_not_swallowed(spotify, tmp_path,
     captured(spotify, cap)
     recording_ops(spotify, monkeypatch, (2, {"error": "sources/podcasts/money-models is not a content tree"}))
     with pytest.raises(SystemExit) as caught:
-        process(spotify, cap)
-    assert caught.value.code == 2 and not (cap / "report.json").exists()
+        process(spotify, cap, monkeypatch)
+    assert caught.value.code == 2 and not (cap / "verdict.json").exists()
 
 
 def test_an_exclude_rule_earns_no_page_and_says_so(spotify, tmp_path, monkeypatch):
@@ -551,11 +620,12 @@ def test_an_exclude_rule_earns_no_page_and_says_so(spotify, tmp_path, monkeypatc
     captured(spotify, cap)
     recording_ops(spotify, monkeypatch)  # no answers: a call here would raise IndexError
     with pytest.raises(SystemExit) as caught:
-        process(spotify, cap)
+        process(spotify, cap, monkeypatch)
     assert caught.value.code == 0
-    report = read(cap, "report.json")
-    assert report["outcome"] == "skipped" and "money models" in report["reason"]
-    assert report["written"] == [] and report["captured"] == []
+    # P-4: excluded is `ok`, with the rule named in the reason — handed off
+    # through VERDICT_NAME, since `report` still runs LAST and posts it.
+    verdict = read(cap, "verdict.json")
+    assert verdict["status"] == "ok" and "money models" in verdict["reason"]
 
 
 def test_the_process_tickets_own_date_floor_is_applied_to_the_table(spotify, tmp_path, monkeypatch):
@@ -563,52 +633,64 @@ def test_the_process_tickets_own_date_floor_is_applied_to_the_table(spotify, tmp
     process_ticket(cap, "sources/podcasts/money-models", min_date="2026-06-15")
     captured(spotify, cap)
     calls = recording_ops(spotify, monkeypatch, WROTE)
-    process(spotify, cap)
+    process(spotify, cap, monkeypatch)
     (args, body), = calls
     rows = [line for line in body.decode().splitlines() if line.startswith("| ") and not line.startswith("| #")]
     assert "items=1" in args and len(rows) == 1 and rows[0].startswith("| 1 |")
 
 
-def test_the_process_step_clears_the_harvests_report_first(spotify, tmp_path, monkeypatch):
+def test_the_process_step_clears_the_harvests_verdict_first(spotify, tmp_path, monkeypatch):
     cap = tmp_path / "cap"
     process_ticket(cap, "sources/podcasts/money-models")
     captured(spotify, cap)
-    (cap / "report.json").write_text(json.dumps(LAST_RUNS_OK), encoding="utf-8")
+    (cap / "verdict.json").write_text(json.dumps({"ticket": "0123456789ab", "stage": "harvest", "status": "ok", "reason": None}), encoding="utf-8")
     recording_ops(spotify, monkeypatch, (2, {"error": "boom"}))
     with pytest.raises(SystemExit):
-        process(spotify, cap)
-    assert not (cap / "report.json").exists(), "harvest's `ok` would have answered for this ticket"
+        process(spotify, cap, monkeypatch)
+    assert not (cap / "verdict.json").exists(), "harvest's `ok` would have answered for this ticket"
+
+
+def _written_from(cap: Path, *pages: str, name="written.json") -> str:
+    (cap / name).write_text(json.dumps(list(pages)), encoding="utf-8")
+    return name
 
 
 def test_a_process_report_names_the_pages_it_wrote_and_captures_nothing(tmp_path):
     cap = tmp_path / "cap"
     process_ticket(cap, "sources/podcasts/money-models")
-    r = cli(tmp_path, "report", "--capture-dir", str(cap), "--written", "sources/podcasts/money-models/A.md")
+    (cap / "meta.json").write_text(json.dumps(entity("playlist")), encoding="utf-8")
+    (cap / "capture.json").write_text(json.dumps({"item": PLAYLIST_URL, "title": "T", "body": "meta.json"}), encoding="utf-8")
+    written = _written_from(cap, "sources/podcasts/money-models/A.md")
+    r = cli(tmp_path, "report", "--capture-dir", str(cap), "--written-from", written)
     assert r.returncode == 0, r.stderr
-    report = read(cap, "report.json")
-    assert report["written"] == ["sources/podcasts/money-models/A.md"] and report["captured"] == []
-    assert report["outcome"] == "ok" and report["ticket"] == "0123456789ab"
+    call = _updates(tmp_path)[-1]
+    kv = _kv(call)
+    assert kv["written_from"] == written and "captured" not in kv
+    assert kv["status"] == "ok" and call[3] == "0123456789ab"
 
 
 def test_a_process_report_over_a_degraded_capture_is_not_a_quiet_ok(spotify, tmp_path):
-    """The page landed, but the list behind it is short: `written[]` does not
-    launder a truncated capture into `ok`."""
+    """The page landed, but the list behind it is short: `written_from=` does
+    not launder a truncated capture into `ok` — P-5's `partial` reaches it too."""
     cap = tmp_path / "cap"
     process_ticket(cap, "sources/podcasts/money-models")
     meta, assets = spotify.plan_capture({**entity("playlist"), "keyless": True}, no_audio=True)
+    meta["truncated"] = {"got": 1, "expected": 3, "said": "x", "url": "https://api.spotify.com/v1/playlists/x"}
     spotify.write_capture_dir(cap, meta, assets, slug="money-models", item=PLAYLIST_URL)
-    r = cli(tmp_path, "report", "--capture-dir", str(cap), "--written", "sources/podcasts/money-models/A.md")
+    written = _written_from(cap, "sources/podcasts/money-models/A.md")
+    r = cli(tmp_path, "report", "--capture-dir", str(cap), "--written-from", written)
     assert r.returncode == 0, r.stderr
-    report = read(cap, "report.json")
-    assert report["outcome"] == "partial" and "truncated" in report["reason"]
-    assert report["written"] == ["sources/podcasts/money-models/A.md"] and report["captured"] == []
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "partial" and "TRUNCATED" in kv["reason"]
+    assert kv["written_from"] == written and "captured" not in kv
 
 
-def test_a_process_report_with_no_page_written_is_still_refused_as_ok(tmp_path):
+def test_a_process_report_with_no_page_written_and_nothing_captured_is_failed(tmp_path):
     cap = tmp_path / "cap"
     process_ticket(cap, "sources/podcasts/money-models")
-    r = cli(tmp_path, "report", "--capture-dir", str(cap), "--outcome", "ok")
-    assert r.returncode == 2 and "nothing captured" in r.stderr and not (cap / "report.json").exists()
+    r = cli(tmp_path, "report", "--capture-dir", str(cap))
+    assert r.returncode == 1, r.stderr
+    assert _kv(_updates(tmp_path)[-1])["status"] == "failed"
 
 
 # --- respawns, the wiki root, and a hand run ----------------------------------
@@ -622,7 +704,7 @@ def test_a_respawn_does_not_report_the_last_attempts_capture(tmp_path):
     died = cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(tmp_path / "absent.json"))
     assert died.returncode == 2 and not (cap / "capture.json").exists()
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 1
-    assert read(cap, "report.json")["outcome"] == "failed"
+    assert _kv(_updates(tmp_path)[-1])["status"] == "failed"
 
 
 def fake_wiki(tmp_path: Path) -> Path:
@@ -641,30 +723,34 @@ def test_capture_and_report_run_from_the_wiki_root_with_wiki_relative_paths(tmp_
     assert r.returncode == 0, r.stderr
     r = cli(tmp_path, "report", "--capture-dir", rel, cwd=root)
     assert r.returncode == 0, r.stderr
-    assert sorted(x.name for x in (root / rel).iterdir()) == [
-        "assets.json", "capture.json", "items.json", "meta.json", "report.json", "ticket.json",
-    ]
+    assert sorted(x.name for x in (root / rel).iterdir()) == ["assets.json", "capture.json", "items.json", "meta.json"]
     assert sorted(x.name for x in root.iterdir()) == before, "something was written at the wiki root"
-    assert read(root / rel, "report.json")["captured"][0]["dir"] == rel
+    assert _kv(_updates(tmp_path)[-1])["captured"] == rel
 
 
 def test_a_directory_with_no_ticket_is_refused_not_created(tmp_path):
     root = fake_wiki(tmp_path)
     # `.` is what a worker standing in its capture dir would guess; from the wiki root it is the wiki.
     for wrong in (".", "_raw/typo/leaf"):
-        r = cli(tmp_path, "capture", "--capture-dir", wrong, "--entity-json", "fx/playlist.json", "--no-audio", cwd=root)
+        r = cli(tmp_path, "capture", "--capture-dir", wrong, "--entity-json", "fx/playlist.json", "--no-audio", cwd=root, ticket=False)
         assert r.returncode == 2 and "WIKI-RELATIVE" in r.stderr, r.stderr
-        r = cli(tmp_path, "report", "--capture-dir", wrong, "--ticket", "0123456789ab", cwd=root)
-        assert r.returncode == 2 and "WIKI-RELATIVE" in r.stderr, r.stderr
-    assert not (root / "_raw").exists() and not (root / "report.json").exists() and not (root / "capture.json").exists()
+        # `--ticket` alone, with no `--dir` and no real ticket behind the id
+        # (no front door here), cannot resolve — refused, nothing posted.
+        r = cli(tmp_path, "report", "--capture-dir", wrong, "--ticket", "0123456789ab", cwd=root, ticket=False)
+        assert r.returncode != 0 and not (tmp_path / "update-calls.jsonl").exists(), r.stderr
+    assert not (root / "_raw").exists() and not (root / "capture.json").exists()
 
 
 def test_a_hand_run_needs_no_ticket_when_it_names_everything(tmp_path):
     root = fake_wiki(tmp_path)
-    r = cli(tmp_path, "capture", PLAYLIST_URL, "--capture-dir", "scratch/probe", "--entity-json", "fx/playlist.json", "--no-audio", cwd=root)
+    r = cli(tmp_path, "capture", PLAYLIST_URL, "--capture-dir", "scratch/probe", "--entity-json", "fx/playlist.json", "--no-audio", cwd=root, ticket=False)
     assert r.returncode == 0, r.stderr
-    r = cli(tmp_path, "report", "--capture-dir", "scratch/probe", "--ticket", "0123456789ab", "--dir", "_raw/s/probe", cwd=root)
-    assert r.returncode == 0 and read(root / "scratch/probe", "report.json")["captured"][0]["dir"] == "_raw/s/probe"
+    # `--dir` means `report` never calls `tickets open` — but it still posts
+    # `tickets update` unconditionally, so this needs its own front door.
+    r = cli(tmp_path, "report", "--capture-dir", "scratch/probe", "--ticket", "0123456789ab", "--dir", "_raw/s/probe",
+            cwd=root, env={"LLM_WIKI_OPS": _stub_ops(tmp_path, None)})
+    assert r.returncode == 0
+    assert _kv(_updates(tmp_path)[-1])["captured"] == "_raw/s/probe"
 
 
 # ------------------------------------------- Rule 4: a respawn, a skip, a claim of ok
@@ -677,54 +763,47 @@ def test_a_skipped_report_repeats_nothing_from_the_previous_pull(spotify, tmp_pa
     meta["unreachable"] = [{"host": "feed.example", "url": FEED, "why": "denied"}]
     assets[0].update(status="failed", error="Tunnel connection failed")
     spotify.write_capture_dir(cap, meta, assets, slug=t["slug"], item=t["item"])
-    assert len(spotify.build_report(cap, t)["missing"]) == 2  # the previous pull really did miss two
+    assert len(spotify.build_update(cap, t)["missing"]) == 2  # the previous pull really did miss two
 
     ticket(cap, ticket="bbbbbbbbbbbb", known=[{"resource": PLAYLIST_URL, "harvested_at": "x"}])  # the next pull, same dir
     r = cli(tmp_path, "capture", "--capture-dir", str(cap))
     assert r.returncode == 0, r.stderr
-    skipped = {"v": 1, "ticket": "bbbbbbbbbbbb", "outcome": "skipped", "reason": f"known: {PLAYLIST_URL}",
-               "captured": [], "written": [], "missing": [], "discovered": []}
-    assert read(cap, "report.json") == skipped
+    # P-4: `known[]` hands off `ok` + a reason naming known — nothing of the
+    # PREVIOUS ticket's missing[] survives into this one's verdict.
+    verdict = read(cap, "verdict.json")
+    assert (verdict["ticket"], verdict["status"], verdict["reason"]) == ("bbbbbbbbbbbb", "ok", f"known: {PLAYLIST_URL}")
     # `report` run after it, as the flow says to, keeps the verdict and still invents nothing.
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 0
-    assert read(cap, "report.json") == skipped
+    kv = _kv(_updates(tmp_path)[-1])
+    assert (kv["status"], kv["reason"]) == ("ok", f"known: {PLAYLIST_URL}") and "missing" not in kv
 
 
 def test_report_never_keeps_another_tickets_verdict(tmp_path):
     cap = tmp_path / "cap"
     ticket(cap)
-    (cap / "report.json").write_text(json.dumps({"v": 1, "ticket": "ffffffffffff", "outcome": "skipped", "captured": []}), encoding="utf-8")
+    (cap / "verdict.json").write_text(json.dumps({"ticket": "ffffffffffff", "stage": "harvest", "status": "ok", "reason": None}), encoding="utf-8")
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 1
-    assert read(cap, "report.json")["outcome"] == "failed" and read(cap, "report.json")["ticket"] == "0123456789ab"
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "failed"  # this ticket's own derivation: nothing captured
 
 
-def test_ok_is_refused_when_nothing_was_captured(tmp_path):
+@pytest.mark.parametrize("refused", [["--missing", "no-why-here"]])
+def test_a_report_that_refuses_does_not_leave_the_last_runs_verdict_behind(tmp_path, refused):
     cap = tmp_path / "cap"
     ticket(cap)
-    for claim in ("ok", "partial", "unchanged"):
-        r = cli(tmp_path, "report", "--capture-dir", str(cap), "--outcome", claim)
-        assert r.returncode == 2 and "nothing captured" in r.stderr and not (cap / "report.json").exists()
-
-
-LAST_RUNS_OK = {"v": 1, "ticket": "0123456789ab", "outcome": "ok", "reason": None, "captured": [{"item": "x", "dir": "d", "title": "t"}]}
-
-
-@pytest.mark.parametrize("refused", [["--missing", "no-why-here"], ["--outcome", "ok"]])
-def test_a_report_that_refuses_does_not_leave_the_last_runs_ok_behind(tmp_path, refused):
-    cap = tmp_path / "cap"
-    ticket(cap)
-    (cap / "report.json").write_text(json.dumps(LAST_RUNS_OK), encoding="utf-8")
+    (cap / "verdict.json").write_text(json.dumps({"ticket": "0123456789ab", "stage": "harvest", "status": "ok", "reason": None}), encoding="utf-8")
     r = cli(tmp_path, "report", "--capture-dir", str(cap), *refused)
-    assert r.returncode == 2 and not (cap / "report.json").exists(), r.stderr
+    assert r.returncode == 2 and not (cap / "verdict.json").exists(), r.stderr
+    assert not _updates(tmp_path), "a refusal posts nothing"
 
 
-def test_a_capture_that_refuses_does_not_leave_the_last_runs_ok_behind(tmp_path):
+def test_a_capture_that_refuses_does_not_leave_the_last_runs_verdict_behind(tmp_path):
     cap = tmp_path / "cap"
     ticket(cap, harvest={"assets": "everything"})  # a policy this unit does not know: refused before any fetch
-    (cap / "report.json").write_text(json.dumps(LAST_RUNS_OK), encoding="utf-8")
+    (cap / "verdict.json").write_text(json.dumps({"ticket": "0123456789ab", "stage": "harvest", "status": "ok", "reason": None}), encoding="utf-8")
     (cap / "capture.json").write_text("{}", encoding="utf-8")
     r = cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(FIXTURES / "playlist.json"), "--no-audio")
-    assert r.returncode == 2 and not (cap / "report.json").exists() and not (cap / "capture.json").exists()
+    assert r.returncode == 2 and not (cap / "verdict.json").exists() and not (cap / "capture.json").exists()
 
 
 def test_a_capture_that_dies_leaves_none_of_the_last_runs_files(tmp_path):
@@ -732,7 +811,7 @@ def test_a_capture_that_dies_leaves_none_of_the_last_runs_files(tmp_path):
     ticket(cap)
     assert cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(FIXTURES / "playlist.json"), "--no-audio").returncode == 0
     assert cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(tmp_path / "absent.json")).returncode == 2
-    assert sorted(x.name for x in cap.iterdir()) == ["ticket.json"]
+    assert sorted(x.name for x in cap.iterdir()) == []
 
 
 # --------------------------------------------------- URLs are http(s), or they are not
@@ -810,7 +889,7 @@ def test_a_hostile_feed_as_a_process_yields_no_asset_and_exit_4(tmp_path):
     r = cli(tmp_path, "capture", "--capture-dir", str(cap), "--entity-json", str(FIXTURES / "playlist.json"), routes=feed_routes("file:///etc/passwd"))
     assert r.returncode == 4, r.stderr  # captured, no audio resolvable
     assert [a["type"] for a in read(cap, "assets.json")] == ["image"]
-    assert "file:" not in "".join(x.read_text(encoding="utf-8") for x in cap.iterdir() if x.name != "ticket.json")
+    assert "file:" not in "".join(x.read_text(encoding="utf-8") for x in cap.iterdir())
     assert "file:" not in json.dumps(read(cap, "meta.json"))
 
 
@@ -821,8 +900,9 @@ def test_a_refused_itunes_lookup_is_recorded_not_read_as_no_such_show(tmp_path):
             routes={"https://itunes.apple.com/search": {"status": 403}})
     assert r.returncode == 4, r.stderr
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 0
-    report = read(cap, "report.json")
-    assert report["outcome"] == "partial" and report["missing"] == [{"host": "itunes.apple.com", "url": "https://itunes.apple.com/search", "why": "auth"}]
+    kv = _kv(_updates(tmp_path)[-1])
+    # P-5: an unreachable feed lookup is a LASTING fact — `ok`, not `partial`.
+    assert kv["status"] == "ok" and kv["missing"] == "itunes.apple.com,https://itunes.apple.com/search,auth"
 
 
 # ----------------------------------------------------------- 404/410: gone, or failed
@@ -871,11 +951,12 @@ def test_a_404_on_a_refresh_ticket_reports_gone(tmp_path):
     r = cli(tmp_path, "capture", "--capture-dir", str(cap), env=CREDS, routes={**TOKEN, "https://api.spotify.com/": {"status": 404}})
     assert r.returncode == 0, r.stderr
     assert "Traceback" not in r.stderr and json.loads(r.stdout)["gone"] is True
-    report = read(cap, "report.json")
-    assert (report["outcome"], report["captured"], report["missing"]) == ("gone", [], [])
-    assert "404" in report["reason"] and not (cap / "capture.json").exists()
+    verdict = read(cap, "verdict.json")
+    assert (verdict["status"], verdict["ticket"]) == ("gone", "0123456789ab") and "404" in verdict["reason"]
+    assert not (cap / "capture.json").exists()
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 0  # the flow's last step keeps the verdict
-    assert read(cap, "report.json") == report
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "gone" and kv["reason"] == verdict["reason"]
 
 
 @pytest.mark.parametrize("keyless", [False, True])
@@ -885,10 +966,11 @@ def test_a_404_on_a_first_pull_is_failed_with_the_reason(tmp_path, keyless):
     routes = {**TOKEN, "https://api.spotify.com/": {"status": 404}, "https://open.spotify.com/embed/": {"status": 410}}
     r = cli(tmp_path, "capture", "--capture-dir", str(cap), *(["--keyless"] if keyless else []), env=CREDS, routes=routes)
     assert r.returncode == 3 and "Traceback" not in r.stderr, r.stderr
-    report = read(cap, "report.json")
-    assert report["outcome"] == "failed" and ("410" if keyless else "404") in report["reason"] and "market" in report["reason"]
+    verdict = read(cap, "verdict.json")
+    assert verdict["status"] == "failed" and ("410" if keyless else "404") in verdict["reason"] and "market" in verdict["reason"]
     assert cli(tmp_path, "report", "--capture-dir", str(cap)).returncode == 1
-    assert read(cap, "report.json")["reason"] == report["reason"]  # not flattened into "no capture.json"
+    kv = _kv(_updates(tmp_path)[-1])
+    assert kv["status"] == "failed" and kv["reason"] == verdict["reason"]  # not flattened into "no capture.json"
 
 
 def test_meta_on_a_missing_entity_exits_3_without_a_traceback(tmp_path):
@@ -920,8 +1002,8 @@ def test_a_429_that_outlives_the_backoff_truncates_out_loud(spotify, monkeypatch
     t = ticket(cap)
     meta, assets = spotify.plan_capture(ent, no_audio=True)
     spotify.write_capture_dir(cap, meta, assets, slug=t["slug"], item=t["item"])
-    report = spotify.build_report(cap, t)
-    assert report["outcome"] == "partial" and "TRUNCATED at 1 of 3" in report["reason"]
+    report = spotify.build_update(cap, t)
+    assert report["status"] == "partial" and "TRUNCATED at 1 of 3" in report["reason"]
     assert report["missing"] == [{"host": "api.spotify.com", "url": ent["truncated"]["url"], "why": "error"}]
     assert "> [!warning] Item list TRUNCATED at 1 of 3" in spotify.render_page_md(meta)
 
@@ -961,16 +1043,37 @@ def test_the_bearer_token_is_never_sent_to_a_next_page_off_spotify(spotify, monk
 
 
 def ops_stub(tmp_path: Path, rc: int, answer: dict) -> tuple:
-    """An `llm-wiki-ops` first on PATH that answers one thing and records its argv."""
-    bin_dir, seen = tmp_path / "stub-bin", tmp_path / "seen.json"
+    """An `llm-wiki-ops` first on PATH: ticket-aware for `pipeline tickets
+    open`/`update` like `_stub_ops` (open answers the last built `ticket()`,
+    update is recorded to `update-calls.jsonl` so `_updates`/`_kv` read it
+    same as any other test here) — and for anything else, here always
+    `credential get <name>`, answers `answer`/`rc` and records ITS argv to
+    `seen`."""
+    bin_dir, seen, updates = tmp_path / "stub-bin", tmp_path / "seen.json", tmp_path / "update-calls.jsonl"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "llm-wiki-ops"
+    ticket_json = json.dumps(json.dumps(_LAST_TICKET))
     stub.write_text(
-        f"#!{sys.executable}\nimport json, sys\njson.dump(sys.argv[1:], open({str(seen)!r}, 'w'))\n"
-        f"sys.stdout.write({json.dumps(answer)!r})\nsys.exit({rc})\n"
+        f"#!{sys.executable}\n"
+        "import json, pathlib, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({ticket_json})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    sys.stdout.write(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        f"    pathlib.Path({str(updates)!r}).open('a').write(json.dumps(argv) + '\\n')\n"
+        "    sys.exit(0)\n"
+        f"json.dump(sys.argv[1:], open({str(seen)!r}, 'w'))\n"
+        f"sys.stdout.write({json.dumps(answer)!r})\n"
+        f"sys.exit({rc})\n"
     )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return {"PATH": f"{bin_dir}:/usr/bin:/bin"}, seen
+    # `LLM_WIKI_OPS` named explicitly, not just PATH: `cli()` only auto-injects
+    # its own ticket stub when the env it is handed names no front door yet,
+    # and this one must be it, so both the ticket-open call `open_ticket`
+    # makes ahead of `credential get` and the credential call itself land here.
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "LLM_WIKI_OPS": str(stub)}, seen
 
 
 # What `credential get` answers inside a slice for a payload that is THERE and ungranted
@@ -983,7 +1086,7 @@ EMBED = {"props": {"pageProps": {"state": {"data": {"entity": {
 EMBED_ROUTES = {"https://open.spotify.com/embed/": {"text": f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(EMBED)}</script>'}}
 
 
-def test_an_unreadable_store_under_a_ticket_is_keyless_partial_and_says_auth(tmp_path):
+def test_an_unreadable_store_under_a_ticket_is_keyless_ok_and_says_auth(tmp_path):
     """The manifest declares `requires.credential: false`, so a slice is granted
     no payload and `credential get spotify` answers "cannot read" on every box
     that HAS credentials. That used to exit 2: the capture failed every time."""
@@ -996,10 +1099,11 @@ def test_an_unreadable_store_under_a_ticket_is_keyless_partial_and_says_auth(tmp
     summary = json.loads(r.stdout)
     assert summary["keyless"] is True and summary["credential_unreadable"] is True
     assert cli(tmp_path, "report", "--capture-dir", rel, cwd=root, env=path).returncode == 0
-    report = read(root / rel, "report.json")
-    assert report["outcome"] == "partial" and report["captured"]
-    assert report["missing"] == [{"host": "api.spotify.com", "url": "https://api.spotify.com/v1/playlists/4rprjH5cIR72vskqa6RhpC", "why": "auth"}]
-    assert "could not be read" in report["reason"] and "references/enable.md" in report["reason"]
+    kv = _kv(_updates(tmp_path)[-1])
+    # P-5: an unreadable credential is a LASTING fact about this pull — `ok`, not `partial`.
+    assert kv["status"] == "ok" and kv["captured"] == rel
+    assert kv["missing"] == "api.spotify.com,https://api.spotify.com/v1/playlists/4rprjH5cIR72vskqa6RhpC,auth"
+    assert "could not be read" in kv["reason"] and "references/enable.md" in kv["reason"]
     meta = read(root / rel, "meta.json")
     assert meta["auth"]["why"] == "auth" and meta["keyless"] is True  # the page the process step builds says both
 

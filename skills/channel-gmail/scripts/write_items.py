@@ -18,18 +18,12 @@
 `<capture_dir>` is the ticket's own `capture_dir`, VERBATIM — the job's DAY
 directory, `_raw/<slug>/<YYYY-MM-DD>`, WIKI-RELATIVE: `llm-wiki-ops run` starts
 a script at the wiki root, not in the capture directory the worker stands
-in, so `.` is the wrong answer here. `ticket.json` in it is read for the ticket
-id, the `capture_dir` the report names, `options.mailbox` and `min_date`; a
-directory with none is refused unless `--ticket` says this is a hand run
+in, so `.` is the wrong answer here. `--ticket <id>` is read through
+`llm-wiki-ops pipeline tickets open` for the `capture_dir` the report names,
+`options.mailbox` and `min_date`; a run with no `--ticket` is a hand run
 (`--mailbox` and `--min-date` stand in for the rest). A bare `--from` name is
 looked for INSIDE the capture directory; no `--from` is `pull.json` there,
 else stdin.
-
-`since` is the run's FIRST step, and removes a stale `report.json` before it
-answers: the day directory is stable across the day's pulls, every pull of a
-job carries the same ticket id, and the extractor writes its own report into
-this directory — so a unit that died before its last step would otherwise
-leave an old `ok` for `apply` to land.
 
 `since` answers where this pull starts, as JSON: the cursor's
 `newest_internal_date` when `_raw/<slug>/.cursor.json` is there, else
@@ -72,15 +66,15 @@ under the pull's own clock, marked `time_untrusted` and counted `bad_time`; it
 never moves the cursor. A cursor file that is unreadable or ahead of the
 clock is ignored, out loud, and the lookback stands in.
 
-Then `report.json`, and only THEN the cursor (never backwards, never past
-the clock, never by a failed pull). `captured[]` names the day directory
-whenever its `items/` holds a file — not only when THIS invocation wrote one —
-so a rerun never reports `captured: []` over items no ledger has; and a
-report an earlier `write` on this ticket left with captures is never
-downgraded: a later failure makes it `partial` and says why. `apply` mints
-the process ticket from `captured[]`, and `ledger` regenerates the day's
-page WHOLE. A `ledger` report is the other shape: `written[]` names the page,
-`captured[]` is empty, and a stale report goes first there too.
+Then `tickets update`, and only THEN the cursor (never backwards, never past
+the clock, never by a failed pull). `capture.json` is (re)written whenever
+`items/` holds a file — not only when THIS invocation wrote one — so a
+rerun never leaves the host's own `captured[]` default empty over items no
+ledger has; and a report this ticket's own earlier `write` left, read back
+off `report.<id>.json` (`carried`), is never downgraded: a later failure
+makes it `partial` and says why. `close` mints the process ticket from a
+harvest `ok`/`partial`'s `captured[]`, and `ledger` regenerates the day's
+page WHOLE, posting `written_from=` naming the page.
 
 Wiki-owned, stdlib only, imports nothing from the plugin.
 """
@@ -102,12 +96,9 @@ INPUT_KEY = "mailbox"  # the unit's one `watch.inputs` answer, under the ticket'
 LOOKBACK_DAYS = 7
 CAP = 200
 
-REPORT_V = 1
 ITEM_V = 1
 CAPTURE_V = 1
-REPORT_NAME = "report.json"
 CAPTURE_NAME = "capture.json"
-TICKET_NAME = "ticket.json"
 CURSOR_NAME = ".cursor.json"
 ITEMS_DIRNAME = "items"  # the host's own name for it: `pipeline/extract.py::ITEMS_DIRNAME`
 WHYS = ("denied", "timeout", "auth", "error")
@@ -140,6 +131,69 @@ def front_door() -> list:
         return shlex.split(named)
     found = shutil.which(OPS)
     return [found] if found else []
+
+
+def open_ticket(ticket: str, stage: str | None = None) -> dict:
+    """This worker's own ticket (A-1), through the front door. Exits naming
+    the refusal."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit reaches the plugin")
+    argv = [*door, "--json", "pipeline", "tickets", "open", ticket]
+    if stage:
+        argv.append(f"stage={stage}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        sys.exit(f"{me}: `tickets open {ticket}` refused — {(cp.stdout + cp.stderr).strip()}")
+    try:
+        return json.loads(cp.stdout)["ticket"]
+    except (ValueError, KeyError) as exc:
+        sys.exit(f"{me}: `tickets open {ticket}` did not answer a ticket ({exc}) — {cp.stdout}")
+
+
+def post_update(
+    ticket: str,
+    stage: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    captured=(),
+    missing=(),
+    written_from: str | None = None,
+    produced: int | None = None,
+    note: str | None = None,
+) -> int:
+    """This worker's progress (A-2), through the front door. `missing` is an
+    iterable of `(host, url, why)`; a `,` inside `url` is typed as `%2C`,
+    the side note every unit's `missing=` build follows the same way."""
+    me = Path(__file__).stem
+    door = front_door()
+    if not door:
+        sys.exit(f"{me}: `{OPS}` is not on PATH and `LLM_WIKI_OPS` names nothing — the front door is how this unit posts progress")
+    argv = [*door, "--json", "pipeline", "tickets", "update", ticket, f"stage={stage}", f"status={status}"]
+    if reason:
+        argv.append(f"reason={reason}")
+    for directory in captured:
+        argv.append(f"captured={directory}")
+    for host, url, why in missing:
+        argv.append(f"missing={host},{url.replace(',', '%2C')},{why}")
+    if written_from:
+        argv.append(f"written_from={written_from}")
+    if produced is not None:
+        argv.append(f"produced={produced}")
+    if note:
+        argv.append(f"note={note}")
+    cp = subprocess.run(argv, capture_output=True, text=True)
+    if cp.returncode != 0:
+        print(f"{me}: `tickets update` refused — {(cp.stdout + cp.stderr).strip()}", file=sys.stderr)
+    return cp.returncode
+
+
+def report_name(ticket: str) -> str:
+    """`report.<id>.json` — the file `tickets update` leaves in the capture
+    directory (CLI spec § 5), the host's own name, not this unit's."""
+    return f"report.{ticket}.json"
 
 
 # What a nested front-door call must NOT inherit from the one that ran this
@@ -419,19 +473,6 @@ def land(day_dir, files):
         _write_json(items_dir / name, doc)
 
 
-def report_for(job, *, outcome, reason, captured, missing, written=()):
-    return {
-        "v": REPORT_V,
-        "ticket": job.get("ticket"),
-        "outcome": outcome,
-        "reason": reason,
-        "captured": captured,
-        "written": list(written),
-        "missing": missing,
-        "discovered": [],
-    }
-
-
 def capture_doc(job, day, *, now):
     """The flat `capture.json` every unit's harvest leaves. Nothing on the
     ledger route reads it — the route is decided by the job's `dest` before
@@ -450,31 +491,38 @@ def capture_doc(job, day, *, now):
     }
 
 
-def carried(directory, job):
-    """The report an EARLIER `write` on this same ticket left, when it carries
-    captures — else None. `since` removes a stale report first, so one found
-    here is this run's own: a second `write` must not turn it into `failed`
-    or `captured: []` while the items it named sit on disk with no ledger."""
-    prior = _read_json(directory / REPORT_NAME)
-    same = job.get("ticket") is not None and prior.get("ticket") == job.get("ticket")
-    landed = prior.get("outcome") in ("ok", "partial") and isinstance(prior.get("captured"), list) and prior["captured"]
-    return prior if same and landed else None
+def carried(directory, ticket_id):
+    """This run's OWN last `update` (ruling, #2480 pr5a): the host unlinks any
+    stale `report.<id>.json` at the START of a run (A-4), so a file found
+    here — read straight off disk, never through `tickets open` — answers for
+    THIS run alone. A second `write` in one run must not turn a landed
+    capture into `failed` or lose its `missing[]` while the items it named
+    sit on disk with no ledger."""
+    if not ticket_id:
+        return None
+    prior = _read_json(directory / report_name(ticket_id))
+    landed = prior.get("status") in ("ok", "partial") and isinstance(prior.get("captured"), list) and prior["captured"]
+    return prior if landed else None
 
 
-def load_job(directory, args):
-    job = _read_json(directory / TICKET_NAME)
-    if args.ticket:
-        job["ticket"] = args.ticket
-    options = job.get("options") if isinstance(job.get("options"), dict) else {}
+def job_from(ticket, args):
+    """This run's inputs: the ticket's own fields (`tickets open`, A-1),
+    overridden by a hand run's flags."""
+    options = ticket.get("options") if isinstance(ticket.get("options"), dict) else {}
     answer = getattr(args, INPUT_KEY, None) or options.get(INPUT_KEY)
-    job[INPUT_KEY] = answer if isinstance(answer, str) and answer.strip() else None
-    job.setdefault("capture_dir", directory.as_posix())
-    floor = getattr(args, "min_date", None) or job.get("min_date")
+    floor = getattr(args, "min_date", None) or ticket.get("min_date")
     try:
-        job["min_date"] = floor if isinstance(floor, str) and DAY_RE.fullmatch(floor) and from_day(floor) >= 0 else None
+        min_date = floor if isinstance(floor, str) and DAY_RE.fullmatch(floor) and from_day(floor) >= 0 else None
     except (ValueError, OverflowError):
-        job["min_date"] = None  # `2026-13-45` has the shape and is no day
-    return job
+        min_date = None  # `2026-13-45` has the shape and is no day
+    return {
+        "ticket": args.ticket,
+        "slug": ticket.get("slug"),
+        "item": ticket.get("item") or ticket.get("target"),
+        INPUT_KEY: answer if isinstance(answer, str) and answer.strip() else None,
+        "min_date": min_date,
+        "dest": getattr(args, "dest", None) or ticket.get("dest"),
+    }
 
 
 def source_of(directory, given, default=PULL_NAME):
@@ -495,21 +543,34 @@ def source_of(directory, given, default=PULL_NAME):
     return directory / path if not path.is_absolute() and len(path.parts) == 1 else path
 
 
-def misplaced(directory, job):
+def misplaced(directory):
     """A pull written as `<capture_dir>/pull.json` by a worker already standing
     IN the capture directory lands nested — inside the grant, so nothing fails
     until the pull is looked for. Name it rather than lose it."""
-    nested = directory / str(job.get("capture_dir") or "") / PULL_NAME
+    nested = directory / directory.as_posix() / PULL_NAME
     return nested if nested != directory / PULL_NAME and nested.is_file() else None
 
 
+def _opened(directory, args, stage):
+    """`open_ticket`, then the directory to actually read and write —
+    the ticket's own `capture_dir`, outright, never the positional (Q3):
+    a wrong positional that still looked like a day directory used to be
+    refused, but the ticket's own answer is the one grant that matters, so
+    it is what every read and write below uses, as `section_plan.py`
+    already does. A hand run (no `--ticket`) keeps the positional as
+    given — there is no ticket to defer to."""
+    if not args.ticket:
+        return {}, directory
+    ticket = open_ticket(args.ticket, stage)
+    named = ticket.get("capture_dir")
+    if isinstance(named, str) and named:
+        directory = Path(named)
+    return ticket, directory
+
+
 def since(directory, args, *, now=None):
-    # FIRST, before anything can stop this run: a day directory is stable across
-    # the day's pulls, the ticket id is the same for every pull of a job, `apply`
-    # never checks either, and the extractor writes its own `report.json` here.
-    # A unit that died before its last step would leave yesterday's `ok` to land.
-    (directory / REPORT_NAME).unlink(missing_ok=True)
-    job = load_job(directory, args)
+    ticket, directory = _opened(directory, args, "harvest")
+    job = job_from(ticket, args)
     if job[INPUT_KEY] is None:
         print(f"write_items: the job names no {INPUT_KEY} — `options.{INPUT_KEY}` is this unit's one input", file=sys.stderr)
         return 1
@@ -535,34 +596,42 @@ def since(directory, args, *, now=None):
 
 
 def write(directory, args, *, now=None):
-    job = load_job(directory, args)
+    ticket, directory = _opened(directory, args, "harvest")
+    job = job_from(ticket, args)
     now = _ms(now or datetime.now(timezone.utc))
     missing = [{"host": host, "url": url, "why": why} for host, url, why in args.missing]
     for entry in missing:
         if entry["why"] not in WHYS:
             print(f"write_items: --missing why must be one of {', '.join(WHYS)}", file=sys.stderr)
             return 2
-    day = {"item": job.get("item") or job.get("target"), "dir": job["capture_dir"], "title": None}
 
     def finish(outcome, reason, counts=None):
-        """The report, LAST. `captured[]` names the day whenever the day holds
-        items — not only when THIS invocation wrote one — and a report this
-        ticket already left with captures is never downgraded."""
+        """`tickets update`, LAST — `captured=` is never typed: the host
+        defaults it off `capture.json`'s presence in this directory (A-3), so
+        `capture.json` is (re)written whenever the day holds items — not only
+        when THIS invocation wrote one — and removed otherwise; and a report
+        this ticket's OWN earlier write left (`carried`) is never
+        downgraded."""
         failed = outcome == "failed"
-        prior = carried(directory, job)
+        prior = carried(directory, args.ticket)
         if prior is not None:
             if failed:
                 reason = f"a later write on this ticket failed and the captures stand: {reason}"
-            if failed or prior["outcome"] == "partial":
+            if failed or prior["status"] == "partial":
                 outcome = "partial"
             reason = "; ".join(one for one in (prior.get("reason"), reason) if one) or None
             every = [*(prior.get("missing") if isinstance(prior.get("missing"), list) else []), *missing]
             missing[:] = [entry for index, entry in enumerate(every) if entry not in every[:index]]
-        captured = [day] if outcome != "failed" and holds_items(directory) else []
+        captured = outcome != "failed" and holds_items(directory)
         if captured:
             _write_json(directory / CAPTURE_NAME, capture_doc(job, directory.name, now=now))
-        _write_json(directory / REPORT_NAME, report_for(job, outcome=outcome, reason=reason, captured=captured, missing=missing))
-        print(json.dumps({"outcome": outcome, "reason": reason, "captured": len(captured), **(counts or {})}, indent=2))
+        else:
+            (directory / CAPTURE_NAME).unlink(missing_ok=True)
+        code = post_update(args.ticket, "harvest", outcome, reason=reason,
+                            missing=[(m["host"], m["url"], m["why"]) for m in missing]) if args.ticket else 0
+        if code:
+            print(f"write_items: `tickets update` refused — the report above did not land", file=sys.stderr)
+        print(json.dumps({"outcome": outcome, "reason": reason, "captured": int(captured), **(counts or {})}, indent=2))
         return 1 if failed else 0
 
     if args.failed:
@@ -572,7 +641,7 @@ def write(directory, args, *, now=None):
         raw = source.read_text(encoding="utf-8") if source is not None else sys.stdin.read()
         items = json.loads(raw)
     except (OSError, ValueError) as exc:
-        nested = misplaced(directory, job)
+        nested = misplaced(directory)
         hint = f" — there is one at {nested.as_posix()}: it was written relative to the capture directory it was already in" if nested else ""
         return finish("failed", f"the pull could not be read: {type(exc).__name__}: {exc}{hint}")
     if not isinstance(items, list):
@@ -714,37 +783,36 @@ def write_page(dest, day, keys, body):
 
 
 def ledger(directory, args, *, now=None):
-    # FIRST, as `since` does it: the report in this directory answers the
-    # harvest that filled the day, and `apply` checks neither the ticket nor
-    # the step a report answers. A process run that died before its last step
-    # would otherwise leave the harvest's `ok` to land as this step's.
-    (directory / REPORT_NAME).unlink(missing_ok=True)
-    job = load_job(directory, args)
+    ticket, directory = _opened(directory, args, "process")
+    job = job_from(ticket, args)
     day = directory.name
-    dest = str(args.dest or job.get("dest") or "").strip().rstrip("/")
+    dest = str(job.get("dest") or "").strip().rstrip("/")
 
     def finish(outcome, reason, *, written=(), counts=None):
-        """The report, LAST, and a PROCESS report: `written[]` is the page
-        this step wrote, `captured[]` is empty — the day was captured by the
-        harvest that filled it, and naming it again would mint a second
-        extraction of the ledger this step has already written."""
-        _write_json(
-            directory / REPORT_NAME,
-            report_for(job, outcome=outcome, reason=reason, captured=[], missing=[], written=written),
-        )
-        print(json.dumps({"outcome": outcome, "reason": reason, "written": list(written), **(counts or {})}, indent=2))
+        """`tickets update`, LAST, and a PROCESS report: `written_from=`
+        names the page this step wrote; `captured` is left to the host's
+        default (A-3), which the process route never reads (A-10)."""
+        written = list(written)
+        written_from = None
+        if written:
+            written_from = "written.json"
+            _write_json(directory / written_from, written)
+        code = post_update(args.ticket, "process", outcome, reason=reason, written_from=written_from) if args.ticket else 0
+        if code:
+            print(f"write_items: `tickets update` refused — the report above did not land", file=sys.stderr)
+        print(json.dumps({"outcome": outcome, "reason": reason, "written": written, **(counts or {})}, indent=2))
         return 1 if outcome == "failed" else 0
 
     if not dest:
         print(
             "write_items: --dest is the ticket's `dest`, wiki-relative and verbatim — the job's ledger route, "
-            "`research/channels/<slug>`; a process ticket carries it, and a hand run reads it off `pipeline show <slug>`",
+            "`research/channels/<slug>`; a process ticket carries it, and a hand run names --dest directly",
             file=sys.stderr,
         )
         return 2
     items = read_items(directory)
     if not items:
-        return finish("skipped", f"{day} holds no {ITEMS_DIRNAME}/ item to write a ledger from")
+        return finish("ok", f"{day} holds no {ITEMS_DIRNAME}/ item to write a ledger from")
     source = source_of(directory, args.source, default=LINES_NAME)
     try:
         raw = source.read_text(encoding="utf-8") if source is not None else ("" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read())
@@ -768,9 +836,9 @@ def main(argv=None):
     for verb in ("since", "write", "ledger"):
         sub = subs.add_parser(verb)
         sub.add_argument("capture_dir", help="the ticket's own `capture_dir`, WIKI-RELATIVE as the ticket spells it: the job's day directory")
-        sub.add_argument("--ticket", help=f"the ticket id, when there is no {TICKET_NAME} (a hand run, or `spawn: none`)")
-        sub.add_argument(f"--{INPUT_KEY}", help=f"`options.{INPUT_KEY}`, when there is no {TICKET_NAME}")
-        sub.add_argument("--min-date", metavar="YYYY-MM-DD", help=f"the ticket's `min_date`, when there is no {TICKET_NAME}; overrides it when there is")
+        sub.add_argument("--ticket", help="the ticket id, read through `tickets open`; a hand run omits it")
+        sub.add_argument(f"--{INPUT_KEY}", help=f"`options.{INPUT_KEY}`, for a hand run with no --ticket; overrides it when there is one")
+        sub.add_argument("--min-date", metavar="YYYY-MM-DD", help="the ticket's `min_date`, for a hand run with no --ticket; overrides it when there is one")
         if verb == "since":
             sub.add_argument("--lookback-days", type=int, default=LOOKBACK_DAYS, help="the FIRST pull's window")
             continue
@@ -794,10 +862,17 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    if not (directory / TICKET_NAME).is_file() and not args.ticket:
+    if not args.ticket and args.verb != "ledger" and not getattr(args, INPUT_KEY, None):
         print(
-            f"write_items: {args.capture_dir!r} holds no {TICKET_NAME} — it is the ticket's own `capture_dir`, wiki-relative "
-            f"(this script runs at the wiki root); a hand run names `--ticket` and `--{INPUT_KEY}` instead",
+            f"write_items: no --ticket and no --{INPUT_KEY} — a worker passes --ticket <id>, read through "
+            f"`tickets open`; a hand run names --{INPUT_KEY} directly",
+            file=sys.stderr,
+        )
+        return 2
+    if args.verb == "ledger" and not args.ticket and not args.dest:
+        print(
+            "write_items: no --ticket and no --dest — a worker passes --ticket <id>, read through `tickets open`; "
+            "a hand run names --dest directly",
             file=sys.stderr,
         )
         return 2

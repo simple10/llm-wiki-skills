@@ -21,7 +21,8 @@ writes ONE page under `dest`:
   <capture-dir>/page.md          a document's body as it was written, kept
                                  beside the capture so a retried ticket is
                                  comparable. A video's page has no body
-  <capture-dir>/report.json      LAST, naming the page in `written[]`
+
+Posts `tickets update` LAST, `written_from=` naming the page.
 
 **The page is written by this script, as a subprocess with an argv LIST and
 never a shell line.** Every value on that line is venue text — a title, a
@@ -34,7 +35,7 @@ command:
 with the body on stdin. On the one refusal that means this job already landed
 the page (`<path> already exists — the filename is the title`, exit 2) it runs
 `page edit <dest>/<title>.md` with the same keys instead. Any other non-zero
-status ABORTS before `report.json` is written: a report that claimed a page
+status ABORTS before `tickets update` is posted: an update claiming a page
 nobody wrote would be read as work done.
 
 `title` is `capture.json`'s, which harvest already made filename-safe and
@@ -105,6 +106,11 @@ History:
               stub, minted here. It was reported `skipped` for a day, on the
               reading that only `pipeline extract` could set `extracted` and
               `media`; measuring `page create` showed otherwise.
+  2026-09-25  moved to the CLI-verb worker contract: `--ticket <id>` opens
+              `process.bundle_media` through `tickets open` instead of a file
+              beside the leaf dir, and the report is posted `tickets update`
+              (`written_from=` a file inside the capture dir) instead of
+              written to disk. `--skip` posts `ok`, never `skipped`.
 """
 
 import argparse
@@ -118,18 +124,20 @@ from capture_record import (
     CAPTURE_NAME,
     META_NAME,
     OPS,
-    REPORT_NAME,
-    TICKET_NAME,
     asset_facts,
     front_door,
     front_door_env,
     is_media,
     name_stem,
     one_line,
+    open_ticket,
+    post_update,
     read_json,
     strip_title,
     write_json,
 )
+
+WRITTEN_NAME = "written.json"
 
 BODY_NAME = "page.md"
 
@@ -287,35 +295,26 @@ def write_page(wiki: Path, dest: str, title: str, keys, body: str) -> str:
     return rel
 
 
-def write_report(cap_dir: Path, capture_rel: str, *, outcome: str, reason=None, written=()) -> dict:
-    """The ticket's PROCESS report, written LAST.
+def post_report(ticket_id: str, cap_dir: Path, written_from: str | None, *, status: str, reason=None) -> int:
+    """The ticket's PROCESS update, posted LAST.
 
-    `written[]` is the pages this run landed and `captured[]` is empty: a
-    process ticket captures nothing. The capture-freshness check a harvest
-    report carries does not apply — the spawner rewrites `ticket.json` long
-    after harvest wrote `capture.json`, so it would refuse every honest one.
+    P-4: a capture that earns no page (`--skip`) is `ok`, named in the
+    reason — no unit's word is `skipped` any more. `written_from=` names the
+    file (INSIDE the capture dir) of pages this run landed; no capture is
+    claimed. The capture-freshness check a harvest report carries does not
+    apply — nothing here reads freshness off `capture.json`.
     """
-    report = {
-        "v": 1,
-        "ticket": (read_json(cap_dir / TICKET_NAME) or {}).get("ticket"),
-        "outcome": outcome,
-        "reason": reason,
-        "captured": [],
-        "written": list(written),
-        "missing": [],
-        "discovered": [],
-    }
-    write_json(cap_dir / REPORT_NAME, report)
-    return report
+    return post_update(ticket_id, "process", status, reason=reason, written_from=written_from)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("wiki", type=Path, help="the wiki root — what binds the front door to this wiki; `.` under `run`")
-    ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: `capture_dir` off ticket.json")
+    ap.add_argument("--capture-dir", required=True, help="wiki-relative capture dir: the leaf's own")
     ap.add_argument("--dest", required=True, help="the ticket's `dest`, verbatim — the one directory the page may land in")
+    ap.add_argument("--ticket", required=True, help="the ticket id — opened for `process.bundle_media`, and posted to LAST")
     ap.add_argument("--stage", default="process", choices=("process",), help="this script is the process step; accepted so the prose can pass the stage through")
-    ap.add_argument("--skip", default=None, metavar="REASON", help="write the `skipped` report and no page: what exclude_rules, options or min_date ruled out")
+    ap.add_argument("--skip", default=None, metavar="REASON", help="post the `ok` update and write no page: what exclude_rules, options or min_date ruled out")
     ap.add_argument("--item", default=None, help="the leaf's view URL (default: capture.json's item, then meta.json's url)")
     ap.add_argument("--name", default=None, help="the asset's original filename (default: meta.json's name)")
     ap.add_argument("--path", action="append", default=None, help="folder breadcrumb bit, repeatable (default: meta.json's path)")
@@ -330,14 +329,13 @@ def main() -> int:
     cap_dir = (args.wiki / capture_rel).resolve()
     if not cap_dir.is_dir():
         sys.exit(f"{cap_dir} is not a directory — pass the ticket's capture_dir, wiki-relative")
-    # A stale report first: this capture dir is the same one on every pull, and
-    # `apply` does not check whose ticket the report it reads answers.
-    (cap_dir / REPORT_NAME).unlink(missing_ok=True)
 
     if args.skip:
-        write_report(cap_dir, capture_rel, outcome="skipped", reason=one_line(args.skip))
+        # P-4: a capture that earns no page under the ticket's own rules is
+        # `ok`, named in the reason — never a worker's `skipped`.
+        code = post_report(args.ticket, cap_dir, None, status="ok", reason=one_line(args.skip))
         print(json.dumps({"dir": capture_rel, "written": [], "skipped": one_line(args.skip)}))
-        return 0
+        return 2 if code else 0
 
     record = read_json(cap_dir / CAPTURE_NAME) or {}
     meta = read_json(cap_dir / META_NAME) or {}
@@ -357,7 +355,7 @@ def main() -> int:
     if not title:
         sys.exit(f"{cap_dir / CAPTURE_NAME} carries no title — it is what the page's FILE is named from")
 
-    ticket = read_json(cap_dir / TICKET_NAME) or {}
+    ticket = open_ticket(args.ticket, "process")
     process = ticket.get("process") if isinstance(ticket.get("process"), dict) else {}
     bundle = process.get("bundle_media") is True
 
@@ -380,9 +378,10 @@ def main() -> int:
             args.wiki, args.dest, title,
             [f"resource={item}", f"type={TYPE_VIDEO}", f"{FLAG}={QUEUED}", f"{MEDIA}={media_rel}"], "",
         )
-        write_report(cap_dir, capture_rel, outcome="ok", written=[written])
+        write_json(cap_dir / WRITTEN_NAME, [written])
+        code = post_report(args.ticket, cap_dir, WRITTEN_NAME, status="ok")
         print(json.dumps({"dir": capture_rel, "written": [written], "title": title, "ext": ext, "queued": f"{capture_rel}/{body_name}"}))
-        return 0
+        return 2 if code else 0
 
     path_bits = list(args.path if args.path is not None else [p for p in (meta.get("path") or []) if isinstance(p, str)])
     crumb_skip = args.crumb_skip
@@ -421,8 +420,9 @@ def main() -> int:
     # can be retried over the same bytes, and this is what the run produced.
     (cap_dir / BODY_NAME).write_text(body, encoding="utf-8")
     written = write_page(args.wiki, args.dest, title, [f"resource={item}", f"type={TYPE_DOC}", f"{FLAG}={EXTRACTED}"], body)
-    # LAST: a report naming a page is the claim that the page is there.
-    write_report(cap_dir, capture_rel, outcome="ok", written=[written])
+    write_json(cap_dir / WRITTEN_NAME, [written])
+    # LAST: an update naming a page is the claim that the page is there.
+    code = post_report(args.ticket, cap_dir, WRITTEN_NAME, status="ok")
     print(
         json.dumps(
             {
@@ -434,7 +434,7 @@ def main() -> int:
             }
         )
     )
-    return 0
+    return 2 if code else 0
 
 
 if __name__ == "__main__":

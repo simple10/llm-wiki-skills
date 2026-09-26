@@ -53,6 +53,11 @@
       "type": "skill",
       "name": "channel-youtube",
       "path": "skills/channel-youtube"
+    },
+    {
+      "type": "skill",
+      "name": "web-page",
+      "path": "skills/web-page"
     }
   ]
 }
