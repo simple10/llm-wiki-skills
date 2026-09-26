@@ -158,16 +158,16 @@ a title never does). The title is `capture.json`'s, and the page file IS
 `already exists`): run `page edit '<dest>/<title>.md' … --stdin` over that path
 instead, which is also how a re-run rewrites its own page.
 
-Read the page against Content extraction below BEFORE reporting. Chrome left in
-the body — a subscribe CTA, a footer — means re-converting with
-`--drop-selector '<css>'` added and piping that into
-`page edit '<dest>/<title>.md' --stdin`, before the report. The per-post
-illustration stays.
+Read the page against Content extraction below BEFORE reporting. Chrome left in the
+body — a subscribe CTA, a footer — means re-converting with `--drop-selector
+'<css>'` added and piping that into `page edit '<dest>/<title>.md' --stdin`, before
+the report. The per-post illustration stays.
 
 ```
-llm-wiki-ops --json pipeline tickets update <id> stage=process status=ok written_from=<file listing the page path>
+llm-wiki-ops --json pipeline tickets update <id> stage=process status=ok written_from=written.json
 ```
 
+Write the page path into `written.json` first (a wiki-relative JSON list).
 Say the post, the page it landed as, and stop.
 
 ## Venue knowledge

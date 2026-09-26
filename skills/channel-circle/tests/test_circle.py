@@ -39,12 +39,12 @@ TO_MARKDOWN = SCRIPTS / "to_markdown.py"
 FIX = Path(__file__).resolve().parent / "fixtures"
 
 UNIT = "channel-circle"
-BASE = "https://community.example.invalid"
+BASE = "https://example.com"
 TARGET = f"{BASE}/c/course-one"
 L1 = f"{TARGET}/sections/111/lessons/2001"
 L2 = f"{TARGET}/sections/111/lessons/2002"
 OTHER_SPACE = f"{BASE}/c/course-two/sections/900/lessons/9001"
-OFF_HOST = "https://elsewhere.example.invalid/c/course-one/sections/1/lessons/1"
+OFF_HOST = "https://example.org/c/course-one/sections/1/lessons/1"
 
 spec = importlib.util.spec_from_file_location("circle_section_plan", PLAN)
 mod = importlib.util.module_from_spec(spec)
@@ -63,7 +63,7 @@ def ticket(**over) -> dict:
     """The ticket `open_ticket` would answer (A-1)."""
     base = {
         "ticket": "0123456789ab", "slug": "course", "item": TARGET, "target": TARGET,
-        "capture_dir": "_raw/course/c-course-one--aaaaaaaa", "dest": None, "hosts": ["community.example.invalid"],
+        "capture_dir": "_raw/course/c-course-one--aaaaaaaa", "dest": None, "hosts": ["example.com"],
         "harvest": {"scope": "section", "access": "licensed", "exclude_urls": [], "assets": "reference"},
         "options": {}, "credential": None, "min_date": None, "known": [], "refresh": False, "resource": None,
         # The host's own stamp at the move to `active/` (Q1) — `now`, as a
@@ -335,10 +335,10 @@ def test_auth_expiry_names_every_unreached_lesson_as_auth(slice_dir, tmp_path):
     done = run_plan("report", cap, "--auth-expired", tmp_path=tmp_path, ticket_dict=t)
     kv = _kv(_updates(tmp_path)[-1])
     assert done.returncode == 1 and kv["status"] == "failed"
-    assert kv["reason"].startswith("auth_expired:community.example.invalid")
+    assert kv["reason"].startswith("auth_expired:example.com")
     call = _updates(tmp_path)[-1]
     missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
-    assert missing == [f"community.example.invalid,{url},auth" for url in (L1, L2)]
+    assert missing == [f"example.com,{url},auth" for url in (L1, L2)]
 
 
 def test_a_root_that_never_rendered_still_posts_an_update(tmp_path):
@@ -351,7 +351,7 @@ def test_a_root_that_never_rendered_still_posts_an_update(tmp_path):
     assert done.returncode == 1 and kv["status"] == "failed" and "captured" not in kv
     call = _updates(tmp_path)[-1]
     missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
-    assert missing == [f"community.example.invalid,{TARGET},auth"]
+    assert missing == [f"example.com,{TARGET},auth"]
 
 
 def test_everything_already_held_is_ok_not_failed(slice_dir, tmp_path):
@@ -542,7 +542,7 @@ def test_a_hostile_href_never_reaches_a_plan(wiki_root, tmp_path):
     meta["discovered_lesson_links"] += [
         {"href": HOSTILE_HREF, "text": "Pwn\n\n00:01"},
         {"href": f"{TARGET}/sections/111/lessons/2004?a=1&b=`id`", "text": "x"},
-        {"href": "https://user:pw@community.example.invalid/c/course-one/sections/111/lessons/2005", "text": "x"},
+        {"href": "https://user:pw@example.com/c/course-one/sections/111/lessons/2005", "text": "x"},
         {"href": "javascript:alert(1)//lessons/1", "text": "x"},
         {"href": "http://[::1/c/course-one/sections/1/lessons/1", "text": "x"},  # urlsplit raises on it
         {"href": f"{BASE}:99999/c/course-one/sections/111/lessons/2006", "text": "x"},
@@ -657,24 +657,36 @@ def test_capture_lesson_reads_a_leafs_url_and_dir_off_the_plan(wiki_root, tmp_pa
         assert capture.resolve_job(root, **kwargs)[3][0] == code, kwargs
 
 
+def test_capture_lesson_resolve_job_surfaces_the_open_refusal(wiki_root, tmp_path_factory, monkeypatch):
+    """F10: a `--ticket` given but `tickets open` refused must not read as
+    "no url given and no --ticket names one" — that swallows the real reason
+    (auth expiry, a bad ticket id) into a generic line."""
+    root, rel = wiki_root
+    capture = load_capture()
+    monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("refused-door"), None))
+    code, why = capture.resolve_job(root, out=rel, ticket="no-such-ticket")[3]
+    assert code == capture.EXIT_NOTHING_TO_CAPTURE
+    assert "no ticket" in why and "no url given" not in why
+
+
 def test_capture_lesson_the_documented_way_reads_the_profile_answer(wiki_root, tmp_path_factory):
     """No browser here — and none is needed to reach the answer that matters:
     `<root> --out <capture_dir>`, cwd the wiki root, relative paths."""
     root, rel = wiki_root
     t = ticket()
     env, seen = stub_capture_front_door(
-        tmp_path_factory.mktemp("door"), t, {"domain": "community.example.invalid", "path": "/nowhere/profile", "exists": False},
+        tmp_path_factory.mktemp("door"), t, {"domain": "example.com", "path": "/nowhere/profile", "exists": False},
     )
     done = cli(CAPTURE, ".", "--out", rel, "--ticket", t["ticket"], cwd=root, env=env)
     assert done.returncode == 2 and "no auth profile" in done.stderr, done.stderr  # absent: a login is what fixes it
-    assert json.loads(seen.read_text(encoding="utf-8"))["argv"] == ["--json", "credential", "profile-dir", "community.example.invalid"]
+    assert json.loads(seen.read_text(encoding="utf-8"))["argv"] == ["--json", "credential", "profile-dir", "example.com"]
     # The store unreachable — what a jail with no grant on it answers: 5, never 2.
     env, _ = stub_capture_front_door(tmp_path_factory.mktemp("door5"), t, {"error": "permission denied"}, rc=1)
     assert cli(CAPTURE, ".", "--out", rel, "--ticket", t["ticket"], cwd=root, env=env).returncode == 5
     # `--leaf`, the documented way.
     t = ticket()
     assert cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("ticket-door"), ticket_dict=t).returncode == 0
-    env, seen = stub_front_door(tmp_path_factory.mktemp("door2"), {"domain": "community.example.invalid", "path": "/nowhere", "exists": False})
+    env, seen = stub_front_door(tmp_path_factory.mktemp("door2"), {"domain": "example.com", "path": "/nowhere", "exists": False})
     plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("ticket-door2"), ticket_dict=t))
     done = cli(CAPTURE, ".", "--plan", f"{rel}/plan.json", "--leaf", 1, cwd=root, env=env)
     assert done.returncode == 2 and (root / plan["leaves"][0]["dir"]).is_dir()
@@ -712,6 +724,15 @@ def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, t
     stale = ticket(claimed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 200)))
     late = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=claimed_ago, ticket_dict=stale))
     assert abs(late["deadline_epoch"] - (time.time() + 1500 - mod.CLAIMED_AT_MARGIN_SECONDS - 200)) < 5
+
+    # N1: a --ticket run whose ticket carries no `claimed_at` (an old record,
+    # or a hand-built one in a test) must still get a deadline, from the
+    # clock — a fallback, never a silent `None` that keeps nothing killable.
+    no_claim = tmp_path_factory.mktemp("deadline-no-claimed-at")
+    bare = ticket(claimed_at=None)
+    unclaimed = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=no_claim, ticket_dict=bare))
+    assert unclaimed["deadline_epoch"] is not None
+    assert abs(unclaimed["deadline_epoch"] - (time.time() + 1500 - mod.CLAIMED_AT_MARGIN_SECONDS)) < 5
 
     hand = tmp_path_factory.mktemp("deadline-hand") / "_raw" / "course" / "r--00000000"
     hand.mkdir(parents=True)
@@ -893,6 +914,14 @@ def test_the_process_step_posts_the_pages_it_wrote_and_captures_nothing(wiki_roo
     kv = _kv(call)
     assert done.returncode == 0 and kv["status"] == "ok"
     assert kv["written_from"] == "written.json" and "captured" not in kv
+    # F5: `tickets update` refuses `missing=` outside harvest (exit 2, posts
+    # nothing) — the process arm refuses it LOCALLY instead, before wasting
+    # the call on a report that would otherwise post nothing at all.
+    door_missing = tmp_path_factory.mktemp("process-missing-door")
+    missing_call = cli(PLAN, "report", rel, "--stage", "process", "--written-from", "written.json",
+                        "--missing-host", "fast.wistia.com", "denied", cwd=root, tmp_path=door_missing, ticket_dict=t)
+    assert missing_call.returncode == 2 and not _updates(door_missing)
+    assert "harvest" in missing_call.stderr
     # A capture the ticket's own rules excluded: `ok`, nothing written, and the reason said.
     door2 = tmp_path_factory.mktemp("process-excl-door")
     excl = cli(PLAN, "report", rel, "--stage", "process", "--reason", "excluded by rule", cwd=root, tmp_path=door2, ticket_dict=t)
@@ -918,11 +947,11 @@ def test_a_title_cannot_forge_a_rule_or_a_heading():
 
 
 def test_www_is_not_a_second_host_and_a_path_prefix_is_whole_segments():
-    www = "https://www.community.example.invalid"
+    www = "https://www.example.com"
     meta = {"title": "C", "discovered_lesson_links": [
         {"href": f"{www}/c/course-one/sections/1/lessons/1", "text": "One"},
         {"href": f"{www}/c/course-one-advanced/sections/1/lessons/2", "text": "Sibling space"},  # `/c/x` is not `/c/xy`
-        {"href": "https://wwwcommunity.example.invalid/c/course-one/sections/1/lessons/3", "text": "Another host"}]}
+        {"href": "https://wwwexample.com/c/course-one/sections/1/lessons/3", "text": "Another host"}]}
     t = ticket()  # the APEX is the target
     plan = mod.build_plan(t, meta, capture_rel=t["capture_dir"])
     assert [leaf["url"] for leaf in plan["leaves"]] == [f"{www}/c/course-one/sections/1/lessons/1"]
@@ -935,9 +964,9 @@ def test_www_is_not_a_second_host_and_a_path_prefix_is_whole_segments():
 def test_an_exclusion_is_whole_segments_and_this_units_own_reading():
     assert not mod.excluded(f"{BASE}/c/ab/sections/1/lessons/1", [f"{BASE}/c/a"])
     assert mod.excluded(f"{BASE}/c/a/sections/1/lessons/1", [f"{BASE}/c/a"]) and mod.excluded(f"{BASE}/c/a", [f"{BASE}/c/a/"])
-    assert mod.excluded(f"{BASE}/c/a/x", ["https://www.community.example.invalid/c/a"])  # `www.` told apart nowhere
-    assert mod.excluded(f"{BASE}/c/a/x", ["community.example.invalid/c/a"]) and mod.excluded(f"{BASE}/c/a/x", ["/c/a"])
-    assert not mod.excluded(f"{BASE}/c/a/x", ["/c/ab", "https://elsewhere.example.invalid/c/a", "", None, "http://[::1"])
+    assert mod.excluded(f"{BASE}/c/a/x", ["https://www.example.com/c/a"])  # `www.` told apart nowhere
+    assert mod.excluded(f"{BASE}/c/a/x", ["example.com/c/a"]) and mod.excluded(f"{BASE}/c/a/x", ["/c/a"])
+    assert not mod.excluded(f"{BASE}/c/a/x", ["/c/ab", "https://example.org/c/a", "", None, "http://[::1"])
     assert "this unit's reading" in mod.excluded.__doc__.lower()
 
 
@@ -981,7 +1010,7 @@ def test_missing_is_named_by_leaf_number_or_by_host_never_by_a_typed_url(wiki_ro
     # is left un-attempted — a LASTING shortfall is `ok`, not `partial`.
     assert done.returncode == 0 and kv["status"] == "ok"
     missing = [a.split("=", 1)[1] for a in call if a.startswith("missing=")]
-    assert missing == [f"community.example.invalid,{L2},error", "fast.wistia.com,https://fast.wistia.com/,denied"]
+    assert missing == [f"example.com,{L2},error", "fast.wistia.com,https://fast.wistia.com/,denied"]
     assert "not reached" not in kv["reason"]  # lesson 2 is accounted for: it is missing, not unreached
 
 
@@ -1013,6 +1042,12 @@ def test_the_outage_probe_takes_its_ticket_id_too(wiki_root, tmp_path_factory, m
     assert probe.ticket_target(root, "0123456789ab") == TARGET  # wiki-relative resolution is the CLI's, not this script's
     monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("probe-hostile"), ticket(target="file:///etc/passwd")))
     assert probe.ticket_target(root, "0123456789ab") is None
+    # F10: `tickets open` itself refused — surfaced through `refusal`, never
+    # swallowed into a bare None indistinguishable from "no --ticket at all".
+    monkeypatch.setenv("LLM_WIKI_OPS", _stub_ops(tmp_path_factory.mktemp("probe-refused"), None))
+    refusal: list = []
+    assert probe.ticket_target(root, "no-such-ticket", refusal) is None
+    assert refusal and "no ticket" in refusal[0]
 
 
 def test_the_documented_page_line_names_a_type():

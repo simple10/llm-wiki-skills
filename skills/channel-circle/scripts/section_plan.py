@@ -925,9 +925,13 @@ def cmd_plan(args) -> int:
     # P-8/Q1: the ticket's own `claimed_at` — the host's stamp at the move to
     # `active/`, which `tickets open` already answers — no per-run timestamp
     # on disk to anchor the deadline on any more. None on a hand run (no
-    # `--ticket`), which nothing kills, and none either if the ticket somehow
-    # carries no `claimed_at` (an old record, or a hand-built one in a test).
+    # `--ticket`), which nothing kills. N1: a --ticket run whose ticket
+    # somehow carries no `claimed_at` (an old record, or a hand-built one in
+    # a test) falls back to THIS run's own clock — a slice is still
+    # killable, as it always was before P-8/Q1 moved the anchor off it.
     spawned = epoch(ticket.get("claimed_at")) if args.ticket else None
+    if args.ticket and spawned is None:
+        spawned = time.time()
     if spawned is not None:
         budget = max(0, min(args.budget_s, SLICE_CAP_SECONDS) - CLAIMED_AT_MARGIN_SECONDS)
         plan["deadline_epoch"] = spawned + budget
@@ -1180,11 +1184,19 @@ def cmd_report(args) -> int:
     if args.gone and not (plan.get("refresh") is True):
         print("error: --gone is a refresh ticket's answer alone (the ticket's own `refresh: true`)", file=sys.stderr)
         return 2
+    is_process = args.stage == "process" or bool(written)
+    if missing and is_process:
+        print(
+            "error: --missing/--missing-leaf/--missing-host are harvest's only — `tickets update` refuses "
+            "missing= on a process report; drop them from a --stage process (or --written-from) call",
+            file=sys.stderr,
+        )
+        return 2
     update = build_update(
         capture_dir, ticket, plan, missing=missing, written=written, stage=args.stage,
         auth_expired=args.auth_expired, gone=args.gone, reason=args.reason,
     )
-    stage = "process" if (args.stage == "process" or written) else "harvest"
+    stage = "process" if is_process else "harvest"
     code = post_update(
         args.ticket, stage, update["status"], reason=update["reason"],
         captured=[row["dir"] for row in update.get("captured") or []],

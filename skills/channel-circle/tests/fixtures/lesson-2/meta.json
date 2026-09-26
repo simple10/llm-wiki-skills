@@ -1,34 +1,34 @@
 {
-  "url": "https://community.example.invalid/c/course-one/sections/111/lessons/2002",
-  "final_url": "https://community.example.invalid/c/course-one/sections/111/lessons/2002",
+  "url": "https://example.com/c/course-one/sections/111/lessons/2002",
+  "final_url": "https://example.com/c/course-one/sections/111/lessons/2002",
   "title": "Reading the Room | Example Community",
-  "canonical": "https://community.example.invalid/c/course-one/sections/111/lessons/2002",
-  "domain": "community.example.invalid",
+  "canonical": "https://example.com/c/course-one/sections/111/lessons/2002",
+  "domain": "example.com",
   "html_bytes": 0,
   "stream_requests": [],
   "discovered_lesson_links": [
     {
-      "href": "https://community.example.invalid/c/course-one/sections/111",
+      "href": "https://example.com/c/course-one/sections/111",
       "text": "Section One"
     },
     {
-      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+      "href": "https://example.com/c/course-one/sections/111/lessons/2001",
       "text": "Getting the Frame Right\n\n04:07"
     },
     {
-      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2002#comments",
+      "href": "https://example.com/c/course-one/sections/111/lessons/2002#comments",
       "text": "Reading the Room\n\n12:30"
     },
     {
-      "href": "https://community.example.invalid/c/course-one/sections/111/lessons/2001",
+      "href": "https://example.com/c/course-one/sections/111/lessons/2001",
       "text": "Getting the Frame Right\n\n04:07"
     },
     {
-      "href": "https://community.example.invalid/c/course-two/sections/900/lessons/9001",
+      "href": "https://example.com/c/course-two/sections/900/lessons/9001",
       "text": "A Lesson In Another Space\n\n01:00"
     },
     {
-      "href": "https://elsewhere.example.invalid/c/course-one/sections/1/lessons/1",
+      "href": "https://example.org/c/course-one/sections/1/lessons/1",
       "text": "Off-host"
     }
   ],

@@ -561,6 +561,33 @@ def test_a_refusal_posts_nothing(monkeypatch, capsys, tmp_path):
     assert mod.main() == 2 and not updates.exists()
 
 
+def test_a_refused_update_is_not_swallowed_into_exit_0(monkeypatch, capsys, tmp_path):
+    """F6: `post_report` discarded `post_update`'s exit code — a refused
+    post still ended in exit 0 and the ticket landed `no_report`, same as a
+    real success. Every other unit exits 2 on a refused post; this one must
+    too."""
+    cap, ticket = _share_dir(tmp_path, [_leaf(1)])
+    mod = _module("harvest_share")
+    home = tmp_path / "ops-stub"
+    home.mkdir(parents=True, exist_ok=True)
+    stub = home / "ops_stub.py"
+    stub.write_text(
+        "import json, sys\n"
+        "argv = [a for a in sys.argv[1:] if a != '--json']\n"
+        f"TICKET = json.loads({json.dumps(json.dumps(ticket))})\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'open']:\n"
+        "    print(json.dumps({'ticket': TICKET}))\n"
+        "    sys.exit(0)\n"
+        "if argv[:3] == ['pipeline', 'tickets', 'update']:\n"
+        "    sys.exit('ops_stub: refused')\n"
+        "sys.exit('ops_stub: unhandled ' + repr(argv))\n"
+    )
+    monkeypatch.setenv("LLM_WIKI_OPS", shlex.join([sys.executable, str(stub)]))
+    monkeypatch.setattr(mod, "run", _fake_capture_job([]))
+    monkeypatch.setattr(sys, "argv", ["harvest_share.py", str(cap), "--ticket", ticket["ticket"]])
+    assert mod.main() == 2
+
+
 def test_write_json_is_atomic(monkeypatch, tmp_path):
     rec = _module("capture_record")
     target = tmp_path / "plan.json"

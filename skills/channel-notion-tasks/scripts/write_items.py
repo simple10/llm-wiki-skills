@@ -511,7 +511,7 @@ def capture_record(directory, job, now):
 
 
 def carried(directory, ticket_id):
-    """This run's OWN last `update` (ruling, #2480 pr5a): the host unlinks any
+    """This run's OWN last `update`: the host unlinks any
     stale `report.<id>.json` at the START of a run (A-4), so a file found
     here — read straight off disk, never through `tickets open` — answers for
     THIS run alone. A second `write` in one run must not turn a landed
@@ -640,7 +640,10 @@ def write(directory, args, *, now=None):
                 outcome = "partial"
             reason = "; ".join(one for one in (prior.get("reason"), reason) if one) or None
             every = [*(prior.get("missing") if isinstance(prior.get("missing"), list) else []), *missing]
-            missing[:] = [entry for index, entry in enumerate(every) if entry not in every[:index]]
+            missing[:] = [
+                entry for index, entry in enumerate(every)
+                if isinstance(entry, dict) and {"host", "url", "why"} <= entry.keys() and entry not in every[:index]
+            ]
         captured = outcome != "failed" and holds_items(directory)
         if captured:
             _write_json(directory / CAPTURE_NAME, capture_record(directory, job, now))

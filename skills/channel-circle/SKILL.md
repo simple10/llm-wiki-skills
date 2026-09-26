@@ -144,7 +144,8 @@ llm-wiki-ops run scripts/format_transcript.py <capture_dir>/captions/<srclang>.v
 ```
 cat <capture_dir>/page.md | llm-wiki-ops page create title='<title>' dest=<dest> resource='<item>' type=lesson extracted=true --stdin
 cat <capture_dir>/page.md | llm-wiki-ops page edit '<dest>/<title>.md' resource='<item>' type=lesson extracted=true --stdin
-llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <capture_dir> --ticket <id> --stage process --written-from <file>
+echo '["<dest>/<title>.md"]' > <capture_dir>/written.json
+llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <capture_dir> --ticket <id> --stage process --written-from written.json
 ```
 
    Every venue value on those lines — `<title>`, `<item>` — is copied VERBATIM
@@ -152,8 +153,9 @@ llm-wiki-ops run ops/skills/channel-circle/scripts/section_plan.py report <captu
    carrying a single quote is refused, not run (`safe_title` maps `'` and `"`
    to `’`, so a title never does). `create` is the first pull; it exits 2 with
    `<path> already exists — the filename is the title` on a second, and then
-   `edit` writes that same page. Report LAST: save the page path to a file
-   inside the capture dir and pass `--written-from <file>`.
+   `edit` writes that same page. Report LAST: write the page path(s) into
+   `written.json` inside the capture dir (a JSON list, wiki-relative) and
+   pass `--written-from written.json`.
 
 ## Auth (one-time, per domain)
 

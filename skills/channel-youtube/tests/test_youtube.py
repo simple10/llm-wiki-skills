@@ -608,3 +608,39 @@ def test_the_tickets_embeds_key_reaches_the_page_the_script_writes(tmp_path, pro
     _build(tmp_path, cap, "--format-transcript", str(_stub_formatter(tmp_path)), ops=stub)
     body = (cap / "page.md").read_text()
     assert ("<iframe" in body) is iframe, body[:200]
+
+
+def test_front_door_interpreter_resolves_a_project_line_in_either_form(builder, tmp_path):
+    """F13: `LLM_WIKI_OPS` naming `uv run --project <dir> llm-wiki-ops` (or the
+    `=` form) is never rewritten to a durable single path outside a real
+    dispatch — reading `door[-1]`'s own shebang then always misses
+    (`llm-wiki-ops` is a bare name, not a file here), silently falling back
+    to `sys.executable`, which lacks the formatter's own imports. The
+    project's own `.venv` interpreter is what a `uv run --project` line
+    actually runs under, in either flag form."""
+    venv_python = tmp_path / ".venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\n")
+    venv_python.chmod(0o755)
+    for door in (
+        ["uv", "run", "--project", str(tmp_path), "llm-wiki-ops"],
+        ["uv", "run", f"--project={tmp_path}", "llm-wiki-ops"],
+    ):
+        assert builder._front_door_interpreter(door) == str(venv_python), door
+
+
+def test_format_transcript_a_missing_front_door_binary_exits_cleanly(builder, monkeypatch, tmp_path):
+    """F13: a missing `uv` (or any front-door interpreter) raised
+    `FileNotFoundError` straight out of `subprocess.run`, crashing with a
+    traceback instead of the documented exit message."""
+    monkeypatch.setenv("LLM_WIKI_OPS", "uv run --project /nowhere llm-wiki-ops")
+
+    def boom(*a, **k):
+        raise FileNotFoundError("uv: not found")
+
+    monkeypatch.setattr(builder.subprocess, "run", boom)
+    captions = tmp_path / "captions.vtt"
+    captions.write_text("WEBVTT\n")
+    with pytest.raises(SystemExit) as exc:
+        builder.format_transcript(str(captions), None, tmp_path, None)
+    assert "uv: not found" in str(exc.value)
