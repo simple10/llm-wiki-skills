@@ -165,7 +165,7 @@ def main() -> int:
     refusal: list = []
     args.url = args.url or ticket_target(args.root, args.ticket, refusal)
     if not args.url:
-        why = refusal[0] if refusal else "no url: give --ticket <id> (opened for its own target)"
+        why = (refusal[0] if refusal else None) or "no url: give --ticket <id> (opened for its own target)"
         print(json.dumps({"fixed": False, "error": why}))
         return 0
     domain = domain_of(args.url)

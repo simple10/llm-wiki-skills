@@ -114,6 +114,16 @@ def _stub_ops(tmp_path: Path, ticket_dict: dict | None) -> str:
     return shlex.join([sys.executable, str(stub)])
 
 
+def _silent_refusal_ops(tmp_path: Path) -> str:
+    """A front door that refuses `tickets open` printing NOTHING at all — the
+    case an empty `refusal[0]` must not be read as "no refusal happened"."""
+    home = tmp_path / ".ops-silent"
+    home.mkdir(exist_ok=True)
+    stub = home / "ops_silent.py"
+    stub.write_text("import sys\nsys.exit(1)\n")
+    return shlex.join([sys.executable, str(stub)])
+
+
 def _updates(tmp_path: Path) -> list:
     path = tmp_path / ".ops-stub" / "update-calls.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
@@ -669,6 +679,18 @@ def test_capture_lesson_resolve_job_surfaces_the_open_refusal(wiki_root, tmp_pat
     assert "no ticket" in why and "no url given" not in why
 
 
+def test_capture_lesson_resolve_job_falls_back_to_the_generic_line_on_a_silent_refusal(wiki_root, tmp_path_factory, monkeypatch):
+    """F10 residue: `refusal[0] if refusal else <default>` picks `refusal[0]`
+    whenever anything at all was appended — even the empty string a refusal
+    that printed nothing leaves. The generic line must win there too."""
+    root, rel = wiki_root
+    capture = load_capture()
+    monkeypatch.setenv("LLM_WIKI_OPS", _silent_refusal_ops(tmp_path_factory.mktemp("silent-refusal")))
+    code, why = capture.resolve_job(root, out=rel, ticket="no-such-ticket")[3]
+    assert code == capture.EXIT_NOTHING_TO_CAPTURE
+    assert why == "no url given and no --ticket names one"
+
+
 def test_capture_lesson_the_documented_way_reads_the_profile_answer(wiki_root, tmp_path_factory):
     """No browser here — and none is needed to reach the answer that matters:
     `<root> --out <capture_dir>`, cwd the wiki root, relative paths."""
@@ -742,6 +764,20 @@ def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, t
         cwd=hand.parents[2], capture_output=True, text=True,
     )
     assert last_json_plan(by_hand)["deadline"] is None and not mod.past_deadline(last_json_plan(by_hand))
+
+
+def test_the_no_claimed_at_fallback_re_stamps_every_plan_call(wiki_root, tmp_path_factory):
+    """N1, deliberately: the fallback exists only for an old or hand-built
+    ticket record with no `claimed_at` (the host always stamps one), so
+    keeping it a fresh clock read on every call — rather than pinning it to
+    this run's first call — costs nothing real and is simplest. Two `plan`
+    calls on the same claimless ticket get two different deadlines."""
+    root, rel = wiki_root
+    bare = ticket(claimed_at=None)
+    first = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("no-claim-1"), ticket_dict=bare))
+    time.sleep(0.05)
+    second = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path_factory.mktemp("no-claim-2"), ticket_dict=bare))
+    assert first["deadline_epoch"] != second["deadline_epoch"]
 
 
 def test_past_the_deadline_record_says_stop_and_no_new_lesson_is_started(wiki_root, tmp_path_factory):
