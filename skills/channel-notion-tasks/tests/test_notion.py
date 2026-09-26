@@ -400,6 +400,19 @@ def test_a_capture_dir_naming_a_different_day_than_the_ticket_is_refused(tmp_pat
     assert r.returncode != 0 and "capture_dir" in r.stderr and ticket["capture_dir"] in r.stderr
 
 
+def test_a_capture_dir_that_merely_ends_in_the_tickets_text_is_refused(tmp_path):
+    """R2-2: a bare string `endswith` has no path-component boundary —
+    `bad_raw/tasks/<day>` reads as ending in `_raw/tasks/<day>` character for
+    character. The match is on trailing PATH COMPONENTS, so this is still
+    refused."""
+    directory, ticket = day_dir(tmp_path)
+    bad = tmp_path / "bad_raw" / "tasks" / DAY
+    bad.mkdir(parents=True)
+    assert str(bad).endswith(ticket["capture_dir"])  # the bug this pins: true as plain text
+    r = since(bad, ticket)
+    assert r.returncode != 0 and "capture_dir" in r.stderr
+
+
 # ------------------------------------------------------------------ the ledger, in this unit's words
 
 

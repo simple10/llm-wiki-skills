@@ -583,9 +583,12 @@ def _opened(directory, args, stage):
     # Wiki-relative on a real run, cwd is the wiki root (the doc's own
     # words); a unit test calling this directly hands an absolute
     # `tmp_path`-rooted one instead, ending in the SAME relative
-    # `_raw/<slug>/<day>` a fixture ticket answers — a suffix match holds
-    # for both, and still catches a directory naming a different slug or day.
-    if not isinstance(named, str) or not str(directory).replace("\\", "/").endswith(named):
+    # `_raw/<slug>/<day>` a fixture ticket answers — a match on trailing
+    # PATH COMPONENTS holds for both (R2-2: a plain string `endswith` has no
+    # component boundary, so `bad_raw/mail/<day>` would pass for `_raw/mail/<day>`).
+    wanted = tuple(named.split("/")) if isinstance(named, str) and named else None
+    parts = tuple(str(directory).replace("\\", "/").split("/"))
+    if not wanted or parts[-len(wanted):] != wanted:
         sys.exit(
             f"write_items: --ticket {args.ticket} names capture_dir {named!r}, not {str(directory)!r} "
             "— give the ticket's own, wiki-relative"
