@@ -601,7 +601,7 @@ def process_update(*, written: list[str], reason: str | None = None, failed: boo
 
 def build_update(*, planned: list[dict], captured: list[dict], skipped: list[dict],
                  missing: list[tuple], reason: str | None = None, failed: bool = False, gone: bool = False,
-                 job: dict | None = None) -> dict:
+                 job: dict | None = None, missing_leaf_dirs: frozenset = frozenset()) -> dict:
     """`ok` when every page of the job's that is not already held landed,
     `partial` when some did — or all the PLANNED ones did and the limit left
     others — `ok` (nothing new, named in the reason) when there was truly
@@ -621,6 +621,12 @@ def build_update(*, planned: list[dict], captured: list[dict], skipped: list[dic
     landed_dirs = {row["dir"] for row in captured}
     got = [leaf for leaf in pages if leaf["dir"] in landed_dirs]
     over = sum(1 for row in skipped if row.get("why") == "over_limit")
+    # A page is ATTEMPTED when it landed or a `--missing-leaf` row named it
+    # by index (R2-1): a `--missing-host` row is host-level, never tied to a
+    # specific page, so it must not count one as attempted on its own — the
+    # count-based check this replaced let one host row cover for a page that
+    # was never reached at all.
+    unattempted = [leaf for leaf in pages if leaf["dir"] not in landed_dirs and leaf["dir"] not in missing_leaf_dirs]
     reasons = [reason] if reason else []
     if failed:
         status = "failed"
@@ -629,9 +635,9 @@ def build_update(*, planned: list[dict], captured: list[dict], skipped: list[dic
         status = "gone"
     elif pages and len(got) == len(pages) and not over:
         status = "ok"
-    elif got and (over or len(pages) - len(got) > len(missing)):
+    elif got and (over or unattempted):
         # P-5: a page remains un-attempted (over_limit, or neither captured
-        # nor named in `missing`) — a re-run of this stage gets more.
+        # nor named by a `--missing-leaf` row) — a re-run of this stage gets more.
         status = "partial"
         total = len(pages) + over
         reasons.append(f"{len(got)} of {total} pages captured, {total - len(got)} left for another run; {how_to_continue(job)}")
@@ -1238,10 +1244,12 @@ def cmd_report(args) -> int:
     if args.gone and not job["refresh"]:
         raise Problem("--gone is a refresh ticket's answer alone (the ticket's own `refresh: true`)")
     missing = []
+    missing_leaf_dirs = set()
     for why, n in args.missing_leaf or []:
         if why not in WHY or not n.isdigit():
             raise Problem(f"--missing-leaf {why} {n}: <why> is one of {', '.join(WHY)}, <n> an index in {PLAN_NAME}")
         leaf = _leaf_at(plan, int(n))
+        missing_leaf_dirs.add(leaf["dir"])
         # The page's video where the render resolved one — a Mux host the jail
         # refused is the usual miss — else the page itself.
         url = clean_meta(_read_json(root / leaf["dir"] / "meta.json") or {})["stream_url"] if (why == "denied" and root is not None) else None
@@ -1258,7 +1266,8 @@ def cmd_report(args) -> int:
         fit_titles(root, planned, before)
     captured = [row for row in (held(root, leaf) for leaf in planned) if row] if root is not None else []
     update = build_update(planned=planned, captured=captured, skipped=plan.get("skipped") or [],
-                          missing=missing, reason=fold(args.reason) or None, failed=args.failed, gone=args.gone, job=job)
+                          missing=missing, reason=fold(args.reason) or None, failed=args.failed, gone=args.gone, job=job,
+                          missing_leaf_dirs=frozenset(missing_leaf_dirs))
     code = post_update(ticket_id, "harvest", update["status"], reason=update["reason"],
                        captured=[row["dir"] for row in update["captured"]], missing=missing)
     print(json.dumps({"status": update["status"], "reason": update["reason"], "captured": len(update["captured"]), **clock(plan)}))

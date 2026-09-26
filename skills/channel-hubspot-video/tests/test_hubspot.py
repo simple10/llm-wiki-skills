@@ -274,6 +274,23 @@ def test_the_update_names_its_status_from_what_landed():
     assert forced["status"] == "failed" and forced["captured"] == [] and forced["reason"] == "auth_expired:x"
 
 
+def test_a_missing_host_row_never_covers_for_a_page_it_does_not_name():
+    """R2-1: `--missing-host` is host-level, never tied to a specific page —
+    it must not be counted as an attempt on the ONE page that never landed.
+    Only a `--missing-leaf` row, matched by the page's own dir, accounts for
+    a page by name."""
+    planned = [{"item": "u1", "dir": "_raw/s/a--1"}, {"item": "u2", "dir": "_raw/s/b--2"}]
+    got = [{"item": "u1", "dir": "_raw/s/a--1", "title": "A"}]
+    host_row = [("stream.mux.com", STREAM, "denied")]
+    still_partial = leaves.build_update(planned=planned, captured=got, skipped=[], missing=host_row)
+    assert still_partial["status"] == "partial" and "1 of 2" in still_partial["reason"]
+    # Naming page 2 itself (by dir, as `--missing-leaf` does) makes it a
+    # LASTING shortfall instead — `ok`, never `partial`.
+    named = leaves.build_update(planned=planned, captured=got, skipped=[], missing=host_row,
+                                missing_leaf_dirs=frozenset({"_raw/s/b--2"}))
+    assert named["status"] == "ok"
+
+
 def test_a_process_update_names_its_pages_and_captures_nothing():
     """A process ticket rewrites nothing a capture-freshness rule could read
     against; the update is about `written_from=` instead."""
