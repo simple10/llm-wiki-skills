@@ -12,7 +12,7 @@
   "name": "channel-hubspot-video",
   "requires": {
     "credential": false,
-    "ops": ">=1.96.0"
+    "ops": ">=0.1.0"
   },
   "stages": {
     "harvest": {
@@ -21,9 +21,9 @@
     "process": {}
   },
   "usage": "/channel-hubspot-video ticket=<id>",
-  "v": 2,
+  "v": 1,
   "venue": "hubspot-cms",
-  "version": "1.9.0",
+  "version": "0.1.0",
   "watch": {
     "defaults": {
       "every": "once",

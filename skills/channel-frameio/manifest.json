@@ -23,7 +23,7 @@
       }
     ],
     "credential": false,
-    "ops": ">=1.96.0"
+    "ops": ">=0.1.0"
   },
   "stages": {
     "harvest": {
@@ -32,9 +32,9 @@
     "process": {}
   },
   "usage": "/channel-frameio ticket=<id>",
-  "v": 2,
+  "v": 1,
   "venue": "frameio",
-  "version": "1.21.0",
+  "version": "0.1.0",
   "watch": {
     "defaults": {
       "every": "once",

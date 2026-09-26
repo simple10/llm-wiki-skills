@@ -38,7 +38,7 @@ Do not widen to `*.google.com` or `*`: yt-dlp's reach is these hosts.
 ```jsonc
 // youtube.harvest: the jail of channel-youtube's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-youtube-harvest",

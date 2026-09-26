@@ -35,7 +35,7 @@ fetch is improvising another.
 ```jsonc
 // notion-tasks.harvest: the jail of channel-notion-tasks's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-notion-tasks-harvest",

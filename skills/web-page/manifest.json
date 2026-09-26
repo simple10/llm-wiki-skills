@@ -9,7 +9,7 @@
   "name": "web-page",
   "requires": {
     "credential": false,
-    "ops": ">=1.96.0"
+    "ops": ">=0.1.0"
   },
   "stages": {
     "harvest": {
@@ -17,7 +17,7 @@
     }
   },
   "usage": "llm-wiki-ops run ops/skills/web-page/scripts/fetch.py ticket=<id>",
-  "v": 2,
+  "v": 1,
   "venue": "web",
-  "version": "1.0.0"
+  "version": "0.1.0"
 }

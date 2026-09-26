@@ -46,7 +46,7 @@ customer, and a site is the ticket's.
 ```jsonc
 // hubspot-cms.harvest: the jail of channel-hubspot-video's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-hubspot-video-harvest",

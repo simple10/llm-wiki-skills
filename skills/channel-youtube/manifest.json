@@ -24,7 +24,7 @@
       }
     ],
     "credential": false,
-    "ops": ">=1.96.0"
+    "ops": ">=0.1.0"
   },
   "stages": {
     "harvest": {
@@ -33,9 +33,9 @@
     "process": {}
   },
   "usage": "/channel-youtube ticket=<id>",
-  "v": 2,
+  "v": 1,
   "venue": "youtube",
-  "version": "1.16.0",
+  "version": "0.1.0",
   "watch": {
     "defaults": {
       "every": "once",

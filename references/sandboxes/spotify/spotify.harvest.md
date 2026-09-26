@@ -42,7 +42,7 @@ as references and never ripped.
 ```jsonc
 // spotify.harvest: the jail of channel-spotify's harvest stage.
 {
-  "v": 2,
+  "v": 1,
   "profile": {
     "meta": {
       "name": "channel-spotify-harvest",
