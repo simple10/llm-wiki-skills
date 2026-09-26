@@ -45,9 +45,9 @@ plan    opens the ticket (target, slug, `harvest.scope`, `harvest.access`,
         order the course lists them), and writes `plan.json`: the ordered
         leaf work list, each with the directory it is captured into, plus
         every link dropped and why. The flags stand in for `--ticket` on a
-        hand run. It stamps a `deadline`: the ticket's own `claimed_at` (P-8/
-        Q1 — there is no per-run timestamp on disk to anchor it on any more)
-        plus `--budget-s` (default 1500 of the slice's 1800 seconds), less
+        hand run. It stamps a `deadline`: the ticket's own `claimed_at` (falls
+        back to this run's clock if the ticket carries none) plus
+        `--budget-s` (default 1500 of the slice's 1800 seconds), less
         `CLAIMED_AT_MARGIN_SECONDS`. A leaf whose
         `capture.json` already names it and a body on disk is marked
         `landed: true` — a slice killed at the cap left it there, and the
@@ -1222,7 +1222,8 @@ def main(argv=None) -> int:
     p.add_argument("--slug", help="the job's slug, for a hand run with no --ticket")
     p.add_argument("--scope", choices=SCOPES, help="overrides the ticket's own harvest.scope")
     p.add_argument("--budget-s", type=int, default=DEFAULT_BUDGET_SECONDS,
-                   help=f"seconds after the ticket's own claimed_at in which a new lesson may start "
+                   help=f"seconds after the ticket's own claimed_at in which a new lesson may start, "
+                        f"less the {CLAIMED_AT_MARGIN_SECONDS}s CLAIMED_AT_MARGIN_SECONDS "
                         f"(default {DEFAULT_BUDGET_SECONDS}; the slice is killed at {SLICE_CAP_SECONDS})")  # fmt: skip
     p.set_defaults(fn=cmd_plan)
 

@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -727,7 +728,7 @@ def backdate_plan(cap: Path, seconds: float) -> None:
     (cap / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
 
 
-def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, tmp_path, tmp_path_factory):
+def test_the_deadline_is_keyed_to_claimed_at_and_a_hand_run_has_none(wiki_root, tmp_path, tmp_path_factory):
     root, rel = wiki_root
     t = ticket()
     plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
@@ -1084,6 +1085,30 @@ def test_the_outage_probe_takes_its_ticket_id_too(wiki_root, tmp_path_factory, m
     refusal: list = []
     assert probe.ticket_target(root, "no-such-ticket", refusal) is None
     assert refusal and "no ticket" in refusal[0]
+
+
+def test_the_outage_probe_main_falls_back_to_the_generic_line_on_a_silent_refusal(
+    wiki_root, tmp_path_factory, monkeypatch, capsys
+):
+    """F10 residue, `main()`'s own path: a silent `tickets open` refusal must
+    not be read as `refusal[0]` empty-string "no refusal happened"."""
+    root, rel = wiki_root
+    stub_sync_api = types.ModuleType("playwright.sync_api")
+    stub_sync_api.sync_playwright = lambda: None
+    stub_playwright = types.ModuleType("playwright")
+    stub_playwright.sync_api = stub_sync_api
+    monkeypatch.setitem(sys.modules, "playwright", stub_playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", stub_sync_api)
+    spec_p = importlib.util.spec_from_file_location("circle_outage_probe_main", SCRIPTS / "outage_probe.py")
+    probe = importlib.util.module_from_spec(spec_p)
+    spec_p.loader.exec_module(probe)
+    monkeypatch.setenv("LLM_WIKI_OPS", _silent_refusal_ops(tmp_path_factory.mktemp("probe-main-silent")))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPTS / "outage_probe.py"), str(root), "--ticket", "no-such-ticket"])
+    assert probe.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "fixed": False,
+        "error": "no url: give --ticket <id> (opened for its own target)",
+    }
 
 
 def test_the_documented_page_line_names_a_type():
