@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import ROOT, _cli, rooted, run, unit_manifest
+from harness import ROOT, _cli, enabled, rooted, run, unit_manifest
 
 DOCS = sorted([*ROOT.glob("skills/*/*.md"), *ROOT.glob("skills/*/references/*.md"), ROOT / "README.md"])
 
@@ -121,7 +121,12 @@ def job_record(ops, env, wiki) -> dict:
     """One real job's record — the sections and keys a dotted `section.key=`
     may name. Asked of the CLI, so a key the schema drops goes red here."""
     slug = "docs-probe"
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", "https://example.invalid/docs", f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once")
+    # `harvest.skill=` is required now (plugins main, post-#2487) — a bare
+    # job names no unit, and `jobs add` refuses one it cannot resolve to an
+    # installed unit's own declared stage.
+    enabled(ops, env, wiki, "web-page")
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", "https://example.invalid/docs",
+            f"slug={slug}", f"dest=sources/scrapes/{slug}", "every=once", "skill=web-page")
     assert r.returncode == 0, r.stdout + r.stderr
     return run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "show", slug).data["job"]
 

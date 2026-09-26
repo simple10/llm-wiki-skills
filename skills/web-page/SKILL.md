@@ -42,8 +42,8 @@ page as gone. The script never closes its own ticket.
 
 `fetch.py` fetches the ticket's own `target` — only `http`/`https` — and
 writes `capture.json` (`slug`, `item`, `title: null`, `body`,
-`content_type`, `fetched_at`) beside the body, the whole of what `pipeline
-extract` reads. A target already in `known[]` is `ok` with nothing
+`content_type`, `fetched_at`) beside the body, the whole of what the
+plugin's `extract` reads. A target already in `known[]` is `ok` with nothing
 captured and a reason naming `known`; a refused host, a timeout, an auth
 wall or any other failure is `failed` with `missing=<host>,<url>,<why>`; a
 refresh whose source answers 404 or 410 is `gone`. See `scripts/fetch.py`
