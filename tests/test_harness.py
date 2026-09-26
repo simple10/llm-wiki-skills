@@ -14,7 +14,10 @@ def test_a_live_ticket_is_minted_and_moved_to_active_by_the_cli(ops, env, wiki):
     own worker id — never a hand-written `ticket.json` (side note)."""
     if run(ops, rooted(env, wiki), "pipeline", "tickets", "run", "--help").returncode != 0:
         pytest.skip("`pipeline tickets run` is plugins PR 2 (#2486)")
-    job = declared_job(ops, env, wiki, "web-page", "https://example.invalid/harness/live-ticket", slug="harness-live-ticket")
+    # A resolvable host: `spawn=self` refuses a ticket whose target host does
+    # not resolve to a public address (plugins main, post-#2487), before this
+    # case ever reaches the script that would fetch it.
+    job = declared_job(ops, env, wiki, "web-page", "https://example.com/harness/live-ticket", slug="harness-live-ticket")
     ticket_id, capture_dir = live_ticket(ops, env, wiki, job)
     shown = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "show", ticket_id).data["tickets"][0]
     assert shown["state"] == "active" and shown["worker"] == "harness-session"

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import pytest
 
-from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
+from harness import bound_credential, declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-gmail", "test_gmail"))
@@ -36,7 +36,11 @@ def _needs_ledger_verb(ops, env, wiki):
 
 @pytest.fixture
 def job(ops, env, wiki):
-    return declared_job(ops, env, wiki, UNIT, TARGET, "options.mailbox=a@example.invalid")
+    j = declared_job(ops, env, wiki, UNIT, TARGET, "options.mailbox=a@example.invalid")
+    # `requires.credential: true`'s claim gate (plugins main, post-#2487):
+    # `jobs claim` refuses an unbound job — bind this machine's session to it.
+    bound_credential(ops, env, wiki, j.slug)
+    return j
 
 
 def test_a_pull_becomes_the_days_ledger_through_the_real_cli(ops, env, wiki, job):

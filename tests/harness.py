@@ -78,8 +78,8 @@ class Result:
         return json.loads(self.stdout)
 
 
-def run(ops: list, env: dict, *args, cwd=None) -> Result:
-    cp = subprocess.run([*ops, *args], env=env, cwd=cwd or NEUTRAL_CWD, capture_output=True, text=True, check=False)
+def run(ops: list, env: dict, *args, cwd=None, input=None) -> Result:
+    cp = subprocess.run([*ops, *args], env=env, cwd=cwd or NEUTRAL_CWD, capture_output=True, text=True, check=False, input=input)
     return Result(cp.returncode, cp.stdout, cp.stderr)
 
 
@@ -173,6 +173,20 @@ class Job:
     record: dict
 
 
+def bound_credential(ops: list, env: dict, wiki: Path, slug: str, name: str | None = None, value: str = "harness-credential") -> str:
+    """`requires.credential: true`'s claim gate, satisfied for `slug` on this
+    session (references/enable.md): `credential set <name>` (stdin — never a
+    command-line argument), then `credential bind <slug> <name>` — `bind`
+    refuses a name not set here first. The VALUE is unread by everything, so
+    any placeholder does (enable.md). Returns `name`."""
+    name = name or f"{slug}-cred"
+    r = run(ops, rooted(env, wiki), "--json", "credential", "set", name, input=value)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "credential", "bind", slug, name)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return name
+
+
 def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extra: str, slug: str | None = None) -> Job:
     """A real job for `unit` in the session wiki, declared the way
     references/enable.md says to (A-11: `jobs add`/`jobs show`) — `pipeline
@@ -182,7 +196,21 @@ def declared_job(ops: list, env: dict, wiki: Path, unit: str, target: str, *extr
     source for good, so a case wanting a job of its own passes both."""
     enabled(ops, env, wiki, unit)
     slug = slug or f"port-{unit}"
-    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra)
+    # `dest` and `every` are both required now (plugins main, post-#2487): a
+    # job needs where its pages land and how often it pulls. A caller that
+    # wants its own passes `dest=`/`every=` in `extra`.
+    if not any(e.startswith("dest=") for e in extra):
+        extra = (*extra, f"dest=sources/harness/{slug}")
+    if not any(e.startswith("every=") for e in extra):
+        extra = (*extra, "every=once")
+    # `transcribe` is a host ENGINE section every job carries by default
+    # (`job_schema` — the unit never declares it), so `close` on a harvest
+    # `ok` routes through a transcribe ticket first, media or not, and only
+    # the transcribe DRAIN (this box's own, not a case here) lands it on to
+    # `process`. None of this suite's units declare `transcribe`, so every
+    # harness job nulls the section at declare time — one real hop, harvest
+    # to process, the shape `advanced()` assumes.
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "add", target, f"slug={slug}", f"skill={unit}", f"description=port: {unit}", *extra, "--stdin", input='{"transcribe": null}')
     assert r.returncode == 0, r.stdout + r.stderr
     record = run(ops, rooted(env, wiki), "--json", "pipeline", "jobs", "show", slug).data["job"]
     return Job(slug, record["dest"], record)
@@ -205,7 +233,15 @@ def live_ticket(ops: list, env: dict, wiki: Path, job: Job) -> tuple[str, Path]:
     assert r.returncode == 0, r.stdout + r.stderr
     r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", ticket_id)
     assert r.returncode == 0, r.stdout + r.stderr
-    return ticket_id, wiki / r.data["ticket"]["capture_dir"]
+    capture_dir = wiki / r.data["ticket"]["capture_dir"]
+    # `spawn=self` takes the `starting.claim_rows` arm (tickets_run.py), never
+    # `starting.start`, so it never runs that arm's `capture.mkdir(...)` — a
+    # real worker's own first act (P-7's clearing line) makes the directory a
+    # spawned slice would otherwise be granted already made. A case that
+    # writes a fixture into it before running the unit's own script needs it
+    # to exist first, same as a granted slice would find it.
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    return ticket_id, capture_dir
 
 
 def landed(ops: list, env: dict, wiki: Path, ticket: str) -> dict:
@@ -214,6 +250,26 @@ def landed(ops: list, env: dict, wiki: Path, ticket: str) -> dict:
     r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "close", ticket)
     assert r.returncode == 0, r.stdout + r.stderr
     return r.data
+
+
+def advanced(ops: list, env: dict, wiki: Path, ticket: str) -> tuple[str, Path]:
+    """Close `ticket` (A-10) and move the ONE ticket it mints for the next
+    declared stage to `active/`, the way `live_ticket` moves a fresh
+    harvest ticket there — a `close` only enqueues (`pending/`); a caller
+    invoking a unit's next stage still needs `tickets run <id> spawn=self`
+    to reach it. For a unit whose harvest and process share one ticket id
+    (P5's `SAME ticket` units), skip this and pass the harvest id straight
+    to the process step instead."""
+    closed = landed(ops, env, wiki, ticket)
+    row = closed["closed"][0]
+    enqueued = row["enqueued"]
+    assert len(enqueued) == 1, f"{ticket}: close enqueued {enqueued}, not exactly one next-stage ticket"
+    next_id = enqueued[0]
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "run", next_id, "spawn=self")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "open", next_id)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return next_id, wiki / r.data["ticket"]["capture_dir"]
 
 
 

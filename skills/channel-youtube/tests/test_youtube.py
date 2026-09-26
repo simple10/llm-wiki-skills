@@ -31,11 +31,11 @@ META = json.loads((FIXTURES / "metadata.json").read_text(encoding="utf-8"))
 ITEM = META["webpage_url"]
 
 UNIT = "channel-youtube"
-# The target `tests/test_port_smoke.py` declares this same job with. The slug
-# `declared_job` derives is per UNIT and a slug names one source for good, so
-# a second target here would be refused whenever the smoke case ran first. The
-# ITEM a ticket carries is its own, and is what this file varies.
-JOB_TARGET = "https://www.youtube.com/watch?v=smoke"
+# A url job's ticket carries `item` off the job's own `target` at mint (a
+# live ticket, never a hand fixture) — so the harness's default-slug job,
+# which asserts `record["item"] == ITEM`, is declared with `target=ITEM`
+# itself. A case wanting a job of its own passes `slug=` (`declared_job`).
+JOB_TARGET = ITEM
 
 # Where a tmp-path case's process arm writes. A real job's is the ticket's.
 DEST = "sources/youtube/yt-job"

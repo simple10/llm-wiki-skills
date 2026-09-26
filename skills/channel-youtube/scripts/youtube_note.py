@@ -356,7 +356,12 @@ def format_transcript(captions, chapters_json, wiki, override):
         # falls back to `sys.executable`, as before.
         proj = _uv_project(front_door())
         if proj:
-            cmd, where = ["uv", "run", "--project", proj, str(Path(override).resolve())], {}
+            # `VIRTUAL_ENV`, inherited from whatever ran THIS script, outranks
+            # `--project` in uv's own resolution — nested inside another uv
+            # invocation (this script is itself no-PEP-723-free, `uv run
+            # --script`'d), it would silently misdirect this call to that
+            # OTHER venv instead. Unset it; `--project` alone is unambiguous.
+            cmd, where = ["uv", "run", "--project", proj, str(Path(override).resolve())], {"env": {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}}
         else:
             cmd, where = [sys.executable, str(Path(override).resolve())], {}
     else:

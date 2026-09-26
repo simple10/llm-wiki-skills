@@ -13,7 +13,7 @@ import re
 
 from pathlib import Path
 
-from harness import declared_job, landed, live_ticket, rooted, run, unit_tests
+from harness import advanced, declared_job, landed, live_ticket, rooted, run, unit_tests
 
 # The unit's own helpers, constants and fixtures — the stdlib above is this file's.
 globals().update(unit_tests("channel-youtube", "test_youtube"))
@@ -57,14 +57,29 @@ def test_a_harvested_video_becomes_the_staged_page(ops, env, wiki):
     record = json.loads((cap / "capture.json").read_text())
     assert record["slug"] == job.slug and record["item"] == ITEM and "frontmatter" not in record
 
+    # The script only builds the capture; `SKILL.md`'s own `## Stages` lines
+    # are the worker's `tickets update` — the session's, not the script's.
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "update", ticket_id, "stage=harvest", "status=ok")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # The harvest ticket's own `close` (A-10) mints the process ticket the
+    # unit's process arm reads through `--ticket` — the two steps share the
+    # capture dir, never a ticket id.
+    process_id, process_cap = advanced(ops, env, wiki, ticket_id)
+    assert process_cap == cap
+
     r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
-            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", ticket_id,
+            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", process_id,
             "--format-transcript", str(formatter), cwd=wiki)
     assert r.returncode == 0, r.stdout + r.stderr
     out = json.loads(r.stdout)
     assert out["has_transcript"] is True and out["chapters"] == 2
 
-    closed = landed(ops, env, wiki, ticket_id)
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "update", process_id, "stage=process",
+            "status=ok", "written_from=written.json")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    closed = landed(ops, env, wiki, process_id)
     assert closed.get("status") in ("ok", None), closed
 
     page = wiki / out["written"][0]
@@ -106,8 +121,11 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
     """Through the REAL `page create`, which names the page's file from the
     title and refuses `:` `?` `/` `"` or a leading dot outright."""
     _needs_run_verb(ops, env, wiki)
+    # A wiki holds ONE job per target url — reusing JOB_TARGET across these
+    # cases would collide with the other test's job (and each other), so
+    # every hostile case gets its own target, not just its own slug.
     item = f"https://www.youtube.com/watch?v={leaf[-8:]}xyz"
-    job = declared_job(ops, env, wiki, UNIT, JOB_TARGET, slug=f"harness-yt-{leaf}")
+    job = declared_job(ops, env, wiki, UNIT, item, slug=f"harness-yt-{leaf}")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     _fill(cap)
     (cap / "metadata.json").write_text(json.dumps({**META, "title": title}))
@@ -116,10 +134,13 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
             "--capture-dir", str(cap.relative_to(wiki)), "--record", "--ticket", ticket_id, cwd=wiki)
     assert r.returncode == 0, r.stdout + r.stderr
     record = json.loads((cap / "capture.json").read_text())
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "update", ticket_id, "stage=harvest", "status=ok")
+    assert r.returncode == 0, r.stdout + r.stderr
+    process_id, _cap = advanced(ops, env, wiki, ticket_id)
 
     # FIRST: the refusal this pins is `page create`'s own, not an assertion of ours.
     r = run(ops, rooted(env, wiki), "run", "ops/skills/channel-youtube/scripts/youtube_note.py", ".",
-            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", ticket_id,
+            "--capture-dir", str(cap.relative_to(wiki)), "--dest", job.dest, "--ticket", process_id,
             "--format-transcript", str(_stub_formatter(tmp_path)), cwd=wiki)
     assert r.returncode == 0, r.stdout + r.stderr
     out = json.loads(r.stdout)
@@ -133,3 +154,8 @@ def test_a_title_no_filename_can_hold_still_lands_as_a_page(ops, env, wiki, tmp_
     assert body.lstrip().startswith(f"# {folded.replace('<', '&lt;')}\n"), "the TRUE title is the H1"
     assert "source_title: " in front and folded[:20] in front
     assert len(re.findall(r"^---$", text, re.M)) == 2 and "\n# Forged" not in text
+
+    r = run(ops, rooted(env, wiki), "--json", "pipeline", "tickets", "update", process_id, "stage=process",
+            "status=ok", "written_from=written.json")
+    assert r.returncode == 0, r.stdout + r.stderr
+    landed(ops, env, wiki, process_id)  # frees the process cap slot for the next case
