@@ -124,6 +124,7 @@ History:
 
 import unicodedata
 import argparse
+import calendar
 import hashlib
 import json
 import os
@@ -156,6 +157,12 @@ WHYS = ("denied", "timeout", "auth", "error")
 # rest is for the lesson in hand and the report.
 SLICE_CAP_SECONDS = 1800
 DEFAULT_BUDGET_SECONDS = 1500
+# Q1 (#2480 comment 5842049649): the deadline anchors on `claimed_at` — the
+# host's own stamp at the move to `active/`, always earlier than this run's
+# own first write — so it is already a little behind the clock by the time
+# `plan` reads it back; this margin covers that lag rather than letting it
+# eat into the budget unnoticed.
+CLAIMED_AT_MARGIN_SECONDS = 30
 EXIT_STOP = 3  # `record`: recorded, and the deadline has passed
 GONE_STATUSES = (404, 410)
 STAGES = ("harvest", "process")
@@ -586,12 +593,24 @@ def landed_as(directory: Path, leaf: dict) -> bool:
 
 
 # P-8: there is no per-run timestamp on disk to anchor the deadline on any
-# more, so `plan` stamps its OWN first write of this run — `cmd_plan` reads
-# the clock itself, once, the moment it runs.
+# more, so `plan` anchors it on the ticket's own `claimed_at` (Q1, #2480
+# comment 5842049649) — the host's stamp at the move to `active/`, which
+# `tickets open` already answers, rather than this run's own first write.
 
 
 def iso(stamp: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))
+
+
+def epoch(stamp: str | None) -> float | None:
+    """`claimed_at`, parsed back to epoch seconds — always `…Z` (UTC), the
+    one shape the host ever stamps it in."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return None
 
 
 def past_deadline(plan: dict, now: float | None = None) -> bool:
@@ -903,12 +922,15 @@ def cmd_plan(args) -> int:
         # a later read's verdict, reached by hashing a body really fetched again.
         for name in (CAPTURE_NAME, FACTS_NAME, BODY_HTML):
             forget(capture_dir / name)
-    # P-8: this run's own first write — no per-run timestamp on disk to
-    # anchor the deadline on any more. None on a hand run (no `--ticket`),
-    # which nothing kills.
-    spawned = time.time() if args.ticket else None
+    # P-8/Q1: the ticket's own `claimed_at` — the host's stamp at the move to
+    # `active/`, which `tickets open` already answers — no per-run timestamp
+    # on disk to anchor the deadline on any more. None on a hand run (no
+    # `--ticket`), which nothing kills, and none either if the ticket somehow
+    # carries no `claimed_at` (an old record, or a hand-built one in a test).
+    spawned = epoch(ticket.get("claimed_at")) if args.ticket else None
     if spawned is not None:
-        plan["deadline_epoch"] = spawned + max(0, min(args.budget_s, SLICE_CAP_SECONDS))
+        budget = max(0, min(args.budget_s, SLICE_CAP_SECONDS) - CLAIMED_AT_MARGIN_SECONDS)
+        plan["deadline_epoch"] = spawned + budget
         plan["deadline"] = iso(plan["deadline_epoch"])
     for leaf in plan["leaves"]:
         leaf["landed"] = landed_as(leaf_path(capture_dir, leaf), leaf)

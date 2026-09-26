@@ -66,6 +66,9 @@ def ticket(**over) -> dict:
         "capture_dir": "_raw/course/c-course-one--aaaaaaaa", "dest": None, "hosts": ["community.example.invalid"],
         "harvest": {"scope": "section", "access": "licensed", "exclude_urls": [], "assets": "reference"},
         "options": {}, "credential": None, "min_date": None, "known": [], "refresh": False, "resource": None,
+        # The host's own stamp at the move to `active/` (Q1) — `now`, as a
+        # real claim would leave it moments before this ticket is opened.
+        "claimed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     base.update(over)
     return base
@@ -694,10 +697,22 @@ def test_the_deadline_is_keyed_to_the_spawn_and_a_hand_run_has_none(wiki_root, t
     root, rel = wiki_root
     t = ticket()
     plan = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=tmp_path, ticket_dict=t))
-    assert abs(plan["deadline_epoch"] - (time.time() + 1500)) < 5 and plan["deadline"].endswith("Z")
+    # Q1: anchored on the ticket's own `claimed_at` (here, `now`), minus the
+    # margin that covers the lag between that stamp and this run's own clock.
+    assert abs(plan["deadline_epoch"] - (time.time() + 1500 - mod.CLAIMED_AT_MARGIN_SECONDS)) < 5
+    assert plan["deadline"].endswith("Z")
     door2 = tmp_path_factory.mktemp("deadline-door2")
     budgeted = last_json_plan(cli(PLAN, "plan", rel, "--budget-s", 60, cwd=root, tmp_path=door2, ticket_dict=t))
-    assert abs(budgeted["deadline_epoch"] - (time.time() + 60)) < 5
+    assert abs(budgeted["deadline_epoch"] - (time.time() + 60 - mod.CLAIMED_AT_MARGIN_SECONDS)) < 5
+
+    # Q1, discriminated from "this run's own first write": a ticket claimed
+    # 200 s ago anchors there, not on `plan`'s own clock — the old behavior
+    # would read this as `now + 1500`, off by ~200 s.
+    claimed_ago = tmp_path_factory.mktemp("deadline-claimed-ago")
+    stale = ticket(claimed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 200)))
+    late = last_json_plan(cli(PLAN, "plan", rel, cwd=root, tmp_path=claimed_ago, ticket_dict=stale))
+    assert abs(late["deadline_epoch"] - (time.time() + 1500 - mod.CLAIMED_AT_MARGIN_SECONDS - 200)) < 5
+
     hand = tmp_path_factory.mktemp("deadline-hand") / "_raw" / "course" / "r--00000000"
     hand.mkdir(parents=True)
     shutil.copy(FIX / "root" / "meta.json", hand / "meta.json")
