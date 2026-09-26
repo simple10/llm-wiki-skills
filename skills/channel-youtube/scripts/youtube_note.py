@@ -119,6 +119,17 @@ def front_door() -> list:
     return [found] if found else []
 
 
+def _project_dir(door: list) -> str | None:
+    """The directory a `uv run --project <dir>`/`--project=<dir>` line names,
+    in either flag form — the one place its own venv interpreter sits."""
+    for i, token in enumerate(door):
+        if token == "--project" and i + 1 < len(door):
+            return door[i + 1]
+        if token.startswith("--project="):
+            return token.split("=", 1)[1]
+    return None
+
+
 def _front_door_interpreter(door: list) -> str | None:
     """The python a `uv tool install`ed `llm-wiki-ops` runs under, read off
     its own shebang, or None.
@@ -126,16 +137,28 @@ def _front_door_interpreter(door: list) -> str | None:
     `LLM_WIKI_OPS` always ends up naming that bare console script — every
     `llm-wiki-ops`/`llm-wiki-cli` entry rewrites it to the durable path at
     its own start (`llm_wiki_cli.dispatch`), overwriting whatever a caller
-    exported first — so a `--project`-shaped line is never what a nested
-    call actually sees. The shebang IS the project's own venv python: the
-    one `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …)
-    resolve in, and the one `llm-wiki-ops run` would hand a script if not
-    for a PEP 723 script's own ephemeral venv (G2) — which is exactly why
-    a direct run of the formatter, bypassing `run`, still needs it."""
+    exported first, WHERE a durable one is found — so a `--project`-shaped
+    line is the one thing a dev checkout with no installed console script
+    ever exports. The shebang IS the project's own venv python: the one
+    `format_transcript.py`'s imports (`llm_wiki_ops`, pyyaml, …) resolve
+    in, and the one `llm-wiki-ops run` would hand a script if not for a
+    PEP 723 script's own ephemeral venv (G2) — which is exactly why a
+    direct run of the formatter, bypassing `run`, still needs it.
+
+    `door[-1]` is a bare command name (`llm-wiki-ops`), not a file, on a
+    `--project`-shaped line — in EITHER flag form (F13) — so its own venv
+    (`<project>/.venv/bin/python3`) is read directly instead."""
     if not door:
         return None
+    target = door[-1]
+    if not Path(target).is_file():
+        project = _project_dir(door)
+        if not project:
+            return None
+        candidate = Path(project) / ".venv" / "bin" / "python3"
+        return str(candidate) if candidate.is_file() else None
     try:
-        first_line = Path(door[-1]).open(encoding="utf-8", errors="ignore").readline()
+        first_line = Path(target).open(encoding="utf-8", errors="ignore").readline()
     except OSError:
         return None
     if not first_line.startswith("#!"):
@@ -379,7 +402,14 @@ def format_transcript(captions, chapters_json, wiki, override):
     cmd += [str(Path(captions).resolve()), "--interval", "60"]
     if chapters_json:
         cmd += ["--chapters", str(Path(chapters_json).resolve())]
-    cp = subprocess.run(cmd, capture_output=True, text=True, **where)
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, **where)
+    except OSError as exc:
+        sys.exit(
+            "youtube_note: transcript formatting failed "
+            f"(could not run {cmd[0]!r}) — refusing to write a note with no "
+            f"transcript.\n{exc}"
+        )
     if cp.returncode != 0 or not cp.stdout.strip():
         sys.exit(
             "youtube_note: transcript formatting failed "

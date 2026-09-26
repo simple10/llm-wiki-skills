@@ -334,6 +334,25 @@ def test_two_writes_in_one_run_carry_missing_forward(tmp_path):
     ]
 
 
+def test_a_corrupt_prior_missing_row_does_not_crash_finish(tmp_path):
+    """F12: `finish()` reads `prior["missing"]` off disk (`carried()`) and
+    merges it into this run's own `missing[]` before typing `m["host"]` for
+    every row. A hand-edited or truncated `report.<id>.json` with a row
+    missing a key must not raise `KeyError` after `capture.json` is written
+    and before the update is posted — it must be dropped, and the run must
+    still land."""
+    directory, ticket = day_dir(tmp_path)
+    first = write(directory, ticket, [task(1)], "--missing", "a.example.invalid", "https://a.example.invalid/", "denied")
+    assert first.returncode == 0, first.stderr
+    stale = directory / f"report.{ticket['ticket']}.json"
+    doc = json.loads(stale.read_text(encoding="utf-8"))
+    doc["missing"] = [{"host": "corrupt.example.invalid"}]  # no `url`/`why` — a hand-edited or truncated row
+    stale.write_text(json.dumps(doc), encoding="utf-8")
+    second = write(directory, ticket, [task(2)])
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert report(directory)["missing"] == []
+
+
 def test_a_far_future_edit_time_is_kept_under_the_pulls_clock_and_never_becomes_the_watermark(tmp_path):
     directory, ticket = day_dir(tmp_path)
     r = write(directory, ticket, [task(1), task(2, last_edited="9999-12-31T23:59:59.000Z"), task(3, last_edited="yesterday")])
@@ -407,7 +426,8 @@ def test_a_wrong_positional_is_ignored_for_the_tickets_own_capture_dir(tmp_path)
     for wrong in (other, bad):
         r = write(wrong, ticket, [task(7)])
         assert r.returncode == 0, r.stderr
-        assert names(directory)
+        assert names(directory) == [f"{stamp(7)}--0000aaaa-0007.json"]
+        assert not (wrong / "items").exists()
 
 
 

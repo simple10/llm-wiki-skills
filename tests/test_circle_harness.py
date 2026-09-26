@@ -62,20 +62,11 @@ def test_one_ticket_walks_the_section_and_every_lesson_becomes_a_page(ops, env, 
     `ticket.json`, no `report.json` anywhere on disk."""
     _needs_run_verb(ops, env, wiki)
     # `spawn=self` refuses a ticket whose target host does not resolve to a
-    # public address (plugins main, post-#2487). `TARGET`'s host
-    # (`community.example.invalid`, `BASE`) is `.invalid` on purpose — the
-    # unit's own tests key their fixtures and assertions to it and never
-    # touch a real network — and the plan's own `harvest.scope=section`
-    # match keeps only leaves under that SAME host, so a resolvable
-    # substitute here (tried: swapping in `example.com`) empties the plan
-    # instead of fixing the dispatch. Swapping `BASE` itself would ripple
-    # through the unit's own shipped tests' assertions; reported, not a
-    # one-file fix.
-    pytest.skip(
-        "TARGET's host (community.example.invalid, BASE in test_circle.py) never resolves, and "
-        "spawn=self now refuses a ticket whose target does not — reported, needs BASE changed "
-        "with its assertions, not a harness-only substitute"
-    )
+    # public address (plugins main, post-#2487). `TARGET`'s host is
+    # `example.com` (RFC 2606) — resolvable everywhere with DNS/internet
+    # egress, unlike the old `.invalid` host — and `test_circle.py`'s own
+    # fixtures and assertions are keyed to the SAME host throughout, so the
+    # plan's `harvest.scope=section` match still keeps the right leaves.
     job = declared_job(ops, env, wiki, UNIT, TARGET, slug="harness-circle")
     ticket_id, cap = live_ticket(ops, env, wiki, job)
     rel = str(cap.relative_to(wiki))

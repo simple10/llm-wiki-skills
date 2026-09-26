@@ -523,12 +523,12 @@ def post_report(root: Path, ticket: dict, plan: dict, spawn) -> tuple:
     settle_titles(root, plan["leaves"])
     states = {leaf["item"]: leaf_state(root, leaf, spawn) for leaf in plan["leaves"]}
     update = update_of(ticket, plan, states)
-    post_update(
+    code = post_update(
         ticket["ticket"], "harvest", update["status"], reason=update["reason"],
         captured=[row["dir"] for row in update["captured"]],
         missing=[(row["host"], row["url"], row["why"]) for row in update["missing"]],
     )
-    return states, update
+    return states, update, code
 
 
 def main() -> int:
@@ -610,13 +610,14 @@ def main() -> int:
     sliced = args.slice_seconds > 0
     stop = "plan-only" if args.plan_only else "done"
     fetched = 0
+    code = 0
     if args.plan_only:
         states = {leaf["item"]: leaf_state(root, leaf, spawn) for leaf in plan["leaves"]}
         update = update_of(ticket, plan, states)
     else:
         # Before the first leaf, so a pass killed inside it still leaves a
         # posted status — and one that says what is true so far.
-        states, update = post_report(root, ticket, plan, spawn)
+        states, update, code = post_report(root, ticket, plan, spawn)
         for leaf in plan["leaves"]:
             state, _ = states.get(leaf["item"], ("pending", None))
             if state == "captured" or (state == "failed" and not args.retry_failed):
@@ -651,7 +652,7 @@ def main() -> int:
                     {"ticket": ticket_id, "spawn": spawn, "item": leaf["item"], "why": why, "exit": rc, "detail": text},
                 )
             print(f"[{fetched}] {leaf['dir']} exit {rc}", file=sys.stderr)
-            states, update = post_report(root, ticket, plan, spawn)
+            states, update, code = post_report(root, ticket, plan, spawn)
         if stop == "slice" and not fetched:
             print(
                 f"note: the slice clock (this run's own first write) is {time.time() - epoch:.0f}s old, so no leaf was "
@@ -677,6 +678,8 @@ def main() -> int:
     )
     if args.plan_only and plan["leaves"]:
         return 0
+    if code:
+        return 2
     return 1 if update["status"] == "failed" else 0
 
 

@@ -128,9 +128,13 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
-def ticket_target(root, ticket_id) -> str | None:
+def ticket_target(root, ticket_id, refusal: list | None = None) -> str | None:
     """The http(s) `target` of `--ticket <id>` (A-1), through `tickets open`
-    — or None where there is no ticket id."""
+    — or None where there is no ticket id.
+
+    `refusal`, given a list, gets the front door's own refusal text appended
+    when `tickets open` itself failed (F10) — never when there was simply no
+    ticket id to open."""
     if not ticket_id:
         return None
     proc = _ops(root, "pipeline", "tickets", "open", ticket_id)
@@ -139,6 +143,8 @@ def ticket_target(root, ticket_id) -> str | None:
     except ValueError:
         answer = None
     if proc.returncode != 0 or not isinstance(answer, dict):
+        if refusal is not None and proc.returncode != 0:
+            refusal.append((proc.stdout + proc.stderr).strip())
         return None
     target = (answer.get("ticket") or {}).get("target") if isinstance(answer.get("ticket"), dict) else None
     return target if isinstance(target, str) and urlsplit(target).scheme in ("http", "https") else None
@@ -156,9 +162,11 @@ def main() -> int:
     ap.add_argument("--settle-ms", type=int, default=8000, help="Wait after load for XHRs to fire / content to render")
     args = ap.parse_args()
 
-    args.url = args.url or ticket_target(args.root, args.ticket)
+    refusal: list = []
+    args.url = args.url or ticket_target(args.root, args.ticket, refusal)
     if not args.url:
-        print(json.dumps({"fixed": False, "error": "no url: give --ticket <id> (opened for its own target)"}))
+        why = refusal[0] if refusal else "no url: give --ticket <id> (opened for its own target)"
+        print(json.dumps({"fixed": False, "error": why}))
         return 0
     domain = domain_of(args.url)
 

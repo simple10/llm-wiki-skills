@@ -356,7 +356,7 @@ def test_a_rerun_never_reports_nothing_over_items_no_ledger_has(tmp_path):
 
 
 def test_two_writes_in_one_run_carry_missing_forward(tmp_path):
-    """The coordinator's ruling (#2480 pr5a): `report.<id>.json` is the
+    """`report.<id>.json` is the
     host's own file, read straight off disk by `carried()` — the start
     unlinks any stale one before the worker runs (A-4), so what is there is
     always THIS run's own last update. A second `write` on the same ticket
@@ -373,6 +373,25 @@ def test_two_writes_in_one_run_carry_missing_forward(tmp_path):
         {"host": "a.example.invalid", "url": "https://a.example.invalid/", "why": "denied"},
         {"host": "b.example.invalid", "url": "https://b.example.invalid/", "why": "timeout"},
     ]
+
+
+def test_a_corrupt_prior_missing_row_does_not_crash_finish(tmp_path):
+    """F12: `finish()` reads `prior["missing"]` off disk (`carried()`) and
+    merges it into this run's own `missing[]` before typing `m["host"]` for
+    every row. A hand-edited or truncated `report.<id>.json` with a row
+    missing a key must not raise `KeyError` after `capture.json` is written
+    and before the update is posted — it must be dropped, and the run must
+    still land."""
+    directory, ticket = day_dir(tmp_path)
+    first = write(directory, ticket, [msg(1)], "--missing", "a.example.invalid", "https://a.example.invalid/", "denied")
+    assert first.returncode == 0, first.stderr
+    stale = directory / f"report.{ticket['ticket']}.json"
+    doc = json.loads(stale.read_text(encoding="utf-8"))
+    doc["missing"] = [{"host": "corrupt.example.invalid"}]  # no `url`/`why` — a hand-edited or truncated row
+    stale.write_text(json.dumps(doc), encoding="utf-8")
+    second = write(directory, ticket, [msg(2)])
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert report(directory)["missing"] == []
 
 
 def test_the_three_alternative_commands_run_top_to_bottom_still_land_the_captures(tmp_path):

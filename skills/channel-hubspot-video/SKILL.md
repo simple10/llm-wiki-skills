@@ -63,8 +63,8 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capt
   attempts (6 where the job downloads, none for `assets: reference`); the
   rest are `over_limit`, making the run `partial`. A leaf already holding a
   capture is `landed` and skipped, and a refresh ticket needs no `--urls`. An
-  unparseable sitemap is refused in one line — `report --failed --reason
-  <why>` anyway.
+  unparseable sitemap is refused in one line — `report --ticket <id> --failed
+  --reason <why>` anyway.
 - **`next`** — the next leaf, `{"done": true}`, or exit 5 `{"stop": true}`:
   the deadline passed, report and stop.
 - **`render`** — mandatory (*Media*); writes `page.html`, `net.json`,
@@ -96,19 +96,19 @@ only one you write), `process.embeds`, `process.exclude_rules`, `min_date`
 and `known[]`. **Every `<…>` below is the venue's own text**: paste it
 VERBATIM and SINGLE-QUOTED off `capture.json`, `tickets open`'s answer or what
 `record` printed, never retyped and never "cleaned"; one still carrying a
-single quote cannot be quoted that way, so report `--failed --reason
-unquotable_title` (`safe_title` maps `'` and `"` to `’`, so a title never does).
+single quote cannot be quoted that way, so report `--ticket <id> --failed
+--reason unquotable_title` (`safe_title` maps `'`/`"` to `’`, so a title never does).
 
 ```sh
 llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/to_markdown.py <capture_dir>/page.html --selector '<content_selector>' --drop-selector '<drop selector>' --title-selector '<title_selector>' --base-url '<item>'
 llm-wiki-ops page create 'title=<the capture title>' 'dest=<dest>' 'resource=<item>' 'extracted=true' '<key>=<value>' --stdin
 llm-wiki-ops page create 'title=<the capture title> (video)' 'dest=<dest>' 'resource=<stream_url>' 'extracted=queued' 'media=<capture_dir>/media.<ext>' --stdin
-llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir> --ticket <id> --written-from <file>
+llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capture_dir> --ticket <id> --written-from written.json
 ```
 
 1. A capture `process.exclude_rules` or `min_date` excludes earns no page:
-   `report --skipped --reason <why>`, stop — no stale file to delete first,
-   the host's own start already unlinked any earlier run's report (A-4).
+   `report --ticket <id> --skipped --reason <why>`, stop — the host's own
+   start already unlinked any earlier run's report (A-4).
 2. **Convert**, the site's rules off `references/sites.json` with one
    `--drop-selector` each; it writes `<capture_dir>/page.md`.
 3. **Head that file**, editing it in place: the venue's true title as the one
@@ -128,8 +128,8 @@ llm-wiki-ops run ops/skills/channel-hubspot-video/scripts/leaves.py report <capt
    body: the transcribe stage's queue is exactly the pages under `dest`
    flagged `extracted: queued` naming a `media` file, so a lesson with a video
    is two pages and `assets: reference` yields neither.
-6. **`report`** LAST: save every page it wrote to a file inside the capture
-   dir and pass `--written-from <file>`.
+6. **`report`** LAST: write every page into `written.json` (a JSON list,
+   wiki-relative) inside the capture dir, then `--written-from written.json`.
 
 ## Discovery
 
@@ -191,8 +191,8 @@ above; `capture_hubspot_video.py` also has
 rules to a manifest from the plugin's `assets.py detect`. Its `render` drives
 Chromium through Playwright inside the slice, which cannot install the browser
 build: that has to be on the harvesting machine first (`references/enable.md` step 1), and
-a render dying on a missing executable is `report --failed --reason
-browser_missing`, never a retry loop.
+a render dying on a missing executable is `report --ticket <id> --failed
+--reason browser_missing`, never a retry loop.
 
 ## Budgeting
 

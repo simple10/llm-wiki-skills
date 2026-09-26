@@ -161,9 +161,13 @@ def domain_of(url: str) -> str:
     return urlsplit(url).hostname or ""
 
 
-def ticket_target(root: Path, ticket_id: str | None) -> str | None:
+def ticket_target(root: Path, ticket_id: str | None, refusal: list | None = None) -> str | None:
     """`--ticket <id>`'s own `target` (A-1), through `tickets open` — or None
-    where there is no `--ticket` (a hand run names its own url instead)."""
+    where there is no `--ticket` (a hand run names its own url instead).
+
+    `refusal`, given a list, gets the front door's own refusal text appended
+    when `tickets open` itself failed (F10) — never when there was simply no
+    ticket id to open."""
     if not ticket_id:
         return None
     proc = _ops(root, "pipeline", "tickets", "open", ticket_id)
@@ -172,6 +176,8 @@ def ticket_target(root: Path, ticket_id: str | None) -> str | None:
     except ValueError:
         answer = None
     if proc.returncode != 0 or not isinstance(answer, dict):
+        if refusal is not None and proc.returncode != 0:
+            refusal.append((proc.stdout + proc.stderr).strip())
         return None
     target = (answer.get("ticket") or {}).get("target") if isinstance(answer.get("ticket"), dict) else None
     return target if isinstance(target, str) and target else None
@@ -236,9 +242,11 @@ def resolve_job(root, url=None, out=None, plan=None, leaf=None, ticket=None, now
     if out is None:
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "--out <capture_dir> is required (wiki-relative) unless --plan/--leaf name a lesson")
     out_dir = under(root, out)
-    chosen, from_ticket = (url, False) if url else (ticket_target(root, ticket), True)
+    refusal: list = []
+    chosen, from_ticket = (url, False) if url else (ticket_target(root, ticket, refusal), True)
     if not chosen:
-        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "no url given and no --ticket names one")
+        why = refusal[0] if refusal else "no url given and no --ticket names one"
+        return None, None, False, (EXIT_NOTHING_TO_CAPTURE, why)
     if not is_http(chosen):
         return None, None, False, (EXIT_NOTHING_TO_CAPTURE, "the url is not an http(s) address")
     return chosen, out_dir, from_ticket, None

@@ -83,7 +83,9 @@ llm-wiki-ops --json pipeline tickets update <id> stage=harvest status=failed rea
 - `ok` + `known` reason — `known[]`; the reason names it.
 - `failed` — no `metadata.json`, or yt-dlp aborted. A host the proxy refused goes
   in `missing=…,denied`, a login or age wall is `auth`; never retry a `denied`
-  host, widening is the host's call.
+  host, widening is the host's call. `missing=` is `host,url,why` typed as
+  ONE argument — quote it whole (`missing="<host>,<url>,<why>"`), and a `,`
+  inside `<url>` itself as `%2C`, or the triple splits on the wrong comma.
 
 ### process
 
