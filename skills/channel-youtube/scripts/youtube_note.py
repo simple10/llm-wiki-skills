@@ -355,6 +355,7 @@ def format_transcript(captions, chapters_json, wiki, override):
         # front door would have used. A bare front door (no `--project`)
         # falls back to `sys.executable`, as before.
         proj = _uv_project(front_door())
+        print(f"DEBUG2 proj={proj!r} door={front_door()!r} env_llm_wiki_ops={__import__('os').environ.get('LLM_WIKI_OPS')!r}", file=sys.stderr)
         if proj:
             # `VIRTUAL_ENV`, inherited from whatever ran THIS script, outranks
             # `--project` in uv's own resolution — nested inside another uv
